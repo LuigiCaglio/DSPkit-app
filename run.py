@@ -2,7 +2,8 @@
 DSPkit-app entry point.
 Starts the FastAPI backend on port 8000 and opens the browser.
 Run from the repo root with the correct venv active:
-    python run.py
+    python run.py            # opens browser automatically
+    python run.py --no-browser  # used by the AppLauncher (it handles the browser)
 """
 
 import subprocess
@@ -17,13 +18,16 @@ BACKEND_DIR = Path(__file__).parent / "backend"
 
 
 def main():
+    open_browser = "--no-browser" not in sys.argv
+
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", str(PORT)],
         cwd=BACKEND_DIR,
     )
-    # Give uvicorn a moment to start before opening the browser
-    time.sleep(1.5)
-    webbrowser.open(URL)
+    if open_browser:
+        # Give uvicorn a moment to start before opening the browser
+        time.sleep(1.5)
+        webbrowser.open(URL)
     try:
         proc.wait()
     except KeyboardInterrupt:
