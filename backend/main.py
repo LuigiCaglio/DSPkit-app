@@ -16,7 +16,7 @@ from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from scipy.signal import resample as fft_resample, resample_poly
+from scipy.signal import resample as fft_resample, resample_poly, get_window
 
 import dspkit as dsp
 
@@ -380,7 +380,9 @@ async def spectral_fft(
         for col in cols:
             x, _, _ = get_preprocessed(parsed, time_col, col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
             _, amp = dsp.fft_spectrum(x, fs_, window=window, scaling=scaling)
-            signals.append({"name": parsed["column_names"][col], "amplitude": to_list(amp)})
+            win_arr = get_window(window, len(x))
+            phase = np.angle(np.fft.rfft(x * win_arr), deg=True)
+            signals.append({"name": parsed["column_names"][col], "amplitude": to_list(amp), "phase": to_list(phase)})
         return {"freqs": to_list(freqs), "signals": signals}
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -527,7 +529,8 @@ async def spectral_coherence(
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         freqs, Cxy = dsp.coherence(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
-        return {"freqs": to_list(freqs), "Cxy": to_list(Cxy)}
+        _, Pxy = dsp.csd(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
+        return {"freqs": to_list(freqs), "Cxy": to_list(Cxy), "phase_deg": to_list(np.angle(Pxy, deg=True))}
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

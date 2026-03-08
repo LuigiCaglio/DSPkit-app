@@ -234,6 +234,21 @@
         {/if}
       </div>
 
+      {#if parseResult.preview?.length}
+        <div class="preview-wrap">
+          <table class="preview-table">
+            <thead>
+              <tr>{#each parseResult.column_names as name}<th>{name}</th>{/each}</tr>
+            </thead>
+            <tbody>
+              {#each parseResult.preview as row}
+                <tr>{#each row as v}<td>{typeof v === 'number' ? v.toPrecision(4) : v}</td>{/each}</tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+
       <!-- Preprocessing -->
       <PreprocessPanel {preproc} />
 
