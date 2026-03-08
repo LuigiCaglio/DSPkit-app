@@ -7,7 +7,6 @@ from __future__ import annotations
 import csv
 import io
 import json
-from math import gcd
 from pathlib import Path
 from typing import Optional
 
@@ -16,7 +15,7 @@ from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from scipy.signal import resample as fft_resample, resample_poly, get_window
+from scipy.signal import get_window
 
 import dspkit as dsp
 
@@ -181,19 +180,13 @@ def apply_preprocessing(
     if lp_cutoff is not None and lp_cutoff > 0:
         x = dsp.lowpass(x, fs, lp_cutoff, order=4, zero_phase=True)
 
-    # 4. Resample
+    # 4. Resample — use linear interpolation to avoid group-delay time shift
     if target_fs is not None and abs(target_fs - fs) > 0.01:
-        fs_i  = round(fs * 100)
-        tfs_i = round(target_fs * 100)
-        g     = gcd(fs_i, tfs_i)
-        up, down = tfs_i // g, fs_i // g
-        if max(up, down) <= 2000:
-            x = resample_poly(x, up, down)
-        else:
-            n_new = round(len(x) * target_fs / fs)
-            x = fft_resample(x, n_new)
-        times = np.linspace(times[0], times[-1], len(x))
-        fs = float(target_fs)
+        n_new = round(len(x) * target_fs / fs)
+        t_new = np.linspace(times[0], times[-1], n_new)
+        x     = np.interp(t_new, times, x)
+        times = t_new
+        fs    = float(target_fs)
 
     return x, fs, times
 
