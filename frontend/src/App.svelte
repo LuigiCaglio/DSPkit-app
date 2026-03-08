@@ -234,21 +234,6 @@
         {/if}
       </div>
 
-      {#if parseResult.preview?.length}
-        <div class="preview-wrap">
-          <table class="preview-table">
-            <thead>
-              <tr>{#each parseResult.column_names as name}<th>{name}</th>{/each}</tr>
-            </thead>
-            <tbody>
-              {#each parseResult.preview as row}
-                <tr>{#each row as v}<td>{typeof v === 'number' ? v.toPrecision(4) : v}</td>{/each}</tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
-      {/if}
-
       <!-- Preprocessing -->
       <PreprocessPanel {preproc} />
 
@@ -314,7 +299,26 @@
         {runAnalysis}
       />
       <div class="plot-area">
-        <PlotPanel {activeTab} {plotData} {loading} {plotError} />
+        {#if !plotData && !loading && !plotError && parseResult?.preview?.length}
+          <div class="preview-main">
+            <div class="preview-main-title">Data preview (first {parseResult.preview.length} rows)</div>
+            <div class="preview-main-wrap">
+              <table class="preview-table-main">
+                <thead>
+                  <tr>{#each parseResult.column_names as name}<th>{name}</th>{/each}</tr>
+                </thead>
+                <tbody>
+                  {#each parseResult.preview as row}
+                    <tr>{#each row as v}<td>{typeof v === 'number' ? v.toPrecision(6) : v}</td>{/each}</tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+            <div class="preview-main-hint">Select an analysis from the sidebar and click Run to plot.</div>
+          </div>
+        {:else}
+          <PlotPanel {activeTab} {plotData} {loading} {plotError} />
+        {/if}
       </div>
     {:else if hasFile && parseError}
       <div class="error">Parse error: {parseError}</div>

@@ -215,6 +215,53 @@ hr { border: none; border-top: 1px solid #2d3148; margin: 6px 0; }
 }
 .preview-table tr:last-child td { border-bottom: none; }
 
+/* ── main-area data preview ── */
+.preview-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px;
+  height: 100%;
+  overflow: hidden;
+}
+.preview-main-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #a5b4fc;
+}
+.preview-main-hint {
+  font-size: 12px;
+  color: #6b7280;
+}
+.preview-main-wrap {
+  overflow: auto;
+  border-radius: 8px;
+  border: 1px solid #2d3148;
+  flex: 0 0 auto;
+}
+.preview-table-main {
+  font-size: 13px;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+.preview-table-main th {
+  background: #1e2235;
+  color: #6366f1;
+  padding: 6px 16px;
+  border-bottom: 1px solid #2d3148;
+  text-align: right;
+  font-weight: 600;
+}
+.preview-table-main td {
+  padding: 5px 16px;
+  color: #e2e8f0;
+  text-align: right;
+  border-bottom: 1px solid #1e2235;
+  font-variant-numeric: tabular-nums;
+}
+.preview-table-main tr:last-child td { border-bottom: none; }
+.preview-table-main tr:hover td { background: #1e2235; }
+
 /* ── plot toolbar ── */
 .plot-toolbar {
   display: flex;
