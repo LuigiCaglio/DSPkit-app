@@ -301,6 +301,8 @@
     // phase panel: redraw whenever showPhase, plotData, or activeTab changes
     const _ = showPhase; const __ = plotData; const ___ = activeTab
     if (showPhase && hasPhaseData) drawPhase()
+    // Resize main plot after DOM updates so flexbox recalculates heights
+    requestAnimationFrame(() => { if (container) Plotly.Plots.resize(container) })
   })
 
   // Initialize container2 when it first appears in the DOM
