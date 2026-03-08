@@ -7,11 +7,14 @@ from __future__ import annotations
 import csv
 import io
 from math import gcd
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
 from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from scipy.signal import resample as fft_resample, resample_poly
 
 import dspkit as dsp
@@ -20,10 +23,19 @@ app = FastAPI(title="DSPkit GUI API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:8000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── static frontend (production) ─────────────────────────────────────────────
+_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+if _DIST.exists():
+    app.mount("/assets", StaticFiles(directory=_DIST / "assets"), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    async def serve_index():
+        return FileResponse(_DIST / "index.html")
 
 
 # ─── file parsing ─────────────────────────────────────────────────────────────

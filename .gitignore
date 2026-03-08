@@ -6,13 +6,13 @@ __pycache__/
 venv/
 env/
 *.egg-info/
-dist/
+backend/dist/
 build/
 
 # Node
 frontend/node_modules/
-frontend/dist/
 frontend/.svelte-kit/
+# frontend/dist/ is committed so end-users don't need Node
 
 # Data files (generated test data)
 *.csv
