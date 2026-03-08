@@ -32,6 +32,10 @@
     targetFs:        512,
   })
 
+  // ── preview expand ─────────────────────────────────────────────────────────
+  let previewExpanded = $state(false)
+  const PREVIEW_DEFAULT = 5
+
   // ── active tab + plot state ────────────────────────────────────────────────
   let activeTab = $state('timeseries')
   let plotData  = $state(null)
@@ -103,6 +107,7 @@
     parseResult = null
     plotData = null
     plotError = null
+    previewExpanded = false
     parseFile()
   }
 
@@ -301,14 +306,23 @@
       <div class="plot-area">
         {#if !plotData && !loading && !plotError && parseResult?.preview?.length}
           <div class="preview-main">
-            <div class="preview-main-title">Data preview (first {parseResult.preview.length} rows)</div>
+            <div class="preview-main-header">
+              <div class="preview-main-title">
+                Data preview — {parseResult.n_samples.toLocaleString()} rows × {parseResult.n_columns} columns
+              </div>
+              {#if parseResult.preview.length > PREVIEW_DEFAULT}
+                <button class="btn-expand" onclick={() => previewExpanded = !previewExpanded}>
+                  {previewExpanded ? `Show less` : `Show all ${parseResult.preview.length} rows`}
+                </button>
+              {/if}
+            </div>
             <div class="preview-main-wrap">
               <table class="preview-table-main">
                 <thead>
                   <tr>{#each parseResult.column_names as name}<th>{name}</th>{/each}</tr>
                 </thead>
                 <tbody>
-                  {#each parseResult.preview as row}
+                  {#each (previewExpanded ? parseResult.preview : parseResult.preview.slice(0, PREVIEW_DEFAULT)) as row}
                     <tr>{#each row as v}<td>{typeof v === 'number' ? v.toPrecision(6) : v}</td>{/each}</tr>
                   {/each}
                 </tbody>

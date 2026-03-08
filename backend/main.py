@@ -229,7 +229,7 @@ async def signal_parse(
     try:
         content = await file.read()
         parsed = parse_file(content, orientation, header_row)
-        preview_len = min(5, parsed["n_samples"])
+        preview_len = min(50, parsed["n_samples"])
         preview = parsed["data"][:, :preview_len].T.tolist()
         result = {
             "column_names": parsed["column_names"],
