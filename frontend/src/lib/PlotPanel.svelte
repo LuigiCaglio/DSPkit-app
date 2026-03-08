@@ -16,8 +16,20 @@
     legend:        { bgcolor: '#1a1d27', bordercolor: '#2d3148', borderwidth: 1 },
   }
 
+  const COLORS = ['#6366f1','#f59e0b','#10b981','#ef4444','#8b5cf6','#06b6d4','#f97316','#ec4899']
+
   function merge(...objs) {
     return Object.assign({}, ...objs)
+  }
+
+  function line(x, y, name, dash = 'solid', yaxis = 'y', color = undefined) {
+    return { x, y, type: 'scatter', mode: 'lines', name,
+             line: { dash, ...(color ? { color } : {}) }, yaxis }
+  }
+
+  function heatmap(x, y, z) {
+    return [{ x, y, z, type: 'heatmap', colorscale: 'Viridis',
+              colorbar: { thickness: 14, outlinewidth: 0 } }]
   }
 
   function draw() {
@@ -25,44 +37,29 @@
 
     const tab = activeTab
 
-    // ── line chart helper ────────────────────────────────────────────────────
-    function line(x, y, name, dash = 'solid', yaxis = 'y') {
-      return { x, y, type: 'scatter', mode: 'lines', name,
-               line: { dash }, yaxis }
-    }
-
-    // ── heatmap helper ───────────────────────────────────────────────────────
-    function heatmap(x, y, z) {
-      return [{ x, y, z, type: 'heatmap', colorscale: 'Viridis',
-                colorbar: { thickness: 14, outlinewidth: 0 } }]
-    }
-
     if (tab === 'timeseries') {
-      const preproc = plotData.n_proc !== plotData.times_raw.length || plotData.fs_raw !== plotData.fs_proc
-      const nameX = plotData.col_name_x ?? 'Signal X'
-      const nameY = plotData.col_name_y ?? 'Signal Y'
       const traces = []
-
-      if (preproc) {
-        traces.push({ x: plotData.times_raw,  y: plotData.signal_raw_x,
-          type: 'scatter', mode: 'lines', name: `${nameX} raw`, line: { color: '#4b5563', dash: 'dot' } })
-        traces.push({ x: plotData.times_proc, y: plotData.signal_proc_x,
-          type: 'scatter', mode: 'lines', name: `${nameX}`, line: { color: '#6366f1' } })
-        if (plotData.signal_raw_y) {
-          traces.push({ x: plotData.times_raw,  y: plotData.signal_raw_y,
-            type: 'scatter', mode: 'lines', name: `${nameY} raw`, line: { color: '#6b7280', dash: 'dot' } })
-          traces.push({ x: plotData.times_proc, y: plotData.signal_proc_y,
-            type: 'scatter', mode: 'lines', name: `${nameY}`, line: { color: '#f59e0b' } })
+      plotData.signals.forEach((sig, i) => {
+        const color = COLORS[i % COLORS.length]
+        if (plotData.preprocessed) {
+          traces.push({
+            x: plotData.times_raw, y: sig.signal_raw,
+            type: 'scatter', mode: 'lines', name: `${sig.name} (raw)`,
+            opacity: 0.35, line: { color, dash: 'dot' },
+          })
+          traces.push({
+            x: plotData.times_proc, y: sig.signal_proc,
+            type: 'scatter', mode: 'lines', name: sig.name,
+            line: { color },
+          })
+        } else {
+          traces.push({
+            x: plotData.times_raw, y: sig.signal_raw,
+            type: 'scatter', mode: 'lines', name: sig.name,
+            line: { color },
+          })
         }
-      } else {
-        traces.push({ x: plotData.times_raw, y: plotData.signal_raw_x,
-          type: 'scatter', mode: 'lines', name: nameX, line: { color: '#6366f1' } })
-        if (plotData.signal_raw_y) {
-          traces.push({ x: plotData.times_raw, y: plotData.signal_raw_y,
-            type: 'scatter', mode: 'lines', name: nameY, line: { color: '#f59e0b' } })
-        }
-      }
-
+      })
       Plotly.react(container, traces,
         merge(DARK_LAYOUT, {
           xaxis: { ...DARK_LAYOUT.xaxis, title: 'Time [s]' },
@@ -72,10 +69,8 @@
         }))
 
     } else if (tab === 'fft') {
-      const nameX = plotData.col_name_x ?? 'Signal X'
-      const traces = [line(plotData.freqs, plotData.amplitude_x, nameX)]
-      if (plotData.amplitude_y)
-        traces.push(line(plotData.freqs, plotData.amplitude_y, plotData.col_name_y ?? 'Signal Y'))
+      const traces = plotData.signals.map((sig, i) =>
+        line(plotData.freqs, sig.amplitude, sig.name, 'solid', 'y', COLORS[i % COLORS.length]))
       Plotly.react(container, traces,
         merge(DARK_LAYOUT, {
           xaxis: { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]' },
@@ -83,10 +78,8 @@
         }))
 
     } else if (tab === 'psd') {
-      const nameX = plotData.col_name_x ?? 'Signal X'
-      const traces = [line(plotData.freqs, plotData.Pxx_x, nameX)]
-      if (plotData.Pxx_y)
-        traces.push(line(plotData.freqs, plotData.Pxx_y, plotData.col_name_y ?? 'Signal Y'))
+      const traces = plotData.signals.map((sig, i) =>
+        line(plotData.freqs, sig.Pxx, sig.name, 'solid', 'y', COLORS[i % COLORS.length]))
       Plotly.react(container, traces,
         merge(DARK_LAYOUT, {
           xaxis: { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]' },
@@ -94,10 +87,8 @@
         }))
 
     } else if (tab === 'autocorrelation') {
-      const nameX = plotData.col_name_x ?? 'Signal X'
-      const traces = [line(plotData.lags, plotData.acf_x, nameX)]
-      if (plotData.acf_y)
-        traces.push(line(plotData.lags, plotData.acf_y, plotData.col_name_y ?? 'Signal Y'))
+      const traces = plotData.signals.map((sig, i) =>
+        line(plotData.lags, sig.acf, sig.name, 'solid', 'y', COLORS[i % COLORS.length]))
       Plotly.react(container, traces,
         merge(DARK_LAYOUT, {
           xaxis: { ...DARK_LAYOUT.xaxis, title: 'Lag [s]' },
@@ -138,9 +129,8 @@
         }))
 
     } else if (tab === 'stft' || tab === 'cwt') {
-      const key = tab === 'stft' ? 'magnitude' : 'magnitude'
       Plotly.react(container,
-        heatmap(plotData.times, plotData.freqs, plotData[key]),
+        heatmap(plotData.times, plotData.freqs, plotData.magnitude),
         merge(DARK_LAYOUT, {
           xaxis: { ...DARK_LAYOUT.xaxis, title: 'Time [s]' },
           yaxis: { ...DARK_LAYOUT.yaxis, title: 'Frequency [Hz]' },
@@ -187,7 +177,6 @@
         }))
 
     } else if (tab === 'hht') {
-      // HHT time-frequency scatter (energy coloured by envelope)
       const tfTraces = plotData.inst_freqs.map((fi, i) => ({
         x: plotData.times, y: fi,
         mode: 'markers',
@@ -204,9 +193,7 @@
     }
   }
 
-  // Re-draw whenever plotData or activeTab changes
   $effect(() => {
-    // touch reactive deps
     const _ = plotData
     const __ = activeTab
     draw()

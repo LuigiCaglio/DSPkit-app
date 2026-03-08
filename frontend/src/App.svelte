@@ -13,14 +13,15 @@
 
   // ── column assignment ──────────────────────────────────────────────────────
   let timeCol    = $state(-1)
-  let signalColX = $state(0)
-  let signalColY = $state(1)
+  let signalCols = $state([])     // multi-signal analyses (timeseries, FFT, PSD, ACF)
+  let signalColX = $state(0)      // cross-analyses: reference
+  let signalColY = $state(1)      // cross-analyses: response
   let fsManual   = $state(1000)
 
   // ── preprocessing state ────────────────────────────────────────────────────
   let preproc = $state({
     windowEnabled:   false,
-    winUnit:         'samples',   // 'samples' | 'time'
+    winUnit:         'samples',
     winStart:        null,
     winEnd:          null,
     hpEnabled:       false,
@@ -51,6 +52,7 @@
     fd.append('header_row', String(headerRow))
     fd.append('time_col', String(timeCol))
     fd.append('fs', String(fsManual))
+    fd.append('signal_cols', JSON.stringify(signalCols.map(Number)))
     for (const [k, v] of Object.entries(extraFields)) {
       if (v !== null && v !== undefined) fd.append(k, String(v))
     }
@@ -79,13 +81,18 @@
     fd.append('file', file)
     fd.append('orientation', orientation)
     fd.append('header_row', String(headerRow))
+    fd.append('time_col', String(timeCol))
+    fd.append('fs', String(fsManual))
     try {
       const res  = await fetch('/api/signal/parse', { method: 'POST', body: fd })
       const data = await res.json()
       if (!res.ok) { parseError = data.detail; return }
       parseResult = data
-      signalColX = timeCol >= 0 ? (timeCol === 0 ? 1 : 0) : 0
-      signalColY = signalColX + 1 < nSignals ? signalColX + 1 : signalColX
+      // Auto-select all non-time columns
+      const nonTime = data.column_names.map((_, i) => i).filter(i => i !== timeCol)
+      signalCols = nonTime
+      signalColX = nonTime[0] ?? 0
+      signalColY = nonTime[1] ?? signalColX
     } catch (e) {
       parseError = e.message
     }
@@ -153,10 +160,10 @@
       <div class="col-selectors">
         <div class="field">
           <label>Time column (−1 = none)</label>
-          <select bind:value={timeCol}>
+          <select bind:value={timeCol} onchange={onParseOptsChange}>
             <option value={-1}>— none —</option>
             {#each parseResult.column_names as name, i}
-              <option value={i}>{i}: {name}</option>
+              <option value={i}>{name}</option>
             {/each}
           </select>
         </div>
@@ -164,27 +171,44 @@
         {#if timeCol < 0}
           <div class="field">
             <label>Sample rate (Hz)</label>
-            <input type="number" bind:value={fsManual} min="0.001" step="1" />
+            <input type="number" bind:value={fsManual} min="0.001" step="1"
+                   onchange={onParseOptsChange} />
           </div>
         {/if}
 
         <div class="field">
-          <label>Signal X</label>
-          <select bind:value={signalColX}>
+          <label>Signals (timeseries / FFT / PSD / ACF)</label>
+          <select multiple bind:value={signalCols} size={Math.min(nSignals, 7)} style="width:100%">
             {#each parseResult.column_names as name, i}
-              <option value={i}>{i}: {name}</option>
+              {#if i !== timeCol}
+                <option value={i}>{name}</option>
+              {/if}
             {/each}
           </select>
         </div>
 
-        <div class="field">
-          <label>Signal Y (dual analyses)</label>
-          <select bind:value={signalColY} disabled={!dualSignal}>
-            {#each parseResult.column_names as name, i}
-              <option value={i}>{i}: {name}</option>
-            {/each}
-          </select>
-        </div>
+        {#if dualSignal}
+          <div class="field">
+            <label>Reference (cross-analyses)</label>
+            <select bind:value={signalColX}>
+              {#each parseResult.column_names as name, i}
+                {#if i !== timeCol}
+                  <option value={i}>{name}</option>
+                {/if}
+              {/each}
+            </select>
+          </div>
+          <div class="field">
+            <label>Response (cross-analyses)</label>
+            <select bind:value={signalColY}>
+              {#each parseResult.column_names as name, i}
+                {#if i !== timeCol}
+                  <option value={i}>{name}</option>
+                {/if}
+              {/each}
+            </select>
+          </div>
+        {/if}
       </div>
 
       <div class="info-grid">
@@ -193,9 +217,21 @@
           <div class="value">{parseResult.n_samples.toLocaleString()}</div>
         </div>
         <div class="info-item">
-          <div class="label">Columns</div>
+          <div class="label">Channels</div>
           <div class="value">{parseResult.n_columns}</div>
         </div>
+        {#if parseResult.fs}
+          <div class="info-item">
+            <div class="label">fs</div>
+            <div class="value">{parseResult.fs.toFixed(1)} Hz</div>
+          </div>
+        {/if}
+        {#if parseResult.duration}
+          <div class="info-item">
+            <div class="label">Duration</div>
+            <div class="value">{parseResult.duration.toFixed(2)} s</div>
+          </div>
+        {/if}
       </div>
 
       <!-- Preprocessing -->

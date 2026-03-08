@@ -1,5 +1,5 @@
 <script>
-  let { signalColX, signalColY, dualSignal, timeCol, fsManual, loading, runAnalysis } = $props()
+  let { loading, runAnalysis } = $props()
   let window_  = $state('hann')
   let nperseg  = $state(1024)
   let noverlap = $state(null)
@@ -7,8 +7,6 @@
 
   function run() {
     runAnalysis('/api/spectral/psd', {
-      signal_col: signalColX,
-      ...(dualSignal ? { signal_col_y: signalColY } : {}),
       window: window_,
       nperseg,
       noverlap: noverlap || undefined,

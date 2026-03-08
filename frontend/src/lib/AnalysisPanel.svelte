@@ -20,13 +20,13 @@
 
 <div class="controls-area">
   {#if activeTab === 'timeseries'}
-    <TimeseriesControls {signalColX} {signalColY} {dualSignal} {timeCol} {fsManual} {loading} {runAnalysis} />
+    <TimeseriesControls {timeCol} {fsManual} {loading} {runAnalysis} />
   {:else if activeTab === 'fft'}
-    <FftControls {signalColX} {signalColY} {dualSignal} {timeCol} {fsManual} {loading} {runAnalysis} />
+    <FftControls {loading} {runAnalysis} />
   {:else if activeTab === 'psd'}
-    <PsdControls {signalColX} {signalColY} {dualSignal} {timeCol} {fsManual} {loading} {runAnalysis} />
+    <PsdControls {loading} {runAnalysis} />
   {:else if activeTab === 'autocorrelation'}
-    <AutocorrControls {signalColX} {signalColY} {dualSignal} {timeCol} {fsManual} {loading} {runAnalysis} />
+    <AutocorrControls {loading} {runAnalysis} />
   {:else if activeTab === 'cross_correlation'}
     <CrossCorrControls {signalColX} {signalColY} {timeCol} {fsManual} {loading} {runAnalysis} {dualSignal} />
   {:else if activeTab === 'csd'}

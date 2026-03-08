@@ -1,15 +1,10 @@
 <script>
-  let { signalColX, signalColY, dualSignal, timeCol, fsManual, loading, runAnalysis } = $props()
+  let { loading, runAnalysis } = $props()
   let window_ = $state('hann')
   let scaling  = $state('amplitude')
 
   function run() {
-    runAnalysis('/api/spectral/fft', {
-      signal_col: signalColX,
-      ...(dualSignal ? { signal_col_y: signalColY } : {}),
-      window: window_,
-      scaling,
-    })
+    runAnalysis('/api/spectral/fft', { window: window_, scaling })
   }
 </script>
 

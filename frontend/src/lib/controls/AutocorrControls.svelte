@@ -1,12 +1,10 @@
 <script>
-  let { signalColX, signalColY, dualSignal, timeCol, fsManual, loading, runAnalysis } = $props()
+  let { loading, runAnalysis } = $props()
   let normalize = $state(true)
   let maxLag    = $state(null)
 
   function run() {
     runAnalysis('/api/spectral/autocorrelation', {
-      signal_col: signalColX,
-      ...(dualSignal ? { signal_col_y: signalColY } : {}),
       normalize,
       max_lag: maxLag || undefined,
     })

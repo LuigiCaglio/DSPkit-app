@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from math import gcd
 from pathlib import Path
 from typing import Optional
@@ -102,9 +103,9 @@ def parse_file(content: bytes, orientation: str = "columns", header_row: int = -
     n_signals, n_samples = data.shape
 
     if column_names is None:
-        column_names = [f"col_{i}" for i in range(n_signals)]
+        column_names = [f"Signal {i+1}" for i in range(n_signals)]
     elif len(column_names) < n_signals:
-        column_names += [f"col_{i}" for i in range(len(column_names), n_signals)]
+        column_names += [f"Signal {i+1}" for i in range(len(column_names), n_signals)]
     elif len(column_names) > n_signals:
         column_names = column_names[:n_signals]
 
@@ -222,18 +223,30 @@ async def signal_parse(
     file: UploadFile,
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    fs: Optional[float] = Form(None),
 ):
     try:
         content = await file.read()
         parsed = parse_file(content, orientation, header_row)
         preview_len = min(5, parsed["n_samples"])
         preview = parsed["data"][:, :preview_len].T.tolist()
-        return {
+        result = {
             "column_names": parsed["column_names"],
             "n_columns": parsed["n_columns"],
             "n_samples": parsed["n_samples"],
             "preview": preview,
         }
+        inferred_fs: Optional[float] = None
+        if time_col >= 0 and time_col < parsed["n_columns"]:
+            t = extract_col(parsed, time_col)
+            inferred_fs = 1.0 / float(np.mean(np.diff(t)))
+        elif fs is not None and fs > 0:
+            inferred_fs = float(fs)
+        if inferred_fs:
+            result["fs"] = round(inferred_fs, 6)
+            result["duration"] = round(parsed["n_samples"] / inferred_fs, 4)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -283,8 +296,7 @@ async def signal_timeseries(
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
-    signal_col: int = Form(...),
-    signal_col_y: Optional[int] = Form(None),
+    signal_cols: str = Form(...),   # JSON array e.g. "[0, 1, 2]"
     fs: Optional[float] = Form(None),
     win_start:  Optional[float] = Query(None),
     win_end:    Optional[float] = Query(None),
@@ -294,40 +306,47 @@ async def signal_timeseries(
     target_fs:  Optional[float] = Query(None),
 ):
     try:
+        cols = [int(c) for c in json.loads(signal_cols)]
+        if not cols:
+            raise ValueError("No signal columns selected")
         content = await file.read()
         parsed = parse_file(content, orientation, header_row)
 
-        x_raw, t_raw, fs_raw = get_signal_times_fs(parsed, time_col, signal_col, fs)
+        # Reference time axis from first column
+        x0, t_raw, fs_raw = get_signal_times_fs(parsed, time_col, cols[0], fs)
         if t_raw is None:
-            t_raw = np.arange(len(x_raw)) / fs_raw
+            t_raw = np.arange(len(x0)) / fs_raw
 
-        x_proc, fs_proc, t_proc = apply_preprocessing(
-            x_raw.copy(), fs_raw, t_raw.copy(),
+        # Process first column to get processed time axis
+        x0_proc, fs_proc, t_proc = apply_preprocessing(
+            x0.copy(), fs_raw, t_raw.copy(),
             win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
         )
 
-        out = {
-            "times_raw":    to_list(t_raw),
-            "signal_raw_x": to_list(x_raw),
-            "fs_raw":       fs_raw,
-            "times_proc":   to_list(t_proc),
-            "signal_proc_x": to_list(x_proc),
-            "fs_proc":      fs_proc,
-            "n_proc":       len(x_proc),
-            "col_name_x":   parsed["column_names"][signal_col],
-        }
+        preprocessed = any(v is not None for v in [win_start, win_end, hp_cutoff, lp_cutoff, target_fs])
 
-        if signal_col_y is not None:
-            y_raw, _, _ = get_signal_times_fs(parsed, time_col, signal_col_y, fs)
-            y_proc, _, _ = apply_preprocessing(
-                y_raw.copy(), fs_raw, t_raw.copy(),
+        signals = []
+        for i, col in enumerate(cols):
+            x_raw = extract_col(parsed, col)
+            x_proc, _, _ = apply_preprocessing(
+                x_raw.copy(), fs_raw, t_raw.copy(),
                 win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
             )
-            out["signal_raw_y"]  = to_list(y_raw)
-            out["signal_proc_y"] = to_list(y_proc)
-            out["col_name_y"]    = parsed["column_names"][signal_col_y]
+            signals.append({
+                "name": parsed["column_names"][col],
+                "signal_raw": to_list(x_raw),
+                "signal_proc": to_list(x_proc),
+            })
 
-        return out
+        return {
+            "times_raw":  to_list(t_raw),
+            "times_proc": to_list(t_proc),
+            "fs_raw":     fs_raw,
+            "fs_proc":    fs_proc,
+            "n_proc":     len(t_proc),
+            "preprocessed": preprocessed,
+            "signals":    signals,
+        }
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -341,8 +360,7 @@ async def spectral_fft(
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
-    signal_col: int = Form(...),
-    signal_col_y: Optional[int] = Form(None),
+    signal_cols: str = Form(...),
     fs: Optional[float] = Form(None),
     window: str = Form("hann"),
     scaling: str = Form("amplitude"),
@@ -351,18 +369,19 @@ async def spectral_fft(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
+        cols = [int(c) for c in json.loads(signal_cols)]
+        if not cols:
+            raise ValueError("No signal columns selected")
         content = await file.read()
         parsed = parse_file(content, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
-        freqs, amp_x = dsp.fft_spectrum(x, fs_, window=window, scaling=scaling)
-        out = {"freqs": to_list(freqs), "amplitude_x": to_list(amp_x),
-               "col_name_x": parsed["column_names"][signal_col]}
-        if signal_col_y is not None:
-            y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
-            _, amp_y = dsp.fft_spectrum(y, fs_, window=window, scaling=scaling)
-            out["amplitude_y"] = to_list(amp_y)
-            out["col_name_y"]  = parsed["column_names"][signal_col_y]
-        return out
+        x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        freqs, _ = dsp.fft_spectrum(x0, fs_, window=window, scaling=scaling)
+        signals = []
+        for col in cols:
+            x, _, _ = get_preprocessed(parsed, time_col, col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+            _, amp = dsp.fft_spectrum(x, fs_, window=window, scaling=scaling)
+            signals.append({"name": parsed["column_names"][col], "amplitude": to_list(amp)})
+        return {"freqs": to_list(freqs), "signals": signals}
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -373,8 +392,7 @@ async def spectral_psd(
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
-    signal_col: int = Form(...),
-    signal_col_y: Optional[int] = Form(None),
+    signal_cols: str = Form(...),
     fs: Optional[float] = Form(None),
     window: str = Form("hann"),
     nperseg: int = Form(1024),
@@ -385,18 +403,19 @@ async def spectral_psd(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
+        cols = [int(c) for c in json.loads(signal_cols)]
+        if not cols:
+            raise ValueError("No signal columns selected")
         content = await file.read()
         parsed = parse_file(content, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
-        freqs, Pxx_x = dsp.psd(x, fs_, window=window, nperseg=nperseg, noverlap=noverlap, scaling=scaling)
-        out = {"freqs": to_list(freqs), "Pxx_x": to_list(Pxx_x),
-               "col_name_x": parsed["column_names"][signal_col]}
-        if signal_col_y is not None:
-            y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
-            _, Pxx_y = dsp.psd(y, fs_, window=window, nperseg=nperseg, noverlap=noverlap, scaling=scaling)
-            out["Pxx_y"]      = to_list(Pxx_y)
-            out["col_name_y"] = parsed["column_names"][signal_col_y]
-        return out
+        x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        freqs, _ = dsp.psd(x0, fs_, window=window, nperseg=nperseg, noverlap=noverlap, scaling=scaling)
+        signals = []
+        for col in cols:
+            x, _, _ = get_preprocessed(parsed, time_col, col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+            _, Pxx = dsp.psd(x, fs_, window=window, nperseg=nperseg, noverlap=noverlap, scaling=scaling)
+            signals.append({"name": parsed["column_names"][col], "Pxx": to_list(Pxx)})
+        return {"freqs": to_list(freqs), "signals": signals}
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -407,8 +426,7 @@ async def spectral_autocorrelation(
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
-    signal_col: int = Form(...),
-    signal_col_y: Optional[int] = Form(None),
+    signal_cols: str = Form(...),
     fs: Optional[float] = Form(None),
     normalize: bool = Form(True),
     max_lag: Optional[float] = Form(None),
@@ -417,18 +435,19 @@ async def spectral_autocorrelation(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
+        cols = [int(c) for c in json.loads(signal_cols)]
+        if not cols:
+            raise ValueError("No signal columns selected")
         content = await file.read()
         parsed = parse_file(content, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
-        lags, acf_x = dsp.autocorrelation(x, fs=fs_, normalize=normalize, max_lag=max_lag)
-        out = {"lags": to_list(lags), "acf_x": to_list(acf_x),
-               "col_name_x": parsed["column_names"][signal_col]}
-        if signal_col_y is not None:
-            y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
-            _, acf_y = dsp.autocorrelation(y, fs=fs_, normalize=normalize, max_lag=max_lag)
-            out["acf_y"]      = to_list(acf_y)
-            out["col_name_y"] = parsed["column_names"][signal_col_y]
-        return out
+        x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        lags, _ = dsp.autocorrelation(x0, fs=fs_, normalize=normalize, max_lag=max_lag)
+        signals = []
+        for col in cols:
+            x, _, _ = get_preprocessed(parsed, time_col, col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+            _, acf = dsp.autocorrelation(x, fs=fs_, normalize=normalize, max_lag=max_lag)
+            signals.append({"name": parsed["column_names"][col], "acf": to_list(acf)})
+        return {"lags": to_list(lags), "signals": signals}
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
