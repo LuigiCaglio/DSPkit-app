@@ -286,6 +286,20 @@
               onclick={() => activeTab='emd'}>EMD</button>
       <button class="sidebar-btn" class:active={activeTab==='hht'}
               onclick={() => activeTab='hht'}>HHT</button>
+
+      <div class="sidebar-section">Advanced</div>
+      <button class="sidebar-btn" class:active={activeTab==='peaks'}
+              onclick={() => activeTab='peaks'}>Peak Detection</button>
+      <button class="sidebar-btn" class:active={activeTab==='indicators'}
+              onclick={() => activeTab='indicators'}>SHM Indicators</button>
+      <button class="sidebar-btn" class:active={activeTab==='multisensor'}
+              onclick={() => activeTab='multisensor'}
+              disabled={!dualSignal}>Multi-Sensor</button>
+      <button class="sidebar-btn" class:active={activeTab==='fdd'}
+              onclick={() => activeTab='fdd'}
+              disabled={!dualSignal}>FDD</button>
+      <button class="sidebar-btn" class:active={activeTab==='statistics'}
+              onclick={() => activeTab='statistics'}>Statistics</button>
     {/if}
   </aside>
 

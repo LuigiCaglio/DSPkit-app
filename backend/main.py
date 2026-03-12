@@ -38,6 +38,32 @@ if _DIST.exists():
         return FileResponse(_DIST / "index.html")
 
 
+# ─── example data ─────────────────────────────────────────────────────────────
+_EXAMPLE_FILE = Path(__file__).parent.parent / "example_data" / "2dof_vibration.csv"
+
+
+@app.get("/api/example-data")
+async def example_data_list():
+    """Return list of available example datasets."""
+    examples = []
+    if _EXAMPLE_FILE.exists():
+        examples.append({
+            "id": "2dof_vibration",
+            "name": "2-DOF Vibration (5ch)",
+            "description": "Two-mass spring-damper system under white noise. f1~10 Hz, f2~25 Hz. Columns: time, x1, x2, force1, force2.",
+            "filename": _EXAMPLE_FILE.name,
+        })
+    return {"examples": examples}
+
+
+@app.get("/api/example-data/{example_id}")
+async def example_data_download(example_id: str):
+    """Download an example dataset as a file."""
+    if example_id == "2dof_vibration" and _EXAMPLE_FILE.exists():
+        return FileResponse(_EXAMPLE_FILE, filename=_EXAMPLE_FILE.name, media_type="text/csv")
+    raise HTTPException(status_code=404, detail=f"Example '{example_id}' not found")
+
+
 # ─── file parsing ─────────────────────────────────────────────────────────────
 
 
@@ -777,6 +803,467 @@ async def emd_hht(
             "inst_freqs": to_list(inst_freqs),
             "marginal_freqs": to_list(marginal_freqs),
             "marginal_spectrum": to_list(marginal_spectrum),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ─── helpers: multi-channel ──────────────────────────────────────────────────
+
+
+def get_multichannel(
+    parsed: dict,
+    time_col: int,
+    signal_cols: list[int],
+    fs_manual: Optional[float],
+    win_start: Optional[float],
+    win_end: Optional[float],
+    win_unit: str,
+    hp_cutoff: Optional[float],
+    lp_cutoff: Optional[float],
+    target_fs: Optional[float],
+) -> tuple[np.ndarray, float, np.ndarray, list[str]]:
+    """Return (data [n_ch × N], fs, times, labels)."""
+    channels = []
+    fs_out = None
+    times_out = None
+    labels = []
+    for col in signal_cols:
+        x, fs_, t = get_preprocessed(
+            parsed, time_col, col, fs_manual,
+            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
+        )
+        channels.append(x)
+        if fs_out is None:
+            fs_out, times_out = fs_, t
+        labels.append(parsed["column_names"][col])
+    return np.array(channels), fs_out, times_out, labels
+
+
+# ─── peaks ────────────────────────────────────────────────────────────────────
+
+
+@app.post("/api/peaks/detect")
+async def peaks_detect(
+    file: UploadFile,
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_col: int = Form(...),
+    fs: Optional[float] = Form(None),
+    spectrum_type: str = Form("fft"),
+    window: str = Form("hann"),
+    nperseg: int = Form(1024),
+    scaling: str = Form("amplitude"),
+    prominence: Optional[float] = Form(None),
+    distance_hz: Optional[float] = Form(None),
+    max_peaks: Optional[int] = Form(None),
+    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
+    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
+    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+):
+    try:
+        content = await file.read()
+        parsed = parse_file(content, orientation, header_row)
+        x, fs_, t = get_preprocessed(
+            parsed, time_col, signal_col, fs,
+            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
+        )
+        if spectrum_type == "psd":
+            freqs, spectrum = dsp.psd(x, fs_, window=window, nperseg=nperseg, scaling="density")
+        else:
+            freqs, spectrum = dsp.fft_spectrum(x, fs_, window=window, scaling=scaling)
+
+        from dspkit.peaks import find_peaks as _find_peaks, peak_bandwidth as _peak_bw
+        peak_freqs, peak_vals, prominences = _find_peaks(
+            freqs, spectrum,
+            prominence=prominence, distance_hz=distance_hz, max_peaks=max_peaks,
+        )
+        bw_freqs, bandwidths, q_factors = _peak_bw(freqs, spectrum, peak_freqs)
+        return {
+            "freqs": to_list(freqs),
+            "spectrum": to_list(spectrum),
+            "peak_freqs": to_list(peak_freqs),
+            "peak_values": to_list(peak_vals),
+            "prominences": to_list(prominences),
+            "bandwidths": to_list(bandwidths),
+            "q_factors": to_list(q_factors),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/api/peaks/harmonics")
+async def peaks_harmonics(
+    file: UploadFile,
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_col: int = Form(...),
+    fs: Optional[float] = Form(None),
+    window: str = Form("hann"),
+    scaling: str = Form("amplitude"),
+    fundamental: float = Form(...),
+    n_harmonics: int = Form(5),
+    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
+    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
+    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+):
+    try:
+        content = await file.read()
+        parsed = parse_file(content, orientation, header_row)
+        x, fs_, t = get_preprocessed(
+            parsed, time_col, signal_col, fs,
+            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
+        )
+        freqs, spectrum = dsp.fft_spectrum(x, fs_, window=window, scaling=scaling)
+        from dspkit.peaks import find_harmonics as _find_harmonics
+        harm_freqs, harm_vals, orders = _find_harmonics(
+            freqs, spectrum, fundamental, n_harmonics=n_harmonics,
+        )
+        return {
+            "freqs": to_list(freqs),
+            "spectrum": to_list(spectrum),
+            "harmonic_freqs": to_list(harm_freqs),
+            "harmonic_values": to_list(harm_vals),
+            "orders": to_list(orders),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ─── SHM indicators ──────────────────────────────────────────────────────────
+
+
+@app.post("/api/indicators")
+async def shm_indicators(
+    file: UploadFile,
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_col: int = Form(...),
+    fs: Optional[float] = Form(None),
+    segment_duration: Optional[float] = Form(None),
+    excess: bool = Form(True),
+    window: str = Form("hann"),
+    nperseg: int = Form(1024),
+    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
+    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
+    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+):
+    try:
+        content = await file.read()
+        parsed = parse_file(content, orientation, header_row)
+        x, fs_, t = get_preprocessed(
+            parsed, time_col, signal_col, fs,
+            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
+        )
+        from dspkit.indicators import (
+            spectral_entropy as _se, kurtosis as _kurt, skewness as _skew,
+            rms_variation as _rms_var, energy_variation as _energy_var,
+            frequency_shift as _freq_shift,
+        )
+        freqs_psd, Pxx = dsp.psd(x, fs_, window=window, nperseg=nperseg)
+        se = float(_se(freqs_psd, Pxx))
+        kurt = float(_kurt(x, excess=excess))
+        skew = float(_skew(x))
+        seg = segment_duration if segment_duration and segment_duration > 0 else None
+        t_rms, rms_vals = _rms_var(x, fs_, segment_duration=seg)
+        t_energy, energy_vals = _energy_var(x, fs_, segment_duration=seg)
+        t_freq, dom_freqs = _freq_shift(x, fs_, segment_duration=seg)
+        return {
+            "spectral_entropy": se,
+            "kurtosis": kurt,
+            "skewness": skew,
+            "rms_times": to_list(t_rms),
+            "rms_values": to_list(rms_vals),
+            "energy_times": to_list(t_energy),
+            "energy_values": to_list(energy_vals),
+            "freq_times": to_list(t_freq),
+            "dominant_freqs": to_list(dom_freqs),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ─── multi-sensor ────────────────────────────────────────────────────────────
+
+
+@app.post("/api/multisensor/correlation")
+async def multisensor_correlation(
+    file: UploadFile,
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_cols: str = Form(...),
+    fs: Optional[float] = Form(None),
+    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
+    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
+    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+):
+    try:
+        cols = [int(c) for c in json.loads(signal_cols)]
+        if len(cols) < 2:
+            raise ValueError("At least 2 channels required")
+        content = await file.read()
+        parsed = parse_file(content, orientation, header_row)
+        data, fs_, t, labels = get_multichannel(
+            parsed, time_col, cols, fs,
+            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
+        )
+        from dspkit.multisensor import correlation_matrix as _corr_mat
+        R = _corr_mat(data)
+        return {"R": to_list(R), "labels": labels}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/api/multisensor/coherence_matrix")
+async def multisensor_coherence_mat(
+    file: UploadFile,
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_cols: str = Form(...),
+    fs: Optional[float] = Form(None),
+    window: str = Form("hann"),
+    nperseg: int = Form(1024),
+    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
+    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
+    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+):
+    try:
+        cols = [int(c) for c in json.loads(signal_cols)]
+        if len(cols) < 2:
+            raise ValueError("At least 2 channels required")
+        content = await file.read()
+        parsed = parse_file(content, orientation, header_row)
+        data, fs_, t, labels = get_multichannel(
+            parsed, time_col, cols, fs,
+            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
+        )
+        from dspkit.multisensor import coherence_matrix as _coh_mat
+        freqs, C = _coh_mat(data, fs_, window=window, nperseg=nperseg)
+        n_ch = len(cols)
+        pairs = []
+        for i in range(n_ch):
+            for j in range(i + 1, n_ch):
+                pairs.append({
+                    "label": f"{labels[i]} \u2013 {labels[j]}",
+                    "Cxy": to_list(C[i, j, :]),
+                })
+        return {"freqs": to_list(freqs), "pairs": pairs, "labels": labels}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ─── FDD ──────────────────────────────────────────────────────────────────────
+
+
+@app.post("/api/fdd/analyze")
+async def fdd_analyze(
+    file: UploadFile,
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_cols: str = Form(...),
+    fs: Optional[float] = Form(None),
+    window: str = Form("hann"),
+    nperseg: int = Form(1024),
+    prominence: Optional[float] = Form(None),
+    distance_hz: Optional[float] = Form(None),
+    max_peaks: Optional[int] = Form(None),
+    freq_min: Optional[float] = Form(None),
+    freq_max: Optional[float] = Form(None),
+    mac_threshold: float = Form(0.8),
+    n_crossings: int = Form(10),
+    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
+    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
+    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+):
+    try:
+        cols = [int(c) for c in json.loads(signal_cols)]
+        if len(cols) < 2:
+            raise ValueError("At least 2 channels required")
+        content = await file.read()
+        parsed = parse_file(content, orientation, header_row)
+        data, fs_, t, labels = get_multichannel(
+            parsed, time_col, cols, fs,
+            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
+        )
+        from dspkit.fdd import fdd_svd, fdd_peak_picking, fdd_mode_shapes, efdd_damping
+
+        freqs, S, U = fdd_svd(data, fs_, window=window, nperseg=nperseg)
+        freq_range = None
+        if freq_min is not None and freq_max is not None:
+            freq_range = (freq_min, freq_max)
+        peak_freqs, peak_indices = fdd_peak_picking(
+            freqs, S, prominence=prominence,
+            distance_hz=distance_hz, max_peaks=max_peaks, freq_range=freq_range,
+        )
+        modes = fdd_mode_shapes(U, peak_indices)
+        damping_ratios = []
+        natural_freqs = []
+        if len(peak_indices) > 0:
+            try:
+                dr, nf = efdd_damping(
+                    freqs, S, U, peak_indices, fs_,
+                    mac_threshold=mac_threshold, n_crossings=n_crossings,
+                )
+                damping_ratios = to_list(dr)
+                natural_freqs = to_list(nf)
+            except Exception:
+                damping_ratios = [None] * len(peak_indices)
+                natural_freqs = to_list(peak_freqs)
+
+        return {
+            "freqs": to_list(freqs),
+            "S": to_list(S),
+            "peak_freqs": to_list(peak_freqs),
+            "modes": to_list(modes),
+            "damping_ratios": damping_ratios,
+            "natural_freqs": natural_freqs,
+            "labels": labels,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ─── statistics ───────────────────────────────────────────────────────────────
+
+
+@app.post("/api/statistics/pdf")
+async def statistics_pdf(
+    file: UploadFile,
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_col: int = Form(...),
+    fs: Optional[float] = Form(None),
+    bins: int = Form(50),
+    bandwidth: Optional[float] = Form(None),
+    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
+    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
+    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+):
+    try:
+        content = await file.read()
+        parsed = parse_file(content, orientation, header_row)
+        x, fs_, t = get_preprocessed(
+            parsed, time_col, signal_col, fs,
+            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
+        )
+        from dspkit.statistics import pdf_estimate as _pdf, histogram as _hist
+        xi, density = _pdf(x, bandwidth=bandwidth)
+        bin_centres, counts = _hist(x, bins=bins, density=True)
+        return {
+            "xi": to_list(xi),
+            "density": to_list(density),
+            "bin_centres": to_list(bin_centres),
+            "hist_density": to_list(counts),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/api/statistics/joint")
+async def statistics_joint(
+    file: UploadFile,
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_col_x: int = Form(...),
+    signal_col_y: int = Form(...),
+    fs: Optional[float] = Form(None),
+    bins: int = Form(50),
+    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
+    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
+    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+):
+    try:
+        content = await file.read()
+        parsed = parse_file(content, orientation, header_row)
+        x, fs_, _ = get_preprocessed(
+            parsed, time_col, signal_col_x, fs,
+            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
+        )
+        y, _, _ = get_preprocessed(
+            parsed, time_col, signal_col_y, fs,
+            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
+        )
+        from dspkit.statistics import joint_histogram as _joint
+        x_centres, y_centres, H = _joint(x, y, bins=bins, density=True)
+        return {
+            "x_centres": to_list(x_centres),
+            "y_centres": to_list(y_centres),
+            "H": to_list(H),
+            "xlabel": parsed["column_names"][signal_col_x],
+            "ylabel": parsed["column_names"][signal_col_y],
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/api/statistics/covariance")
+async def statistics_covariance(
+    file: UploadFile,
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_cols: str = Form(...),
+    fs: Optional[float] = Form(None),
+    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
+    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
+    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+):
+    try:
+        cols = [int(c) for c in json.loads(signal_cols)]
+        if len(cols) < 2:
+            raise ValueError("At least 2 channels required")
+        content = await file.read()
+        parsed = parse_file(content, orientation, header_row)
+        data, fs_, t, labels = get_multichannel(
+            parsed, time_col, cols, fs,
+            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
+        )
+        from dspkit.statistics import covariance_matrix as _cov
+        C = _cov(data)
+        return {"C": to_list(C), "labels": labels}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/api/statistics/mahalanobis")
+async def statistics_mahalanobis(
+    file: UploadFile,
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_cols: str = Form(...),
+    fs: Optional[float] = Form(None),
+    percentile: float = Form(99),
+    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
+    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
+    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+):
+    try:
+        cols = [int(c) for c in json.loads(signal_cols)]
+        if len(cols) < 2:
+            raise ValueError("At least 2 channels required")
+        content = await file.read()
+        parsed = parse_file(content, orientation, header_row)
+        data, fs_, t, labels = get_multichannel(
+            parsed, time_col, cols, fs,
+            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
+        )
+        from dspkit.statistics import mahalanobis as _maha
+        distances = _maha(data)
+        threshold = float(np.percentile(distances, percentile))
+        return {
+            "times": to_list(t),
+            "distances": to_list(distances),
+            "threshold": threshold,
+            "percentile": percentile,
         }
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

@@ -12,8 +12,13 @@
   import SpwvdControls       from './controls/SpwvdControls.svelte'
   import InstantControls     from './controls/InstantControls.svelte'
   import EmdControls         from './controls/EmdControls.svelte'
-  import HhtControls         from './controls/HhtControls.svelte'
-  import TimeseriesControls from './controls/TimeseriesControls.svelte'
+  import HhtControls           from './controls/HhtControls.svelte'
+  import TimeseriesControls   from './controls/TimeseriesControls.svelte'
+  import PeaksControls        from './controls/PeaksControls.svelte'
+  import IndicatorsControls   from './controls/IndicatorsControls.svelte'
+  import MultisensorControls  from './controls/MultisensorControls.svelte'
+  import FddControls          from './controls/FddControls.svelte'
+  import StatisticsControls   from './controls/StatisticsControls.svelte'
 
   let { activeTab, dualSignal, signalColX, signalColY, timeCol, fsManual, loading, plotError, runAnalysis } = $props()
 </script>
@@ -49,6 +54,16 @@
     <EmdControls {signalColX} {timeCol} {fsManual} {loading} {runAnalysis} />
   {:else if activeTab === 'hht'}
     <HhtControls {signalColX} {timeCol} {fsManual} {loading} {runAnalysis} />
+  {:else if activeTab === 'peaks'}
+    <PeaksControls {signalColX} {timeCol} {fsManual} {loading} {runAnalysis} />
+  {:else if activeTab === 'indicators'}
+    <IndicatorsControls {signalColX} {timeCol} {fsManual} {loading} {runAnalysis} />
+  {:else if activeTab === 'multisensor'}
+    <MultisensorControls {loading} {runAnalysis} {dualSignal} />
+  {:else if activeTab === 'fdd'}
+    <FddControls {loading} {runAnalysis} {dualSignal} />
+  {:else if activeTab === 'statistics'}
+    <StatisticsControls {signalColX} {signalColY} {timeCol} {fsManual} {loading} {runAnalysis} {dualSignal} />
   {/if}
 
   {#if plotError}
