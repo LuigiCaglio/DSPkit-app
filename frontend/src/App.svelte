@@ -1,8 +1,9 @@
 <script>
-  import FileUpload      from './lib/FileUpload.svelte'
-  import AnalysisPanel  from './lib/AnalysisPanel.svelte'
-  import PlotPanel      from './lib/PlotPanel.svelte'
-  import PreprocessPanel from './lib/PreprocessPanel.svelte'
+  import FileUpload        from './lib/FileUpload.svelte'
+  import AnalysisPanel     from './lib/AnalysisPanel.svelte'
+  import PlotPanel         from './lib/PlotPanel.svelte'
+  import PreprocessPanel   from './lib/PreprocessPanel.svelte'
+  import RightSidebar      from './lib/RightSidebar.svelte'
 
   // ── file + parse state ─────────────────────────────────────────────────────
   let file        = $state(null)
@@ -13,9 +14,9 @@
 
   // ── column assignment ──────────────────────────────────────────────────────
   let timeCol    = $state(-1)
-  let signalCols = $state([])     // multi-signal analyses (timeseries, FFT, PSD, ACF)
-  let signalColX = $state(0)      // cross-analyses: reference
-  let signalColY = $state(1)      // cross-analyses: response
+  let signalCols = $state([])
+  let signalColX = $state(0)
+  let signalColY = $state(1)
   let fsManual   = $state(1000)
 
   // ── preprocessing state ────────────────────────────────────────────────────
@@ -36,17 +37,64 @@
   let previewExpanded = $state(false)
   const PREVIEW_DEFAULT = 5
 
-  // ── active tab + plot state ────────────────────────────────────────────────
+  // ── navigation state ─────────────────────────────────────────────────────
+  let activeCategory = $state('inspect')
   let activeTab = $state('timeseries')
   let plotData  = $state(null)
   let plotError = $state(null)
   let loading   = $state(false)
+
+  // ── right sidebar ────────────────────────────────────────────────────────
+  let rightOpen = $state(false)
+
+  // ── category → sub-tabs mapping ──────────────────────────────────────────
+  const CATEGORIES = [
+    { id: 'inspect',       label: 'Inspect',       tabs: [{ id: 'timeseries', label: 'Time series' }] },
+    { id: 'spectral',      label: 'Spectral',      tabs: [
+      { id: 'fft', label: 'FFT' }, { id: 'psd', label: 'PSD' },
+      { id: 'peaks', label: 'Peaks' }, { id: 'autocorrelation', label: 'Autocorrelation' },
+    ]},
+    { id: 'crossSignal',   label: 'Cross-Signal',  tabs: [
+      { id: 'cross_correlation', label: 'Cross-corr', dual: true },
+      { id: 'csd', label: 'CSD', dual: true },
+      { id: 'coherence', label: 'Coherence', dual: true },
+    ]},
+    { id: 'filtering',     label: 'Filtering',     tabs: [{ id: 'filter', label: 'Filter' }] },
+    { id: 'timeFreq',      label: 'Time-Freq',     tabs: [
+      { id: 'stft', label: 'STFT' }, { id: 'cwt', label: 'CWT' },
+      { id: 'wvd', label: 'WVD' }, { id: 'spwvd', label: 'SPWVD' },
+    ]},
+    { id: 'decomposition', label: 'Decomposition', tabs: [
+      { id: 'instantaneous', label: 'Instantaneous' },
+      { id: 'emd', label: 'EMD' }, { id: 'hht', label: 'HHT' },
+    ]},
+    { id: 'multiChannel',  label: 'Multi-Ch',      tabs: [
+      { id: 'multisensor', label: 'Multi-Sensor', dual: true },
+      { id: 'fdd', label: 'FDD', dual: true },
+    ]},
+    { id: 'statistics',    label: 'Statistics',     tabs: [
+      { id: 'statistics', label: 'Distributions' },
+      { id: 'indicators', label: 'SHM Indicators' },
+    ]},
+  ]
 
   // ── derived ────────────────────────────────────────────────────────────────
   let hasFile    = $derived(file !== null)
   let hasParsed  = $derived(parseResult !== null)
   let nSignals   = $derived(parseResult ? parseResult.n_columns : 0)
   let dualSignal = $derived(nSignals >= 2)
+
+  let currentCategory = $derived(CATEGORIES.find(c => c.id === activeCategory))
+
+  function selectCategory(catId) {
+    activeCategory = catId
+    const cat = CATEGORIES.find(c => c.id === catId)
+    if (cat && cat.tabs.length > 0) {
+      // pick first enabled tab
+      const first = cat.tabs.find(t => !t.dual || dualSignal) ?? cat.tabs[0]
+      activeTab = first.id
+    }
+  }
 
   // ── helpers ────────────────────────────────────────────────────────────────
   function buildFormData(extraFields = {}) {
@@ -92,7 +140,6 @@
       const data = await res.json()
       if (!res.ok) { parseError = data.detail; return }
       parseResult = data
-      // Auto-select all non-time columns
       const nonTime = data.column_names.map((_, i) => i).filter(i => i !== timeCol)
       signalCols = nonTime
       signalColX = nonTime[0] ?? 0
@@ -135,10 +182,17 @@
   }
 </script>
 
-<div class="topbar">DSPkit GUI</div>
+<div class="topbar">
+  <span>DSPkit GUI</span>
+  <span style="flex:1"></span>
+  <button class="topbar-icon-btn" onclick={() => rightOpen = !rightOpen}
+          title={rightOpen ? 'Close settings' : 'Open settings'}>
+    {rightOpen ? '\u2715' : '\u2699'}
+  </button>
+</div>
 
-<div class="layout">
-  <!-- ── sidebar ── -->
+<div class="layout" class:right-open={rightOpen}>
+  <!-- ── sidebar (data setup only) ── -->
   <aside class="sidebar">
     <FileUpload {hasFile} filename={file?.name} onfile={onFileChosen} />
 
@@ -153,7 +207,7 @@
           </select>
         </div>
         <div class="field">
-          <label>Header row (−1 = none)</label>
+          <label>Header row (-1 = none)</label>
           <input type="number" bind:value={headerRow} min="-1" step="1"
                  onchange={onParseOptsChange} style="width:70px" />
         </div>
@@ -164,9 +218,9 @@
       <hr />
       <div class="col-selectors">
         <div class="field">
-          <label>Time column (−1 = none)</label>
+          <label>Time column (-1 = none)</label>
           <select bind:value={timeCol} onchange={onParseOptsChange}>
-            <option value={-1}>— none —</option>
+            <option value={-1}>-- none --</option>
             {#each parseResult.column_names as name, i}
               <option value={i}>{name}</option>
             {/each}
@@ -182,8 +236,8 @@
         {/if}
 
         <div class="field">
-          <label>Signals (timeseries / FFT / PSD / ACF)</label>
-          <select multiple bind:value={signalCols} size={Math.min(nSignals, 7)} style="width:100%">
+          <label>Signal columns</label>
+          <select multiple bind:value={signalCols} size={Math.min(nSignals, 5)} style="width:100%">
             {#each parseResult.column_names as name, i}
               {#if i !== timeCol}
                 <option value={i}>{name}</option>
@@ -194,7 +248,7 @@
 
         {#if dualSignal}
           <div class="field">
-            <label>Reference (cross-analyses)</label>
+            <label>Reference (cross)</label>
             <select bind:value={signalColX}>
               {#each parseResult.column_names as name, i}
                 {#if i !== timeCol}
@@ -204,7 +258,7 @@
             </select>
           </div>
           <div class="field">
-            <label>Response (cross-analyses)</label>
+            <label>Response (cross)</label>
             <select bind:value={signalColY}>
               {#each parseResult.column_names as name, i}
                 {#if i !== timeCol}
@@ -241,71 +295,39 @@
 
       <!-- Preprocessing -->
       <PreprocessPanel {preproc} />
-
-      <!-- Analysis tabs -->
-      <hr />
-      <div class="sidebar-section">Inspect</div>
-      <button class="sidebar-btn" class:active={activeTab==='timeseries'}
-              onclick={() => activeTab='timeseries'}>Time series</button>
-
-      <div class="sidebar-section">Spectral</div>
-      <button class="sidebar-btn" class:active={activeTab==='fft'}
-              onclick={() => activeTab='fft'}>FFT</button>
-      <button class="sidebar-btn" class:active={activeTab==='psd'}
-              onclick={() => activeTab='psd'}>PSD</button>
-      <button class="sidebar-btn" class:active={activeTab==='autocorrelation'}
-              onclick={() => activeTab='autocorrelation'}>Autocorrelation</button>
-      <button class="sidebar-btn" class:active={activeTab==='cross_correlation'}
-              onclick={() => activeTab='cross_correlation'}
-              disabled={!dualSignal}>Cross-correlation</button>
-      <button class="sidebar-btn" class:active={activeTab==='csd'}
-              onclick={() => activeTab='csd'}
-              disabled={!dualSignal}>CSD</button>
-      <button class="sidebar-btn" class:active={activeTab==='coherence'}
-              onclick={() => activeTab='coherence'}
-              disabled={!dualSignal}>Coherence</button>
-
-      <div class="sidebar-section">Filter</div>
-      <button class="sidebar-btn" class:active={activeTab==='filter'}
-              onclick={() => activeTab='filter'}>Filter</button>
-
-      <div class="sidebar-section">Time-Frequency</div>
-      <button class="sidebar-btn" class:active={activeTab==='stft'}
-              onclick={() => activeTab='stft'}>STFT</button>
-      <button class="sidebar-btn" class:active={activeTab==='cwt'}
-              onclick={() => activeTab='cwt'}>CWT</button>
-      <button class="sidebar-btn" class:active={activeTab==='wvd'}
-              onclick={() => activeTab='wvd'}>WVD</button>
-      <button class="sidebar-btn" class:active={activeTab==='spwvd'}
-              onclick={() => activeTab='spwvd'}>SPWVD</button>
-
-      <div class="sidebar-section">Other</div>
-      <button class="sidebar-btn" class:active={activeTab==='instantaneous'}
-              onclick={() => activeTab='instantaneous'}>Instantaneous</button>
-      <button class="sidebar-btn" class:active={activeTab==='emd'}
-              onclick={() => activeTab='emd'}>EMD</button>
-      <button class="sidebar-btn" class:active={activeTab==='hht'}
-              onclick={() => activeTab='hht'}>HHT</button>
-
-      <div class="sidebar-section">Advanced</div>
-      <button class="sidebar-btn" class:active={activeTab==='peaks'}
-              onclick={() => activeTab='peaks'}>Peak Detection</button>
-      <button class="sidebar-btn" class:active={activeTab==='indicators'}
-              onclick={() => activeTab='indicators'}>SHM Indicators</button>
-      <button class="sidebar-btn" class:active={activeTab==='multisensor'}
-              onclick={() => activeTab='multisensor'}
-              disabled={!dualSignal}>Multi-Sensor</button>
-      <button class="sidebar-btn" class:active={activeTab==='fdd'}
-              onclick={() => activeTab='fdd'}
-              disabled={!dualSignal}>FDD</button>
-      <button class="sidebar-btn" class:active={activeTab==='statistics'}
-              onclick={() => activeTab='statistics'}>Statistics</button>
     {/if}
   </aside>
 
   <!-- ── main ── -->
   <div class="main">
     {#if hasParsed}
+      <!-- Category tabs (horizontal bar) -->
+      <div class="category-bar">
+        {#each CATEGORIES as cat}
+          <button
+            class="cat-btn"
+            class:active={activeCategory === cat.id}
+            disabled={cat.tabs.every(t => t.dual) && !dualSignal}
+            onclick={() => selectCategory(cat.id)}
+          >{cat.label}</button>
+        {/each}
+      </div>
+
+      <!-- Sub-tabs for selected category -->
+      {#if currentCategory && currentCategory.tabs.length > 1}
+        <div class="sub-tab-bar">
+          {#each currentCategory.tabs as tab}
+            <button
+              class="sub-tab-btn"
+              class:active={activeTab === tab.id}
+              disabled={tab.dual && !dualSignal}
+              onclick={() => activeTab = tab.id}
+            >{tab.label}</button>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- Controls -->
       <AnalysisPanel
         {activeTab}
         {dualSignal}
@@ -317,12 +339,14 @@
         {plotError}
         {runAnalysis}
       />
+
+      <!-- Plot area -->
       <div class="plot-area">
         {#if !plotData && !loading && !plotError && parseResult?.preview?.length}
           <div class="preview-main">
             <div class="preview-main-header">
               <div class="preview-main-title">
-                Data preview — {parseResult.n_samples.toLocaleString()} rows × {parseResult.n_columns} columns
+                Data preview -- {parseResult.n_samples.toLocaleString()} rows x {parseResult.n_columns} columns
               </div>
               {#if parseResult.preview.length > PREVIEW_DEFAULT}
                 <button class="btn-expand" onclick={() => previewExpanded = !previewExpanded}>
@@ -342,7 +366,7 @@
                 </tbody>
               </table>
             </div>
-            <div class="preview-main-hint">Select an analysis from the sidebar and click Run to plot.</div>
+            <div class="preview-main-hint">Select an analysis above and click Run to plot.</div>
           </div>
         {:else}
           <PlotPanel {activeTab} {plotData} {loading} {plotError} />
@@ -351,11 +375,14 @@
     {:else if hasFile && parseError}
       <div class="error">Parse error: {parseError}</div>
     {:else if hasFile}
-      <div class="status">Parsing file…</div>
+      <div class="status">Parsing file...</div>
     {:else}
       <div class="status" style="padding:40px;text-align:center;color:#4b5563">
         Upload a CSV or TXT file to begin.
       </div>
     {/if}
   </div>
+
+  <!-- ── right sidebar ── -->
+  <RightSidebar bind:open={rightOpen} />
 </div>

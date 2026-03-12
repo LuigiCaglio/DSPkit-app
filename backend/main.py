@@ -68,7 +68,10 @@ async def example_data_download(example_id: str):
 
 
 def to_list(arr) -> list:
-    return np.asarray(arr).tolist()
+    a = np.asarray(arr)
+    if np.iscomplexobj(a):
+        a = np.abs(a)
+    return a.tolist()
 
 
 def detect_delimiter(sample: str) -> str:
@@ -266,8 +269,10 @@ async def signal_parse(
             result["fs"] = round(inferred_fs, 6)
             result["duration"] = round(parsed["n_samples"] / inferred_fs, 4)
         return result
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ─── /api/signal/info ────────────────────────────────────────────────────────
@@ -302,8 +307,10 @@ async def signal_info(
         n_samples = parsed["n_samples"]
         duration = n_samples / inferred_fs if inferred_fs else None
         return {"n_samples": n_samples, "fs": inferred_fs, "duration": duration, "signals": signals_info}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ─── /api/signal/timeseries ──────────────────────────────────────────────────
@@ -366,8 +373,10 @@ async def signal_timeseries(
             "preprocessed": preprocessed,
             "signals":    signals,
         }
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ─── spectral ────────────────────────────────────────────────────────────────
@@ -403,8 +412,10 @@ async def spectral_fft(
             phase = np.angle(np.fft.rfft(x * win_arr), deg=True)
             signals.append({"name": parsed["column_names"][col], "amplitude": to_list(amp), "phase": to_list(phase)})
         return {"freqs": to_list(freqs), "signals": signals}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/spectral/psd")
@@ -437,8 +448,10 @@ async def spectral_psd(
             _, Pxx = dsp.psd(x, fs_, window=window, nperseg=nperseg, noverlap=noverlap, scaling=scaling)
             signals.append({"name": parsed["column_names"][col], "Pxx": to_list(Pxx)})
         return {"freqs": to_list(freqs), "signals": signals}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/spectral/autocorrelation")
@@ -469,8 +482,10 @@ async def spectral_autocorrelation(
             _, acf = dsp.autocorrelation(x, fs=fs_, normalize=normalize, max_lag=max_lag)
             signals.append({"name": parsed["column_names"][col], "acf": to_list(acf)})
         return {"lags": to_list(lags), "signals": signals}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/spectral/cross_correlation")
@@ -495,8 +510,10 @@ async def spectral_cross_correlation(
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         lags, ccf = dsp.cross_correlation(x, y, fs=fs_, normalize=normalize, max_lag=max_lag)
         return {"lags": to_list(lags), "ccf": to_list(ccf)}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/spectral/csd")
@@ -522,8 +539,10 @@ async def spectral_csd(
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         freqs, Pxy = dsp.csd(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         return {"freqs": to_list(freqs), "magnitude": to_list(np.abs(Pxy)), "phase_deg": to_list(np.angle(Pxy, deg=True))}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/spectral/coherence")
@@ -550,8 +569,10 @@ async def spectral_coherence(
         freqs, Cxy = dsp.coherence(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         _, Pxy = dsp.csd(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         return {"freqs": to_list(freqs), "Cxy": to_list(Cxy), "phase_deg": to_list(np.angle(Pxy, deg=True))}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ─── filter ──────────────────────────────────────────────────────────────────
@@ -601,8 +622,10 @@ async def filter_apply(
             raise ValueError(f"Unknown filter_type: {filter_type!r}")
 
         return {"times": to_list(t), "signal_raw": to_list(x), "signal_filtered": to_list(y)}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ─── time-frequency ───────────────────────────────────────────────────────────
@@ -629,8 +652,10 @@ async def timefreq_stft(
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         freqs, times, Zxx = dsp.stft(x, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         return {"freqs": to_list(freqs), "times": to_list(times), "magnitude": to_list(np.abs(Zxx))}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/timefreq/cwt")
@@ -657,8 +682,10 @@ async def timefreq_cwt(
         freqs = np.geomspace(f_min, f_max_, n_freqs)
         freqs_out, times, W = dsp.cwt_scalogram(x, fs_, freqs=freqs, w=w)
         return {"freqs": to_list(freqs_out), "times": to_list(times), "magnitude": to_list(np.abs(W))}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/timefreq/wvd")
@@ -683,8 +710,10 @@ async def timefreq_wvd(
         return {"freqs": to_list(freqs), "times": to_list(times), "wvd": to_list(WVD.T)}
     except HTTPException:
         raise
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/timefreq/spwvd")
@@ -711,8 +740,10 @@ async def timefreq_spwvd(
         return {"freqs": to_list(freqs), "times": to_list(times), "spwvd": to_list(SPWVD.T)}
     except HTTPException:
         raise
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ─── instantaneous ────────────────────────────────────────────────────────────
@@ -742,8 +773,10 @@ async def instantaneous(
             "phase": to_list(phase),
             "inst_freq": to_list(inst_freq),
         }
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ─── EMD ─────────────────────────────────────────────────────────────────────
@@ -769,8 +802,10 @@ async def emd_decompose(
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         imfs, residue = dsp.emd(x, max_imfs=max_imfs, max_sifting=max_sifting)
         return {"times": to_list(t), "imfs": to_list(imfs), "residue": to_list(residue)}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/emd/hht")
@@ -804,8 +839,10 @@ async def emd_hht(
             "marginal_freqs": to_list(marginal_freqs),
             "marginal_spectrum": to_list(marginal_spectrum),
         }
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ─── helpers: multi-channel ──────────────────────────────────────────────────
@@ -875,6 +912,9 @@ async def peaks_detect(
             freqs, spectrum = dsp.fft_spectrum(x, fs_, window=window, scaling=scaling)
 
         from dspkit.peaks import find_peaks as _find_peaks, peak_bandwidth as _peak_bw
+        # Default: no prominence filter, limit to top 20 by prominence ranking
+        if max_peaks is None and prominence is None:
+            max_peaks = 20
         peak_freqs, peak_vals, prominences = _find_peaks(
             freqs, spectrum,
             prominence=prominence, distance_hz=distance_hz, max_peaks=max_peaks,
@@ -889,8 +929,10 @@ async def peaks_detect(
             "bandwidths": to_list(bandwidths),
             "q_factors": to_list(q_factors),
         }
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/peaks/harmonics")
@@ -928,8 +970,10 @@ async def peaks_harmonics(
             "harmonic_values": to_list(harm_vals),
             "orders": to_list(orders),
         }
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ─── SHM indicators ──────────────────────────────────────────────────────────
@@ -982,8 +1026,10 @@ async def shm_indicators(
             "freq_times": to_list(t_freq),
             "dominant_freqs": to_list(dom_freqs),
         }
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ─── multi-sensor ────────────────────────────────────────────────────────────
@@ -1014,8 +1060,10 @@ async def multisensor_correlation(
         from dspkit.multisensor import correlation_matrix as _corr_mat
         R = _corr_mat(data)
         return {"R": to_list(R), "labels": labels}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/multisensor/coherence_matrix")
@@ -1053,8 +1101,10 @@ async def multisensor_coherence_mat(
                     "Cxy": to_list(C[i, j, :]),
                 })
         return {"freqs": to_list(freqs), "pairs": pairs, "labels": labels}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ─── FDD ──────────────────────────────────────────────────────────────────────
@@ -1097,9 +1147,11 @@ async def fdd_analyze(
         freq_range = None
         if freq_min is not None and freq_max is not None:
             freq_range = (freq_min, freq_max)
+        # Default: no prominence filter, limit to top 10 by prominence ranking
+        _max = max_peaks if max_peaks is not None or prominence is not None else 10
         peak_freqs, peak_indices = fdd_peak_picking(
             freqs, S, prominence=prominence,
-            distance_hz=distance_hz, max_peaks=max_peaks, freq_range=freq_range,
+            distance_hz=distance_hz, max_peaks=_max, freq_range=freq_range,
         )
         modes = fdd_mode_shapes(U, peak_indices)
         damping_ratios = []
@@ -1125,8 +1177,10 @@ async def fdd_analyze(
             "natural_freqs": natural_freqs,
             "labels": labels,
         }
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ─── statistics ───────────────────────────────────────────────────────────────
@@ -1162,8 +1216,10 @@ async def statistics_pdf(
             "bin_centres": to_list(bin_centres),
             "hist_density": to_list(counts),
         }
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/statistics/joint")
@@ -1200,8 +1256,10 @@ async def statistics_joint(
             "xlabel": parsed["column_names"][signal_col_x],
             "ylabel": parsed["column_names"][signal_col_y],
         }
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/statistics/covariance")
@@ -1229,8 +1287,10 @@ async def statistics_covariance(
         from dspkit.statistics import covariance_matrix as _cov
         C = _cov(data)
         return {"C": to_list(C), "labels": labels}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/statistics/mahalanobis")
@@ -1265,5 +1325,7 @@ async def statistics_mahalanobis(
             "threshold": threshold,
             "percentile": percentile,
         }
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
