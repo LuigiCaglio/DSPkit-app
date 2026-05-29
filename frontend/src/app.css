@@ -465,6 +465,34 @@ hr { border: none; border-top: 1px solid #2d3148; margin: 6px 0; }
 }
 .btn-csv:hover { background: #23263a; color: #e2e8f0; }
 
+/* ── plot toolbar axis inputs ── */
+.plot-toolbar-sep {
+  width: 1px;
+  height: 16px;
+  background: #2d3148;
+  flex-shrink: 0;
+}
+.plot-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.plot-toolbar-grouplabel {
+  font-size: 11px;
+  color: #6b7280;
+  white-space: nowrap;
+}
+.plot-axis-input {
+  width: 68px !important;
+  padding: 2px 6px !important;
+  font-size: 11px !important;
+  background: #1e2235;
+  border: 1px solid #374151;
+  border-radius: 4px;
+  color: #e2e8f0;
+}
+.plot-axis-input:focus { outline: 2px solid #6366f1; border-color: transparent; }
+
 /* ── results table (peaks, FDD) ── */
 .results-table-wrap {
   flex: 0 0 auto;

@@ -12,8 +12,22 @@
   let normalizeSignals = $state(false)
   let yLogScale        = $state(false)
 
+  // ── PSD-specific axis controls ───────────────────────────────────────────────
+  let psdYLog    = $state(true)   // default: log scale
+  let psdXMin    = $state('')
+  let psdXMax    = $state('')
+  let psdYMin    = $state('')
+  let psdYMax    = $state('')
+
   // Reset phase panel when switching tabs
   $effect(() => { const _ = activeTab; showPhase = false })
+
+  // Reset PSD axis controls when switching away from psd tab
+  $effect(() => {
+    if (activeTab !== 'psd') {
+      psdXMin = ''; psdXMax = ''; psdYMin = ''; psdYMax = ''; psdYLog = true
+    }
+  })
 
   // ── derived ─────────────────────────────────────────────────────────────────
   let canShowPhase = $derived(
@@ -204,9 +218,13 @@
     } else if (tab === 'psd') {
       const traces = plotData.signals.map((sig, i) =>
         line(plotData.freqs, norm(sig.Pxx), sig.name, 'solid', 'y', COLORS[i % COLORS.length]))
+      const psdXRange = (psdXMin !== '' && psdXMax !== '') ? [parseFloat(psdXMin), parseFloat(psdXMax)] : undefined
+      const psdYRange = (psdYMin !== '' && psdYMax !== '') ? [parseFloat(psdYMin), parseFloat(psdYMax)] : undefined
       Plotly.react(container, traces, merge(DARK_LAYOUT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: 'PSD', type: yLogScale ? 'linear' : 'log' },
+        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]',
+                 ...(psdXRange ? { range: psdXRange, autorange: false } : { autorange: true }) },
+        yaxis: { ...DARK_LAYOUT.yaxis, title: 'PSD', type: psdYLog ? 'log' : 'linear',
+                 ...(psdYRange ? { range: psdYRange, autorange: false } : { autorange: true }) },
       }))
 
     } else if (tab === 'autocorrelation') {
@@ -475,6 +493,8 @@
     // touch all reactive deps that should trigger a redraw
     const _ = plotData; const __ = activeTab
     const _n = normalizeSignals; const _l = yLogScale; const _s = showAllPoints
+    const _pl = psdYLog; const _px1 = psdXMin; const _px2 = psdXMax
+    const _py1 = psdYMin; const _py2 = psdYMax
     draw()
   })
 
@@ -514,9 +534,26 @@
         <label><input type="checkbox" bind:checked={showPhase} /> Phase</label>
       {/if}
       <label><input type="checkbox" bind:checked={normalizeSignals} /> Normalize</label>
-      <label><input type="checkbox" bind:checked={yLogScale} /> Log Y</label>
+      {#if activeTab !== 'psd'}
+        <label><input type="checkbox" bind:checked={yLogScale} /> Log Y</label>
+      {/if}
       {#if isDownsampled || showAllPoints}
         <label><input type="checkbox" bind:checked={showAllPoints} /> All points</label>
+      {/if}
+      {#if activeTab === 'psd'}
+        <span class="plot-toolbar-sep"></span>
+        <label><input type="checkbox" bind:checked={psdYLog} /> Log Y</label>
+        <span class="plot-toolbar-sep"></span>
+        <span class="plot-toolbar-group">
+          <span class="plot-toolbar-grouplabel">X range</span>
+          <input type="number" bind:value={psdXMin} placeholder="min" class="plot-axis-input" />
+          <input type="number" bind:value={psdXMax} placeholder="max" class="plot-axis-input" />
+        </span>
+        <span class="plot-toolbar-group">
+          <span class="plot-toolbar-grouplabel">Y range</span>
+          <input type="number" bind:value={psdYMin} placeholder="min" class="plot-axis-input" />
+          <input type="number" bind:value={psdYMax} placeholder="max" class="plot-axis-input" />
+        </span>
       {/if}
       <button class="btn-csv" onclick={exportCsv}>↓ CSV</button>
     </div>
