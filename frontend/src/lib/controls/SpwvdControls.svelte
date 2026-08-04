@@ -12,7 +12,7 @@
   }
 </script>
 
-<div class="status" style="color:#fbbf24">
+<div class="status" style="color:var(--warning)">
   ⚠ SPWVD is O(N²). Signal must be ≤ 2048 samples.
 </div>
 <div class="field">

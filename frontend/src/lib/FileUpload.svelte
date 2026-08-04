@@ -58,18 +58,18 @@
     onchange={(e) => handleFile(e.target.files?.[0])}
   />
   {#if hasFile}
-    <div style="font-size:12px;color:#a5b4fc;word-break:break-all">{filename}</div>
+    <div class="upload-filename">{filename}</div>
     <div class="upload-label">Click or drop to replace</div>
   {:else}
-    <div style="font-size:22px">📂</div>
-    <div style="margin-top:6px;font-size:13px">Drop a file or click</div>
+    <div class="upload-icon">📂</div>
+    <div class="upload-title">Drop a file or click</div>
     <div class="upload-label">CSV · TSV · TXT</div>
   {/if}
 </div>
 
 {#if examples.length > 0 && !hasFile}
   <div class="example-section">
-    <div style="font-size:11px;color:#6b7280;margin-bottom:4px">Or load an example:</div>
+    <div class="example-hint">Or load an example:</div>
     {#each examples as ex}
       <button
         class="btn-example"
@@ -78,7 +78,7 @@
       >
         {loadingExample ? 'Loading…' : ex.name}
       </button>
-      <div style="font-size:10px;color:#6b7280;margin-top:2px">{ex.description}</div>
+      <div class="example-desc">{ex.description}</div>
     {/each}
   </div>
 {/if}

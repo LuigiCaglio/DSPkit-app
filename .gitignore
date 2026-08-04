@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+venv_dspkit/
 env/
 *.egg-info/
 backend/dist/

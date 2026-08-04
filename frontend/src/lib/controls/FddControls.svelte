@@ -67,5 +67,5 @@
   {loading ? 'Running…' : 'Run FDD'}
 </button>
 {#if !dualSignal}
-  <div style="font-size:11px;color:#f59e0b;margin-top:4px">Requires 2+ channels</div>
+  <div style="font-size:11px;color:var(--warning);margin-top:4px">Requires 2+ channels</div>
 {/if}

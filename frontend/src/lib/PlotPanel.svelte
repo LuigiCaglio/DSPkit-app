@@ -1,6 +1,7 @@
 <script>
-  import { onMount, onDestroy } from 'svelte'
+  import { onDestroy } from 'svelte'
   import Plotly from 'plotly.js-dist-min'
+  import { plotTheme, themeState } from './theme.svelte.js'
 
   let { activeTab, plotData, loading, plotError } = $props()
 
@@ -40,20 +41,31 @@
     )
   )
 
-  // ── helpers ─────────────────────────────────────────────────────────────────
-  const COLORS = ['#6366f1','#f59e0b','#10b981','#ef4444','#8b5cf6','#06b6d4','#f97316','#ec4899']
+  // ── theme ───────────────────────────────────────────────────────────────────
+  // Resolved from the active theme; every colour below flows from here so a
+  // theme switch repaints the plots without touching this file.
+  let T = $derived.by(() => {
+    const _ = themeState.id, __ = themeState.custom
+    return plotTheme()
+  })
 
-  const DARK_LAYOUT = {
-    paper_bgcolor: '#0f1117',
-    plot_bgcolor:  '#13151f',
-    font:          { color: '#e2e8f0', size: 12 },
+  // Categorical hues, assigned by series index in fixed order.
+  let COLORS = $derived(T.series)
+
+  let LAYOUT = $derived({
+    paper_bgcolor: T.paper,
+    plot_bgcolor:  T.bg,
+    font:          { color: T.text, size: 12 },
     margin:        { l: 60, r: 20, t: 30, b: 50 },
-    xaxis:         { gridcolor: '#2d3148', zerolinecolor: '#2d3148' },
-    yaxis:         { gridcolor: '#2d3148', zerolinecolor: '#2d3148' },
-    legend:        { bgcolor: '#1a1d27', bordercolor: '#2d3148', borderwidth: 1 },
-  }
+    xaxis:         { gridcolor: T.grid, zerolinecolor: T.grid },
+    yaxis:         { gridcolor: T.grid, zerolinecolor: T.grid },
+    // A legend is always shown for >= 2 series so identity is never colour-alone.
+    legend:        { bgcolor: T.legend, bordercolor: T.border, borderwidth: 1 },
+  })
 
-  const DARK_LAYOUT_COMPACT = { ...DARK_LAYOUT, margin: { l: 60, r: 20, t: 10, b: 50 } }
+  let LAYOUT_COMPACT = $derived({ ...LAYOUT, margin: { l: 60, r: 20, t: 10, b: 50 } })
+
+  // ── helpers ─────────────────────────────────────────────────────────────────
 
   function merge(...objs) { return Object.assign({}, ...objs) }
 
@@ -200,19 +212,19 @@
         }
       })
       const dsLabel = isDownsampled ? '  (downsampled for display)' : ''
-      Plotly.react(container, traces, merge(DARK_LAYOUT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Time [s]' },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: normalizeSignals ? 'Amplitude (norm.)' : 'Amplitude', type: yaxisType() },
+      Plotly.react(container, traces, merge(LAYOUT, {
+        xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
+        yaxis: { ...LAYOUT.yaxis, title: normalizeSignals ? 'Amplitude (norm.)' : 'Amplitude', type: yaxisType() },
         title: { text: `${plotData.n_proc.toLocaleString()} samples  ·  fs = ${plotData.fs_proc.toFixed(2)} Hz${dsLabel}`,
-                 font: { color: '#6b7280', size: 11 } },
+                 font: { color: T.text, size: 11 } },
       }))
 
     } else if (tab === 'fft') {
       const traces = plotData.signals.map((sig, i) =>
         line(plotData.freqs, norm(sig.amplitude), sig.name, 'solid', 'y', COLORS[i % COLORS.length]))
-      Plotly.react(container, traces, merge(DARK_LAYOUT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: normalizeSignals ? 'Amplitude (norm.)' : 'Amplitude', type: yaxisType() },
+      Plotly.react(container, traces, merge(LAYOUT, {
+        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
+        yaxis: { ...LAYOUT.yaxis, title: normalizeSignals ? 'Amplitude (norm.)' : 'Amplitude', type: yaxisType() },
       }))
 
     } else if (tab === 'psd') {
@@ -220,41 +232,41 @@
         line(plotData.freqs, norm(sig.Pxx), sig.name, 'solid', 'y', COLORS[i % COLORS.length]))
       const psdXRange = (psdXMin !== '' && psdXMax !== '') ? [parseFloat(psdXMin), parseFloat(psdXMax)] : undefined
       const psdYRange = (psdYMin !== '' && psdYMax !== '') ? [parseFloat(psdYMin), parseFloat(psdYMax)] : undefined
-      Plotly.react(container, traces, merge(DARK_LAYOUT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]',
+      Plotly.react(container, traces, merge(LAYOUT, {
+        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]',
                  ...(psdXRange ? { range: psdXRange, autorange: false } : { autorange: true }) },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: 'PSD', type: psdYLog ? 'log' : 'linear',
+        yaxis: { ...LAYOUT.yaxis, title: 'PSD', type: psdYLog ? 'log' : 'linear',
                  ...(psdYRange ? { range: psdYRange, autorange: false } : { autorange: true }) },
       }))
 
     } else if (tab === 'autocorrelation') {
       const traces = plotData.signals.map((sig, i) =>
         line(plotData.lags, sig.acf, sig.name, 'solid', 'y', COLORS[i % COLORS.length]))
-      Plotly.react(container, traces, merge(DARK_LAYOUT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Lag [s]' },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: 'ACF' },
+      Plotly.react(container, traces, merge(LAYOUT, {
+        xaxis: { ...LAYOUT.xaxis, title: 'Lag [s]' },
+        yaxis: { ...LAYOUT.yaxis, title: 'ACF' },
       }))
 
     } else if (tab === 'cross_correlation') {
-      Plotly.react(container, [line(plotData.lags, plotData.ccf, 'CCF')], merge(DARK_LAYOUT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Lag [s]' },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: 'CCF' },
+      Plotly.react(container, [line(plotData.lags, plotData.ccf, 'CCF')], merge(LAYOUT, {
+        xaxis: { ...LAYOUT.xaxis, title: 'Lag [s]' },
+        yaxis: { ...LAYOUT.yaxis, title: 'CCF' },
       }))
 
     } else if (tab === 'csd') {
       Plotly.react(container,
         [line(plotData.freqs, plotData.magnitude, 'Magnitude'),
          line(plotData.freqs, plotData.phase_deg, 'Phase [°]', 'solid', 'y2')],
-        merge(DARK_LAYOUT, {
-          xaxis:  { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]' },
-          yaxis:  { ...DARK_LAYOUT.yaxis, title: '|CSD|' },
-          yaxis2: { ...DARK_LAYOUT.yaxis, title: 'Phase [°]', overlaying: 'y', side: 'right' },
+        merge(LAYOUT, {
+          xaxis:  { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
+          yaxis:  { ...LAYOUT.yaxis, title: '|CSD|' },
+          yaxis2: { ...LAYOUT.yaxis, title: 'Phase [°]', overlaying: 'y', side: 'right' },
         }))
 
     } else if (tab === 'coherence') {
-      Plotly.react(container, [line(plotData.freqs, plotData.Cxy, 'Coherence')], merge(DARK_LAYOUT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: 'Coherence', range: [0, 1] },
+      Plotly.react(container, [line(plotData.freqs, plotData.Cxy, 'Coherence')], merge(LAYOUT, {
+        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
+        yaxis: { ...LAYOUT.yaxis, title: 'Coherence', range: [0, 1] },
       }))
 
     } else if (tab === 'filter') {
@@ -263,30 +275,30 @@
       Plotly.react(container,
         [line(dr.x, dr.y, 'Raw', 'dash'),
          line(df.x, df.y, 'Filtered', 'solid')],
-        merge(DARK_LAYOUT, {
-          xaxis: { ...DARK_LAYOUT.xaxis, title: 'Time [s]' },
-          yaxis: { ...DARK_LAYOUT.yaxis, title: 'Amplitude' },
+        merge(LAYOUT, {
+          xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
+          yaxis: { ...LAYOUT.yaxis, title: 'Amplitude' },
         }))
 
     } else if (tab === 'stft' || tab === 'cwt') {
       Plotly.react(container, heatmap(plotData.times, plotData.freqs, plotData.magnitude),
-        merge(DARK_LAYOUT, {
-          xaxis: { ...DARK_LAYOUT.xaxis, title: 'Time [s]' },
-          yaxis: { ...DARK_LAYOUT.yaxis, title: 'Frequency [Hz]' },
+        merge(LAYOUT, {
+          xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
+          yaxis: { ...LAYOUT.yaxis, title: 'Frequency [Hz]' },
         }))
 
     } else if (tab === 'wvd') {
       Plotly.react(container, heatmap(plotData.times, plotData.freqs, plotData.wvd),
-        merge(DARK_LAYOUT, {
-          xaxis: { ...DARK_LAYOUT.xaxis, title: 'Time [s]' },
-          yaxis: { ...DARK_LAYOUT.yaxis, title: 'Frequency [Hz]' },
+        merge(LAYOUT, {
+          xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
+          yaxis: { ...LAYOUT.yaxis, title: 'Frequency [Hz]' },
         }))
 
     } else if (tab === 'spwvd') {
       Plotly.react(container, heatmap(plotData.times, plotData.freqs, plotData.spwvd),
-        merge(DARK_LAYOUT, {
-          xaxis: { ...DARK_LAYOUT.xaxis, title: 'Time [s]' },
-          yaxis: { ...DARK_LAYOUT.yaxis, title: 'Frequency [Hz]' },
+        merge(LAYOUT, {
+          xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
+          yaxis: { ...LAYOUT.yaxis, title: 'Frequency [Hz]' },
         }))
 
     } else if (tab === 'instantaneous') {
@@ -297,10 +309,10 @@
         [line(ds.x, ds.y, 'Signal', 'dash'),
          line(de.x, de.y, 'Envelope', 'solid'),
          line(di.x, di.y, 'Inst. Freq [Hz]', 'solid', 'y2')],
-        merge(DARK_LAYOUT, {
-          xaxis:  { ...DARK_LAYOUT.xaxis, title: 'Time [s]' },
-          yaxis:  { ...DARK_LAYOUT.yaxis, title: 'Amplitude' },
-          yaxis2: { ...DARK_LAYOUT.yaxis, title: 'Inst. Freq [Hz]', overlaying: 'y', side: 'right' },
+        merge(LAYOUT, {
+          xaxis:  { ...LAYOUT.xaxis, title: 'Time [s]' },
+          yaxis:  { ...LAYOUT.yaxis, title: 'Amplitude' },
+          yaxis2: { ...LAYOUT.yaxis, title: 'Inst. Freq [Hz]', overlaying: 'y', side: 'right' },
         }))
 
     } else if (tab === 'emd') {
@@ -309,9 +321,9 @@
       }))
       traces.push({ x: plotData.times, y: plotData.residue,
         type: 'scatter', mode: 'lines', name: 'Residue', line: { dash: 'dot' } })
-      Plotly.react(container, traces, merge(DARK_LAYOUT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Time [s]' },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: 'Amplitude' },
+      Plotly.react(container, traces, merge(LAYOUT, {
+        xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
+        yaxis: { ...LAYOUT.yaxis, title: 'Amplitude' },
       }))
 
     } else if (tab === 'hht') {
@@ -321,10 +333,10 @@
                   showscale: i === 0, colorbar: { thickness: 12, outlinewidth: 0 } },
         name: `IMF ${i + 1}`, type: 'scatter',
       }))
-      Plotly.react(container, tfTraces, merge(DARK_LAYOUT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Time [s]' },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: 'Inst. Freq [Hz]' },
-        title: { text: 'HHT time-frequency representation', font: { color: '#a5b4fc' } },
+      Plotly.react(container, tfTraces, merge(LAYOUT, {
+        xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
+        yaxis: { ...LAYOUT.yaxis, title: 'Inst. Freq [Hz]' },
+        title: { text: 'HHT time-frequency representation', font: { color: T.title } },
       }))
 
     } else if (tab === 'peaks') {
@@ -332,11 +344,11 @@
         line(plotData.freqs, plotData.spectrum, 'Spectrum'),
         { x: plotData.peak_freqs, y: plotData.peak_values,
           type: 'scatter', mode: 'markers', name: 'Peaks',
-          marker: { symbol: 'triangle-up', size: 10, color: '#ef4444' } },
+          marker: { symbol: 'triangle-up', size: 10, color: T.danger } },
       ]
-      Plotly.react(container, traces, merge(DARK_LAYOUT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: 'Amplitude', type: yaxisType() },
+      Plotly.react(container, traces, merge(LAYOUT, {
+        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
+        yaxis: { ...LAYOUT.yaxis, title: 'Amplitude', type: yaxisType() },
       }))
 
     } else if (tab === 'indicators') {
@@ -348,13 +360,13 @@
         { x: plotData.freq_times, y: plotData.dominant_freqs,
           type: 'scatter', mode: 'lines', name: 'Dom. freq', line: { color: COLORS[2] }, yaxis: 'y3' },
       ]
-      Plotly.react(container, traces, merge(DARK_LAYOUT, {
-        xaxis:  { ...DARK_LAYOUT.xaxis, title: 'Time [s]' },
-        yaxis:  { ...DARK_LAYOUT.yaxis, title: 'RMS', domain: [0.72, 1.0] },
-        yaxis2: { ...DARK_LAYOUT.yaxis, title: 'Energy', domain: [0.36, 0.66], anchor: 'x' },
-        yaxis3: { ...DARK_LAYOUT.yaxis, title: 'Freq [Hz]', domain: [0.0, 0.30], anchor: 'x' },
+      Plotly.react(container, traces, merge(LAYOUT, {
+        xaxis:  { ...LAYOUT.xaxis, title: 'Time [s]' },
+        yaxis:  { ...LAYOUT.yaxis, title: 'RMS', domain: [0.72, 1.0] },
+        yaxis2: { ...LAYOUT.yaxis, title: 'Energy', domain: [0.36, 0.66], anchor: 'x' },
+        yaxis3: { ...LAYOUT.yaxis, title: 'Freq [Hz]', domain: [0.0, 0.30], anchor: 'x' },
         title: { text: `Entropy: ${plotData.spectral_entropy.toFixed(3)}  |  Kurtosis: ${plotData.kurtosis.toFixed(3)}  |  Skewness: ${plotData.skewness.toFixed(3)}`,
-                 font: { color: '#a5b4fc', size: 12 } },
+                 font: { color: T.title, size: 12 } },
       }))
 
     } else if (tab === 'multisensor') {
@@ -365,17 +377,17 @@
           colorbar: { thickness: 14, outlinewidth: 0 },
           text: plotData.R.map(row => row.map(v => v.toFixed(3))),
           texttemplate: '%{text}', textfont: { size: 11 },
-        }], merge(DARK_LAYOUT, {
-          title: { text: 'Correlation Matrix', font: { color: '#a5b4fc' } },
-          yaxis: { ...DARK_LAYOUT.yaxis, autorange: 'reversed' },
+        }], merge(LAYOUT, {
+          title: { text: 'Correlation Matrix', font: { color: T.title } },
+          yaxis: { ...LAYOUT.yaxis, autorange: 'reversed' },
         }))
       } else if (plotData.pairs) {
         const traces = plotData.pairs.map((p, i) =>
           line(plotData.freqs, p.Cxy, p.label, 'solid', 'y', COLORS[i % COLORS.length]))
-        Plotly.react(container, traces, merge(DARK_LAYOUT, {
-          xaxis: { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]' },
-          yaxis: { ...DARK_LAYOUT.yaxis, title: 'Coherence', range: [0, 1] },
-          title: { text: 'Coherence Matrix', font: { color: '#a5b4fc' } },
+        Plotly.react(container, traces, merge(LAYOUT, {
+          xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
+          yaxis: { ...LAYOUT.yaxis, title: 'Coherence', range: [0, 1] },
+          title: { text: 'Coherence Matrix', font: { color: T.title } },
         }))
       }
 
@@ -396,37 +408,37 @@
         traces.push({
           x: plotData.peak_freqs, y: peakVals,
           type: 'scatter', mode: 'markers', name: 'Peaks',
-          marker: { symbol: 'triangle-up', size: 12, color: '#ef4444' },
+          marker: { symbol: 'triangle-up', size: 12, color: T.danger },
         })
       }
-      Plotly.react(container, traces, merge(DARK_LAYOUT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: 'Singular Value [dB]' },
-        title: { text: 'FDD \u2014 Singular Values', font: { color: '#a5b4fc' } },
+      Plotly.react(container, traces, merge(LAYOUT, {
+        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
+        yaxis: { ...LAYOUT.yaxis, title: 'Singular Value [dB]' },
+        title: { text: 'FDD \u2014 Singular Values', font: { color: T.title } },
       }))
 
     } else if (tab === 'statistics') {
       if (plotData.xi) {
         const traces = [
           { x: plotData.bin_centres, y: plotData.hist_density,
-            type: 'bar', name: 'Histogram', marker: { color: 'rgba(99,102,241,0.4)' } },
-          line(plotData.xi, plotData.density, 'KDE', 'solid', 'y', '#ef4444'),
+            type: 'bar', name: 'Histogram', marker: { color: COLORS[0], opacity: 0.4 } },
+          line(plotData.xi, plotData.density, 'KDE', 'solid', 'y', T.danger),
         ]
-        Plotly.react(container, traces, merge(DARK_LAYOUT, {
-          xaxis: { ...DARK_LAYOUT.xaxis, title: 'Value' },
-          yaxis: { ...DARK_LAYOUT.yaxis, title: 'Density' },
+        Plotly.react(container, traces, merge(LAYOUT, {
+          xaxis: { ...LAYOUT.xaxis, title: 'Value' },
+          yaxis: { ...LAYOUT.yaxis, title: 'Density' },
           barmode: 'overlay',
-          title: { text: 'Probability Density', font: { color: '#a5b4fc' } },
+          title: { text: 'Probability Density', font: { color: T.title } },
         }))
       } else if (plotData.H) {
         Plotly.react(container, [{
           x: plotData.x_centres, y: plotData.y_centres, z: plotData.H,
           type: 'heatmap', colorscale: 'Viridis',
           colorbar: { thickness: 14, outlinewidth: 0 },
-        }], merge(DARK_LAYOUT, {
-          xaxis: { ...DARK_LAYOUT.xaxis, title: plotData.xlabel },
-          yaxis: { ...DARK_LAYOUT.yaxis, title: plotData.ylabel },
-          title: { text: 'Joint Distribution', font: { color: '#a5b4fc' } },
+        }], merge(LAYOUT, {
+          xaxis: { ...LAYOUT.xaxis, title: plotData.xlabel },
+          yaxis: { ...LAYOUT.yaxis, title: plotData.ylabel },
+          title: { text: 'Joint Distribution', font: { color: T.title } },
         }))
       } else if (plotData.C) {
         Plotly.react(container, [{
@@ -435,13 +447,13 @@
           colorbar: { thickness: 14, outlinewidth: 0 },
           text: plotData.C.map(row => row.map(v => v.toPrecision(3))),
           texttemplate: '%{text}', textfont: { size: 11 },
-        }], merge(DARK_LAYOUT, {
-          title: { text: 'Covariance Matrix', font: { color: '#a5b4fc' } },
-          yaxis: { ...DARK_LAYOUT.yaxis, autorange: 'reversed' },
+        }], merge(LAYOUT, {
+          title: { text: 'Covariance Matrix', font: { color: T.title } },
+          yaxis: { ...LAYOUT.yaxis, autorange: 'reversed' },
         }))
       } else if (plotData.distances) {
         const thresh = plotData.threshold
-        const colors = plotData.distances.map(d => d > thresh ? '#ef4444' : COLORS[0])
+        const colors = plotData.distances.map(d => d > thresh ? T.danger : COLORS[0])
         Plotly.react(container, [{
           x: plotData.times, y: plotData.distances,
           type: 'scatter', mode: 'markers', name: 'Mahalanobis',
@@ -450,11 +462,11 @@
           x: [plotData.times[0], plotData.times[plotData.times.length - 1]],
           y: [thresh, thresh],
           type: 'scatter', mode: 'lines', name: `${plotData.percentile}th pct`,
-          line: { color: '#f59e0b', dash: 'dash' },
-        }], merge(DARK_LAYOUT, {
-          xaxis: { ...DARK_LAYOUT.xaxis, title: 'Time [s]' },
-          yaxis: { ...DARK_LAYOUT.yaxis, title: 'Mahalanobis Distance' },
-          title: { text: 'Mahalanobis Distance \u2014 Outlier Detection', font: { color: '#a5b4fc' } },
+          line: { color: T.warning, dash: 'dash' },
+        }], merge(LAYOUT, {
+          xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
+          yaxis: { ...LAYOUT.yaxis, title: 'Mahalanobis Distance' },
+          title: { text: 'Mahalanobis Distance \u2014 Outlier Detection', font: { color: T.title } },
         }))
       }
     }
@@ -471,9 +483,9 @@
         type: 'scatter', mode: 'lines', name: sig.name,
         line: { color: COLORS[i % COLORS.length] },
       }))
-      Plotly.react(container2, traces, merge(DARK_LAYOUT_COMPACT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: 'Phase [°]' },
+      Plotly.react(container2, traces, merge(LAYOUT_COMPACT, {
+        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
+        yaxis: { ...LAYOUT.yaxis, title: 'Phase [°]' },
       }))
 
     } else if (tab === 'coherence') {
@@ -481,9 +493,9 @@
         x: plotData.freqs, y: plotData.phase_deg,
         type: 'scatter', mode: 'lines', name: 'Phase',
         line: { color: COLORS[1] },
-      }], merge(DARK_LAYOUT_COMPACT, {
-        xaxis: { ...DARK_LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...DARK_LAYOUT.yaxis, title: 'Phase [°]' },
+      }], merge(LAYOUT_COMPACT, {
+        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
+        yaxis: { ...LAYOUT.yaxis, title: 'Phase [°]' },
       }))
     }
   }
@@ -495,12 +507,20 @@
     const _n = normalizeSignals; const _l = yLogScale; const _s = showAllPoints
     const _pl = psdYLog; const _px1 = psdXMin; const _px2 = psdXMax
     const _py1 = psdYMin; const _py2 = psdYMax
-    draw()
+    const _t = T
+    if (!container) return
+    if (plotData) {
+      draw()
+    } else {
+      // No traces yet — render an empty themed surface. react() initialises the
+      // div on first call, so this doubles as the plot's setup.
+      Plotly.react(container, [], LAYOUT, { responsive: true })
+    }
   })
 
   $effect(() => {
     // phase panel: redraw whenever showPhase, plotData, or activeTab changes
-    const _ = showPhase; const __ = plotData; const ___ = activeTab
+    const _ = showPhase; const __ = plotData; const ___ = activeTab; const _t = T
     if (showPhase && hasPhaseData) drawPhase()
     // Resize main plot after DOM updates so flexbox recalculates heights
     requestAnimationFrame(() => { if (container) Plotly.Plots.resize(container) })
@@ -509,15 +529,14 @@
   // Initialize container2 when it first appears in the DOM
   $effect(() => {
     if (container2) {
-      Plotly.newPlot(container2, [], DARK_LAYOUT_COMPACT, { responsive: true })
+      Plotly.newPlot(container2, [], LAYOUT_COMPACT, { responsive: true })
       drawPhase()
     }
   })
 
-  onMount(() => {
-    if (!container) return
-    Plotly.newPlot(container, [], DARK_LAYOUT, { responsive: true })
-  })
+  // No onMount plot setup on purpose: the draw effect above owns the container.
+  // Initialising here raced it — effects run before onMount, so a newPlot() with
+  // an empty trace list could wipe a chart the effect had just drawn.
 
   onDestroy(() => {
     if (container)  Plotly.purge(container)
@@ -525,7 +544,7 @@
   })
 </script>
 
-<div style="width:100%;flex:1;min-height:0;display:flex;flex-direction:column">
+<div class="plot-wrap">
 
   <!-- toolbar -->
   {#if plotData}
@@ -555,30 +574,30 @@
           <input type="number" bind:value={psdYMax} placeholder="max" class="plot-axis-input" />
         </span>
       {/if}
-      <button class="btn-csv" onclick={exportCsv}>↓ CSV</button>
+      <button class="btn-ghost btn-csv" onclick={exportCsv}>↓ CSV</button>
     </div>
   {/if}
 
   <!-- main plot -->
-  <div style="flex:1;min-height:0;position:relative">
+  <div class="plot-canvas-wrap">
     {#if loading}
-      <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:10;display:flex;flex-direction:column;align-items:center;gap:10px">
+      <div class="plot-overlay">
         <div class="spinner"></div>
-        <div style="font-size:12px;color:#6b7280">Computing…</div>
+        <div class="plot-overlay-text">Computing…</div>
       </div>
     {/if}
     {#if !plotData && !loading && !plotError}
-      <div style="display:flex;align-items:center;justify-content:center;height:100%;color:#4b5563;font-size:13px">
+      <div class="plot-placeholder">
         Select an analysis and press Run.
       </div>
     {/if}
-    <div bind:this={container} style="width:100%;height:100%"></div>
+    <div bind:this={container} class="plot-canvas"></div>
   </div>
 
   <!-- phase panel -->
   {#if showPhase && hasPhaseData}
-    <div style="flex:0 0 35%;min-height:0;border-top:1px solid #2d3148">
-      <div bind:this={container2} style="width:100%;height:100%"></div>
+    <div class="plot-phase-pane">
+      <div bind:this={container2} class="plot-canvas"></div>
     </div>
   {/if}
 

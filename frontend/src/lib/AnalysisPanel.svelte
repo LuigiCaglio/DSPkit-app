@@ -24,7 +24,9 @@
 </script>
 
 <div class="controls-area">
-  {#if activeTab === 'timeseries'}
+  {#if activeTab === 'datatable'}
+    <div class="status">The raw values as parsed. Use "File layout" in the sidebar if a column looks wrong.</div>
+  {:else if activeTab === 'timeseries'}
     <TimeseriesControls {timeCol} {fsManual} {loading} {runAnalysis} />
   {:else if activeTab === 'fft'}
     <FftControls {loading} {runAnalysis} />

@@ -12,7 +12,7 @@
   }
 </script>
 
-<div class="status" style="color:#fbbf24">⚠ EMD is slow for signals > 5000 samples.</div>
+<div class="status" style="color:var(--warning)">⚠ EMD is slow for signals > 5000 samples.</div>
 <div class="field">
   <label>Max IMFs (blank=all)</label>
   <input type="number" bind:value={maxImfs} min="1" placeholder="all" style="width:80px" />

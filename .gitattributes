@@ -1,4 +1,6 @@
 * text=auto
+# cmd.exe mis-parses batch files with LF endings — always check these out CRLF.
+*.bat text eol=crlf
 *.py text eol=lf
 *.svelte text eol=lf
 *.js text eol=lf

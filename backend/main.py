@@ -7,6 +7,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -140,6 +141,172 @@ def parse_file(content: bytes, orientation: str = "columns", header_row: int = -
     return {"column_names": column_names, "data": data, "n_samples": n_samples, "n_columns": n_signals}
 
 
+# ─── auto-detection ───────────────────────────────────────────────────────────
+
+
+def _as_floats(row: list[str]) -> Optional[list[float]]:
+    """Parse a row as floats, or None if any non-empty field isn't numeric."""
+    vals = []
+    for tok in row:
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            vals.append(float(tok))
+        except ValueError:
+            return None
+    return vals or None
+
+
+def _detect_time_col(data: np.ndarray, max_check: int = 5000) -> tuple[int, Optional[float]]:
+    """
+    Find a column that looks like a time vector: strictly increasing with
+    near-uniform spacing. Returns (col_index, fs) or (-1, None).
+
+    Uniformity is judged by the coefficient of variation of the sample
+    intervals, which tolerates float round-off in a written-out time column
+    but rejects a merely monotonic data channel (e.g. a drifting sensor).
+    """
+    n_sig, n_samp = data.shape
+    if n_samp < 3:
+        return -1, None
+    for col in range(n_sig):
+        t = data[col, :min(n_samp, max_check)]
+        if not np.all(np.isfinite(t)):
+            continue
+        d = np.diff(t)
+        if d.size < 2 or np.any(d <= 0):
+            continue
+        mean_d = float(d.mean())
+        if mean_d <= 0 or not np.isfinite(mean_d):
+            continue
+        if float(d.std()) / mean_d > 1e-3:
+            continue
+        fs = 1.0 / mean_d
+        if np.isfinite(fs) and fs > 0:
+            return col, float(fs)
+    return -1, None
+
+
+def autodetect(content: bytes) -> dict:
+    """
+    Work out how to read a file so the user doesn't have to.
+
+    Returns {orientation, header_row, time_col, fs, delimiter}. Every value is
+    a starting point the user can override in the UI — nothing here is binding.
+    """
+    text = content.decode("utf-8-sig", errors="replace")
+    lines = [l for l in text.splitlines() if l.strip()]
+    if not lines:
+        raise ValueError("File is empty")
+
+    delimiter = detect_delimiter("\n".join(lines[:20]))
+    rows = list(csv.reader(io.StringIO("\n".join(lines[:200])), delimiter=delimiter))
+
+    # First row that is entirely numeric marks where the data starts; anything
+    # above it is a header and/or a metadata preamble.
+    first_numeric = -1
+    for i, row in enumerate(rows):
+        if row and not row[0].strip().startswith("#") and _as_floats(row) is not None:
+            first_numeric = i
+            break
+    if first_numeric == -1:
+        raise ValueError("No numeric data found in file")
+
+    # The line directly above the data is a header only if it is non-numeric
+    # and has one field per data column.
+    header_row = -1
+    if first_numeric > 0:
+        cand = rows[first_numeric - 1]
+        n_data_fields = len([t for t in rows[first_numeric] if t.strip()])
+        if _as_floats(cand) is None and len([t for t in cand if t.strip()]) == n_data_fields:
+            header_row = first_numeric - 1
+
+    # Signals are the short axis: real records have far more samples than channels.
+    n_data_rows = sum(1 for r in rows[first_numeric:] if _as_floats(r) is not None)
+    n_data_cols = len([t for t in rows[first_numeric] if t.strip()])
+    # Only trust this when we've seen enough rows to tell the axes apart;
+    # `rows` is capped at 200 lines, so a long file always reads as "columns".
+    orientation = "rows" if n_data_cols > max(n_data_rows, 8) else "columns"
+
+    detected = {
+        "orientation": orientation,
+        "header_row": header_row,
+        "delimiter": delimiter,
+        "time_col": -1,
+        "fs": None,
+    }
+
+    # Time column + sample rate, from an actual parse of the file.
+    try:
+        parsed = parse_file(content, orientation, header_row)
+        time_col, fs = _detect_time_col(parsed["data"])
+        detected["time_col"] = time_col
+        detected["fs"] = round(fs, 6) if fs else None
+    except ValueError:
+        pass  # detection is best-effort; the user can still set these by hand
+
+    return detected
+
+
+# ─── session store ────────────────────────────────────────────────────────────
+#
+# A file is uploaded and parsed once, then every analysis call refers to it by
+# id. Before this, each plot re-uploaded and re-parsed the whole file.
+
+_SESSIONS: "dict[str, dict]" = {}
+_MAX_SESSIONS = 4
+
+
+def _new_session(raw: bytes, filename: str, orientation: str, header_row: int) -> str:
+    parsed = parse_file(raw, orientation, header_row)
+    sid = uuid.uuid4().hex
+    _SESSIONS[sid] = {
+        "raw": raw,
+        "filename": filename,
+        "orientation": orientation,
+        "header_row": header_row,
+        "parsed": parsed,
+    }
+    # Drop the oldest sessions so a long-lived server doesn't grow without bound.
+    while len(_SESSIONS) > _MAX_SESSIONS:
+        _SESSIONS.pop(next(iter(_SESSIONS)))
+    return sid
+
+
+def get_session(session_id: str) -> dict:
+    sess = _SESSIONS.get(session_id)
+    if sess is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Session expired or not found — reload the file.",
+        )
+    return sess
+
+
+async def resolve_parsed(
+    file: Optional[UploadFile],
+    session_id: Optional[str],
+    orientation: str,
+    header_row: int,
+) -> dict:
+    """
+    Get parsed data for a request: from the session cache when a session_id is
+    given, otherwise by parsing an uploaded file (kept for direct API use).
+    """
+    if session_id:
+        sess = get_session(session_id)
+        # Re-parse only if the caller asked for a different layout.
+        if orientation != sess["orientation"] or header_row != sess["header_row"]:
+            sess["parsed"] = parse_file(sess["raw"], orientation, header_row)
+            sess["orientation"] = orientation
+            sess["header_row"] = header_row
+        return sess["parsed"]
+    if file is None:
+        raise HTTPException(status_code=422, detail="Provide either session_id or a file upload.")
+    return parse_file(await file.read(), orientation, header_row)
+
+
 def extract_col(parsed: dict, col: int) -> np.ndarray:
     n = parsed["n_columns"]
     if col < 0 or col >= n:
@@ -237,20 +404,132 @@ def get_preprocessed(
     return apply_preprocessing(x, fs, times, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
 
 
+# ─── /api/session ────────────────────────────────────────────────────────────
+
+
+def _session_summary(sid: str, parsed: dict, time_col: int, fs: Optional[float]) -> dict:
+    preview_len = min(50, parsed["n_samples"])
+    result = {
+        "session_id": sid,
+        "column_names": parsed["column_names"],
+        "n_columns": parsed["n_columns"],
+        "n_samples": parsed["n_samples"],
+        "preview": parsed["data"][:, :preview_len].T.tolist(),
+    }
+    if fs and fs > 0:
+        result["fs"] = round(fs, 6)
+        result["duration"] = round(parsed["n_samples"] / fs, 4)
+    result["time_col"] = time_col
+    return result
+
+
+@app.post("/api/session/create")
+async def session_create(
+    file: UploadFile,
+    orientation: Optional[str] = Form(None),
+    header_row: Optional[int] = Form(None),
+    time_col: Optional[int] = Form(None),
+    fs: Optional[float] = Form(None),
+):
+    """
+    Upload a file once and start a session.
+
+    With no overrides, layout is auto-detected and echoed back under
+    "detected" so the UI can show what it decided. Any field the caller does
+    supply wins over detection.
+    """
+    try:
+        raw = await file.read()
+        detected = autodetect(raw)
+
+        use_orientation = orientation or detected["orientation"]
+        use_header_row  = header_row if header_row is not None else detected["header_row"]
+        use_time_col    = time_col   if time_col   is not None else detected["time_col"]
+
+        sid = _new_session(raw, file.filename or "data.csv", use_orientation, use_header_row)
+        parsed = _SESSIONS[sid]["parsed"]
+
+        # fs: explicit > time column > detected
+        use_fs: Optional[float] = None
+        if use_time_col >= 0 and use_time_col < parsed["n_columns"]:
+            t = extract_col(parsed, use_time_col)
+            use_fs = 1.0 / float(np.mean(np.diff(t)))
+        elif fs is not None and fs > 0:
+            use_fs = float(fs)
+        elif detected["fs"]:
+            use_fs = detected["fs"]
+
+        result = _session_summary(sid, parsed, use_time_col, use_fs)
+        result["filename"] = file.filename
+        result["detected"] = detected
+        result["orientation"] = use_orientation
+        result["header_row"] = use_header_row
+        return result
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/session/reparse")
+async def session_reparse(
+    session_id: str = Form(...),
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    fs: Optional[float] = Form(None),
+):
+    """Re-read a session's file with a different layout, without re-uploading."""
+    try:
+        sess = get_session(session_id)
+        parsed = parse_file(sess["raw"], orientation, header_row)
+        sess["parsed"] = parsed
+        sess["orientation"] = orientation
+        sess["header_row"] = header_row
+
+        use_fs: Optional[float] = None
+        if 0 <= time_col < parsed["n_columns"]:
+            t = extract_col(parsed, time_col)
+            use_fs = 1.0 / float(np.mean(np.diff(t)))
+        elif fs is not None and fs > 0:
+            use_fs = float(fs)
+
+        result = _session_summary(session_id, parsed, time_col, use_fs)
+        result["orientation"] = orientation
+        result["header_row"] = header_row
+        return result
+    except (ValueError, TypeError, KeyError, IndexError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.delete("/api/session/{session_id}")
+async def session_delete(session_id: str):
+    _SESSIONS.pop(session_id, None)
+    return {"ok": True}
+
+
 # ─── /api/signal/parse ───────────────────────────────────────────────────────
 
 
 @app.post("/api/signal/parse")
 async def signal_parse(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
     fs: Optional[float] = Form(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         preview_len = min(50, parsed["n_samples"])
         preview = parsed["data"][:, :preview_len].T.tolist()
         result = {
@@ -269,6 +548,8 @@ async def signal_parse(
             result["fs"] = round(inferred_fs, 6)
             result["duration"] = round(parsed["n_samples"] / inferred_fs, 4)
         return result
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -280,7 +561,8 @@ async def signal_parse(
 
 @app.post("/api/signal/info")
 async def signal_info(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -288,8 +570,7 @@ async def signal_info(
     fs: Optional[float] = Form(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         cols = [int(c.strip()) for c in signal_cols.split(",") if c.strip()]
         inferred_fs: Optional[float] = fs
         if time_col >= 0:
@@ -307,6 +588,8 @@ async def signal_info(
         n_samples = parsed["n_samples"]
         duration = n_samples / inferred_fs if inferred_fs else None
         return {"n_samples": n_samples, "fs": inferred_fs, "duration": duration, "signals": signals_info}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -318,7 +601,8 @@ async def signal_info(
 
 @app.post("/api/signal/timeseries")
 async def signal_timeseries(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -335,8 +619,7 @@ async def signal_timeseries(
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
             raise ValueError("No signal columns selected")
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
 
         # Reference time axis from first column
         x0, t_raw, fs_raw = get_signal_times_fs(parsed, time_col, cols[0], fs)
@@ -373,6 +656,8 @@ async def signal_timeseries(
             "preprocessed": preprocessed,
             "signals":    signals,
         }
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -384,7 +669,8 @@ async def signal_timeseries(
 
 @app.post("/api/spectral/fft")
 async def spectral_fft(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -400,8 +686,7 @@ async def spectral_fft(
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
             raise ValueError("No signal columns selected")
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         freqs, _ = dsp.fft_spectrum(x0, fs_, window=window, scaling=scaling)
         signals = []
@@ -412,6 +697,8 @@ async def spectral_fft(
             phase = np.angle(np.fft.rfft(x * win_arr), deg=True)
             signals.append({"name": parsed["column_names"][col], "amplitude": to_list(amp), "phase": to_list(phase)})
         return {"freqs": to_list(freqs), "signals": signals}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -420,7 +707,8 @@ async def spectral_fft(
 
 @app.post("/api/spectral/psd")
 async def spectral_psd(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -438,8 +726,7 @@ async def spectral_psd(
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
             raise ValueError("No signal columns selected")
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         freqs, _ = dsp.psd(x0, fs_, window=window, nperseg=nperseg, noverlap=noverlap, scaling=scaling)
         signals = []
@@ -448,6 +735,8 @@ async def spectral_psd(
             _, Pxx = dsp.psd(x, fs_, window=window, nperseg=nperseg, noverlap=noverlap, scaling=scaling)
             signals.append({"name": parsed["column_names"][col], "Pxx": to_list(Pxx)})
         return {"freqs": to_list(freqs), "signals": signals}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -456,7 +745,8 @@ async def spectral_psd(
 
 @app.post("/api/spectral/autocorrelation")
 async def spectral_autocorrelation(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -472,8 +762,7 @@ async def spectral_autocorrelation(
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
             raise ValueError("No signal columns selected")
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         lags, _ = dsp.autocorrelation(x0, fs=fs_, normalize=normalize, max_lag=max_lag)
         signals = []
@@ -482,6 +771,8 @@ async def spectral_autocorrelation(
             _, acf = dsp.autocorrelation(x, fs=fs_, normalize=normalize, max_lag=max_lag)
             signals.append({"name": parsed["column_names"][col], "acf": to_list(acf)})
         return {"lags": to_list(lags), "signals": signals}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -490,7 +781,8 @@ async def spectral_autocorrelation(
 
 @app.post("/api/spectral/cross_correlation")
 async def spectral_cross_correlation(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -504,12 +796,13 @@ async def spectral_cross_correlation(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         lags, ccf = dsp.cross_correlation(x, y, fs=fs_, normalize=normalize, max_lag=max_lag)
         return {"lags": to_list(lags), "ccf": to_list(ccf)}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -518,7 +811,8 @@ async def spectral_cross_correlation(
 
 @app.post("/api/spectral/csd")
 async def spectral_csd(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -533,12 +827,13 @@ async def spectral_csd(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         freqs, Pxy = dsp.csd(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         return {"freqs": to_list(freqs), "magnitude": to_list(np.abs(Pxy)), "phase_deg": to_list(np.angle(Pxy, deg=True))}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -547,7 +842,8 @@ async def spectral_csd(
 
 @app.post("/api/spectral/coherence")
 async def spectral_coherence(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -562,13 +858,14 @@ async def spectral_coherence(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         freqs, Cxy = dsp.coherence(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         _, Pxy = dsp.csd(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         return {"freqs": to_list(freqs), "Cxy": to_list(Cxy), "phase_deg": to_list(np.angle(Pxy, deg=True))}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -580,7 +877,8 @@ async def spectral_coherence(
 
 @app.post("/api/filter/apply")
 async def filter_apply(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -598,8 +896,7 @@ async def filter_apply(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
 
         ft = filter_type.lower()
@@ -622,6 +919,8 @@ async def filter_apply(
             raise ValueError(f"Unknown filter_type: {filter_type!r}")
 
         return {"times": to_list(t), "signal_raw": to_list(x), "signal_filtered": to_list(y)}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -633,7 +932,8 @@ async def filter_apply(
 
 @app.post("/api/timefreq/stft")
 async def timefreq_stft(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -647,11 +947,12 @@ async def timefreq_stft(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         freqs, times, Zxx = dsp.stft(x, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         return {"freqs": to_list(freqs), "times": to_list(times), "magnitude": to_list(np.abs(Zxx))}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -660,7 +961,8 @@ async def timefreq_stft(
 
 @app.post("/api/timefreq/cwt")
 async def timefreq_cwt(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -675,13 +977,14 @@ async def timefreq_cwt(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         f_max_ = f_max if f_max is not None else fs_ / 4.0
         freqs = np.geomspace(f_min, f_max_, n_freqs)
         freqs_out, times, W = dsp.cwt_scalogram(x, fs_, freqs=freqs, w=w)
         return {"freqs": to_list(freqs_out), "times": to_list(times), "magnitude": to_list(np.abs(W))}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -690,7 +993,8 @@ async def timefreq_cwt(
 
 @app.post("/api/timefreq/wvd")
 async def timefreq_wvd(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -701,8 +1005,7 @@ async def timefreq_wvd(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         if len(x) > 2048:
             raise HTTPException(status_code=422, detail=f"Signal too long for WVD ({len(x)} samples). Maximum is 2048.")
@@ -718,7 +1021,8 @@ async def timefreq_wvd(
 
 @app.post("/api/timefreq/spwvd")
 async def timefreq_spwvd(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -731,8 +1035,7 @@ async def timefreq_spwvd(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         if len(x) > 2048:
             raise HTTPException(status_code=422, detail=f"Signal too long for SPWVD ({len(x)} samples). Maximum is 2048.")
@@ -751,7 +1054,8 @@ async def timefreq_spwvd(
 
 @app.post("/api/instantaneous")
 async def instantaneous(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -762,8 +1066,7 @@ async def instantaneous(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         envelope, phase, inst_freq = dsp.hilbert_attributes(x, fs_)
         return {
@@ -773,6 +1076,8 @@ async def instantaneous(
             "phase": to_list(phase),
             "inst_freq": to_list(inst_freq),
         }
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -784,7 +1089,8 @@ async def instantaneous(
 
 @app.post("/api/emd/decompose")
 async def emd_decompose(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -797,11 +1103,12 @@ async def emd_decompose(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         imfs, residue = dsp.emd(x, max_imfs=max_imfs, max_sifting=max_sifting)
         return {"times": to_list(t), "imfs": to_list(imfs), "residue": to_list(residue)}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -810,7 +1117,8 @@ async def emd_decompose(
 
 @app.post("/api/emd/hht")
 async def emd_hht(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -824,8 +1132,7 @@ async def emd_hht(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
         imfs, residue = dsp.emd(x, max_imfs=max_imfs, max_sifting=max_sifting)
         envelopes, inst_freqs = dsp.hht(imfs, fs_)
@@ -839,6 +1146,8 @@ async def emd_hht(
             "marginal_freqs": to_list(marginal_freqs),
             "marginal_spectrum": to_list(marginal_spectrum),
         }
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -882,7 +1191,8 @@ def get_multichannel(
 
 @app.post("/api/peaks/detect")
 async def peaks_detect(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -900,8 +1210,7 @@ async def peaks_detect(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(
             parsed, time_col, signal_col, fs,
             win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
@@ -929,6 +1238,8 @@ async def peaks_detect(
             "bandwidths": to_list(bandwidths),
             "q_factors": to_list(q_factors),
         }
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -937,7 +1248,8 @@ async def peaks_detect(
 
 @app.post("/api/peaks/harmonics")
 async def peaks_harmonics(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -952,8 +1264,7 @@ async def peaks_harmonics(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(
             parsed, time_col, signal_col, fs,
             win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
@@ -970,6 +1281,8 @@ async def peaks_harmonics(
             "harmonic_values": to_list(harm_vals),
             "orders": to_list(orders),
         }
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -981,7 +1294,8 @@ async def peaks_harmonics(
 
 @app.post("/api/indicators")
 async def shm_indicators(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -996,8 +1310,7 @@ async def shm_indicators(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(
             parsed, time_col, signal_col, fs,
             win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
@@ -1026,6 +1339,8 @@ async def shm_indicators(
             "freq_times": to_list(t_freq),
             "dominant_freqs": to_list(dom_freqs),
         }
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -1037,7 +1352,8 @@ async def shm_indicators(
 
 @app.post("/api/multisensor/correlation")
 async def multisensor_correlation(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -1051,8 +1367,7 @@ async def multisensor_correlation(
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("At least 2 channels required")
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(
             parsed, time_col, cols, fs,
             win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
@@ -1060,6 +1375,8 @@ async def multisensor_correlation(
         from dspkit.multisensor import correlation_matrix as _corr_mat
         R = _corr_mat(data)
         return {"R": to_list(R), "labels": labels}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -1068,7 +1385,8 @@ async def multisensor_correlation(
 
 @app.post("/api/multisensor/coherence_matrix")
 async def multisensor_coherence_mat(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -1084,8 +1402,7 @@ async def multisensor_coherence_mat(
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("At least 2 channels required")
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(
             parsed, time_col, cols, fs,
             win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
@@ -1101,6 +1418,8 @@ async def multisensor_coherence_mat(
                     "Cxy": to_list(C[i, j, :]),
                 })
         return {"freqs": to_list(freqs), "pairs": pairs, "labels": labels}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -1112,7 +1431,8 @@ async def multisensor_coherence_mat(
 
 @app.post("/api/fdd/analyze")
 async def fdd_analyze(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -1135,8 +1455,7 @@ async def fdd_analyze(
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("At least 2 channels required")
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(
             parsed, time_col, cols, fs,
             win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
@@ -1177,6 +1496,8 @@ async def fdd_analyze(
             "natural_freqs": natural_freqs,
             "labels": labels,
         }
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -1188,7 +1509,8 @@ async def fdd_analyze(
 
 @app.post("/api/statistics/pdf")
 async def statistics_pdf(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -1201,8 +1523,7 @@ async def statistics_pdf(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(
             parsed, time_col, signal_col, fs,
             win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
@@ -1216,6 +1537,8 @@ async def statistics_pdf(
             "bin_centres": to_list(bin_centres),
             "hist_density": to_list(counts),
         }
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -1224,7 +1547,8 @@ async def statistics_pdf(
 
 @app.post("/api/statistics/joint")
 async def statistics_joint(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -1237,8 +1561,7 @@ async def statistics_joint(
     lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
 ):
     try:
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, _ = get_preprocessed(
             parsed, time_col, signal_col_x, fs,
             win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
@@ -1256,6 +1579,8 @@ async def statistics_joint(
             "xlabel": parsed["column_names"][signal_col_x],
             "ylabel": parsed["column_names"][signal_col_y],
         }
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -1264,7 +1589,8 @@ async def statistics_joint(
 
 @app.post("/api/statistics/covariance")
 async def statistics_covariance(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -1278,8 +1604,7 @@ async def statistics_covariance(
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("At least 2 channels required")
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(
             parsed, time_col, cols, fs,
             win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
@@ -1287,6 +1612,8 @@ async def statistics_covariance(
         from dspkit.statistics import covariance_matrix as _cov
         C = _cov(data)
         return {"C": to_list(C), "labels": labels}
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -1295,7 +1622,8 @@ async def statistics_covariance(
 
 @app.post("/api/statistics/mahalanobis")
 async def statistics_mahalanobis(
-    file: UploadFile,
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
@@ -1310,8 +1638,7 @@ async def statistics_mahalanobis(
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("At least 2 channels required")
-        content = await file.read()
-        parsed = parse_file(content, orientation, header_row)
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(
             parsed, time_col, cols, fs,
             win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
@@ -1325,6 +1652,8 @@ async def statistics_mahalanobis(
             "threshold": threshold,
             "percentile": percentile,
         }
+    except HTTPException:
+        raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
