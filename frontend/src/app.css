@@ -88,6 +88,8 @@ body {
   font-size: 15px;
   color: var(--accent-text);
 }
+.brand { display: flex; align-items: center; gap: 8px; }
+.brand-sub { color: var(--text-secondary); font-weight: 500; }
 .topbar-icon-btn {
   background: none;
   border: 1px solid var(--border-light);

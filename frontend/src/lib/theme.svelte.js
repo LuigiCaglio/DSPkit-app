@@ -82,6 +82,20 @@ export const THEMES = [
     },
   },
   {
+    id: 'daylight', name: 'Daylight', mode: 'light',
+    tokens: {
+      bgBase: '#f6faf8', bgSurface: '#ffffff', bgPanel: '#eef7f3',
+      bgRaised: '#ffffff', bgHover: '#e2f3ec',
+      border: '#d2e7de', borderLight: '#bfdcd0',
+      accent: '#10b981', accentHover: '#059669',
+      accentContrast: '#ffffff', accentText: '#047857',
+      textPrimary: '#122621', textSecondary: '#425f56',
+      textMuted: '#6b8880', textFaint: '#9fb7b0',
+      danger: '#dc2626', success: '#0284c7', warning: '#b45309',
+      plotPaper: '#ffffff', plotBg: '#ffffff', plotGrid: '#dbeee6',
+    },
+  },
+  {
     id: 'neon', name: 'Neon', mode: 'dark',
     tokens: {
       bgBase: '#0d0d0d', bgSurface: '#16162a', bgPanel: '#0d0d0d',
@@ -98,7 +112,7 @@ export const THEMES = [
 ]
 
 const STORAGE_KEY = 'dspkit-theme'
-const DEFAULT_ID = 'midnight'
+const DEFAULT_ID = 'daylight'
 
 export function themeById(id) {
   return THEMES.find(t => t.id === id) ?? THEMES[0]

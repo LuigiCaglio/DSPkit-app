@@ -1,4 +1,5 @@
 <script>
+  import DspkitLogo        from './lib/DspkitLogo.svelte'
   import FileUpload        from './lib/FileUpload.svelte'
   import AnalysisPanel     from './lib/AnalysisPanel.svelte'
   import PlotPanel         from './lib/PlotPanel.svelte'
@@ -240,7 +241,10 @@
 </script>
 
 <div class="topbar">
-  <span>DSPkit GUI</span>
+  <span class="brand">
+    <DspkitLogo size={24} />
+    <span>DSPkit <span class="brand-sub">GUI</span></span>
+  </span>
 
   {#if session}
     <div class="status-chips">
