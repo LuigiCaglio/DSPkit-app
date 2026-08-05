@@ -157,6 +157,68 @@ def test_single_channel(base, sess, r):
                 f"[{lo:.6f}, {hi:.6f}]")
 
 
+def test_preprocessing_reaches_analyses(base, sess, r):
+    """A cutoff picked on the spectrum must actually change the spectrum.
+
+    The UI sets hp_cutoff/lp_cutoff as query parameters (buildPreprocUrl) and
+    then replays the last request. If that plumbing breaks, the red band still
+    renders and the numbers still update, but nothing is filtered -- which looks
+    exactly like it is working.
+    """
+    r.section("Preprocessing cutoffs reach the analyses")
+    f = base_fields(sess, [1])
+    band = 50.0
+
+    st, plain = post(base, "/api/spectral/fft",
+                     {**f, "window": "hann", "scaling": "amplitude"})
+    st_hp, hp = post(base, f"/api/spectral/fft?hp_cutoff={band}",
+                     {**f, "window": "hann", "scaling": "amplitude"})
+    if not r.check(st == 200 and st_hp == 200, "fft responds with and without a high-pass"):
+        return
+
+    def energy_below(d, cutoff):
+        return sum(a for fq, a in zip(d["freqs"], d["signals"][0]["amplitude"]) if fq < cutoff)
+
+    def energy_above(d, cutoff):
+        return sum(a for fq, a in zip(d["freqs"], d["signals"][0]["amplitude"]) if fq > cutoff)
+
+    lo_plain, lo_hp = energy_below(plain, band), energy_below(hp, band)
+    r.check(lo_hp < lo_plain * 0.2,
+            "a high-pass removes most of the content below its cutoff",
+            f"{lo_plain:.4g} -> {lo_hp:.4g}")
+
+    hi_plain, hi_hp = energy_above(plain, band * 2), energy_above(hp, band * 2)
+    r.check(abs(hi_hp - hi_plain) < hi_plain * 0.1 + 1e-12,
+            "and leaves the pass band alone", f"{hi_plain:.4g} -> {hi_hp:.4g}")
+
+    # Low-pass, the mirror case.
+    st_lp, lp = post(base, f"/api/spectral/fft?lp_cutoff={band}",
+                     {**f, "window": "hann", "scaling": "amplitude"})
+    hi_lp = energy_above(lp, band)
+    r.check(st_lp == 200 and hi_lp < energy_above(plain, band) * 0.2,
+            "a low-pass removes most of the content above its cutoff",
+            f"{energy_above(plain, band):.4g} -> {hi_lp:.4g}")
+
+    # Band-pass is the two together, which is how the UI represents it.
+    st_bp, bp = post(base, "/api/spectral/fft?hp_cutoff=20&lp_cutoff=200",
+                     {**f, "window": "hann", "scaling": "amplitude"})
+    r.check(st_bp == 200
+            and energy_below(bp, 20) < energy_below(plain, 20) * 0.2
+            and energy_above(bp, 200) < energy_above(plain, 200) * 0.2,
+            "a band-pass is the high-pass and low-pass together")
+
+    # The same plumbing carries the PSD, which is where the band is picked.
+    st_psd, psd_hp = post(base, f"/api/spectral/psd?hp_cutoff={band}",
+                          {**f, "window": "hann", "nperseg": 1024, "scaling": "density"})
+    st_psd0, psd0 = post(base, "/api/spectral/psd",
+                         {**f, "window": "hann", "nperseg": 1024, "scaling": "density"})
+    if st_psd == 200 and st_psd0 == 200:
+        below = lambda d: sum(  # noqa: E731
+            p for fq, p in zip(d["freqs"], d["signals"][0]["Pxx"]) if fq < band)
+        r.check(below(psd_hp) < below(psd0) * 0.2,
+                "the PSD is filtered the same way", f"{below(psd0):.4g} -> {below(psd_hp):.4g}")
+
+
 def test_session_errors(base, sess, r):
     r.section("Session handling")
     st, d = post(base, "/api/signal/timeseries",
@@ -178,6 +240,7 @@ def main(base):
     test_fdd_needs_response_channels(base, sess, r)
     test_fanout(base, sess, r)
     test_single_channel(base, sess, r)
+    test_preprocessing_reaches_analyses(base, sess, r)
     test_session_errors(base, sess, r)
     return r.report()
 

@@ -76,8 +76,11 @@
   let bandLo  = $state('')
   let bandHi  = $state('')
 
+  // Only a real tab change discards the picked band. Depending on plotData too
+  // meant every re-run — including the one applying the cutoff — wiped the
+  // numbers the user had just selected.
   $effect(() => {
-    const _ = activeTab, __ = plotData
+    const _ = activeTab
     picking = false; bandLo = ''; bandHi = ''
   })
 

@@ -1,5 +1,4 @@
 <script>
-  import { tick }          from 'svelte'
   import DspkitLogo        from './lib/DspkitLogo.svelte'
   import FileUpload        from './lib/FileUpload.svelte'
   import AnalysisPanel     from './lib/AnalysisPanel.svelte'
@@ -168,16 +167,19 @@
     rerunActive()
   }
 
-  /** Recompute whatever is on screen, so a new cutoff shows immediately. */
-  async function rerunActive() {
-    if (activeTab === 'overview') { runOverview(); return }
-    // Remounting the control re-fires its auto-run with the settings it kept.
-    // tick() is required: without waiting for the DOM to settle, Svelte would
-    // batch the two assignments into no change at all and nothing would re-run.
-    const tab = activeTab
-    activeTab = ''
-    await tick()
-    activeTab = tab
+  /**
+   * Recompute whatever is on screen, so a new cutoff shows immediately.
+   *
+   * Replays the last request rather than remounting the control to re-fire its
+   * auto-run: the remount blanked activeTab for a tick, which downstream reads
+   * as a tab change and threw away the band the user had just picked.
+   */
+  function rerunActive() {
+    if (!lastRun) return
+    const { kind, endpoint, extra, ref } = lastRun
+    if (kind === 'overview')     runOverview()
+    else if (kind === 'overlay') runPairOverlay(endpoint, extra, ref)
+    else                         runAnalysis(endpoint, extra)
   }
 
   let currentCategory = $derived(CATEGORIES.find(c => c.id === activeCategory))
@@ -321,6 +323,9 @@
   // Results can arrive after the user has moved on. Only the newest run wins.
   let runSeq = 0
 
+  // The last request issued, so changing preprocessing can replay it verbatim.
+  let lastRun = null
+
   /**
    * The one way activeTab changes. Switching analysis must not leave the
    * previous chart on screen — payload shapes differ between analyses, so a
@@ -354,6 +359,7 @@
     if (signalCols.length === 0) { plotError = 'Select at least one channel.'; return }
     if (extraFields.signal_col === ALL_CHANNELS) return runFanout(endpoint, extraFields)
 
+    lastRun = { kind: 'single', endpoint, extra: extraFields }
     const seq = ++runSeq
     loading = true
     plotData = null
@@ -372,6 +378,7 @@
    * knowledge. The session means each call re-uses the already-parsed file.
    */
   async function runFanout(endpoint, extraFields) {
+    lastRun = { kind: 'fanout', endpoint, extra: extraFields }
     const seq = ++runSeq
     loading = true
     plotData = null
@@ -396,6 +403,7 @@
    */
   async function runPairOverlay(endpoint, extraFields, refCol) {
     if (!session) return
+    lastRun = { kind: 'overlay', endpoint, extra: extraFields, ref: refCol }
     const seq = ++runSeq
     loading = true
     plotData = null
@@ -427,6 +435,7 @@
    */
   async function runOverview() {
     if (!session || signalCols.length === 0) return
+    lastRun = { kind: 'overview' }
     const seq = ++runSeq
     loading = true
     plotData = null
