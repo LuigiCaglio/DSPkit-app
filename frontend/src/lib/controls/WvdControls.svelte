@@ -1,8 +1,8 @@
 <script>
-  let { signalColX, timeCol, fsManual, loading, runAnalysis } = $props()
+  let { signalCol, loading, runAnalysis } = $props()
 
   function run() {
-    runAnalysis('/api/timefreq/wvd', { signal_col: signalColX })
+    runAnalysis('/api/timefreq/wvd', { signal_col: signalCol })
   }
 </script>
 

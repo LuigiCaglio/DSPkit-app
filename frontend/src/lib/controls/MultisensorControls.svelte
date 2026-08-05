@@ -1,5 +1,6 @@
 <script>
-  let { loading, runAnalysis, dualSignal } = $props()
+  import { onMount } from 'svelte'
+  let { loading, runAnalysis, dualSignal, autoRun = false} = $props()
   let mode    = $state('correlation')
   let window_ = $state('hann')
   let nperseg = $state(1024)
@@ -11,6 +12,10 @@
       runAnalysis('/api/multisensor/coherence_matrix', { window: window_, nperseg })
     }
   }
+
+  // Opening the tab computes with the current settings; the Run button is for
+  // re-running after a change. Guarded so an expensive tab can opt out.
+  onMount(() => { if (autoRun && dualSignal) run() })
 </script>
 
 <div class="field">

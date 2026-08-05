@@ -1,11 +1,11 @@
 <script>
-  let { signalColX, timeCol, fsManual, loading, runAnalysis } = $props()
+  let { signalCol, loading, runAnalysis } = $props()
   let lagSamples  = $state(null)
   let timeSamples = $state(null)
 
   function run() {
     runAnalysis('/api/timefreq/spwvd', {
-      signal_col: signalColX,
+      signal_col: signalCol,
       lag_samples:  lagSamples  || undefined,
       time_samples: timeSamples || undefined,
     })

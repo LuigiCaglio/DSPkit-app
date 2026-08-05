@@ -5,6 +5,8 @@
   import PlotPanel         from './lib/PlotPanel.svelte'
   import PreprocessPanel   from './lib/PreprocessPanel.svelte'
   import RightSidebar      from './lib/RightSidebar.svelte'
+  import ChannelSelect     from './lib/ChannelSelect.svelte'
+  import { ALL_CHANNELS } from './lib/analyses.js'
 
   // ── session ────────────────────────────────────────────────────────────────
   // The file is uploaded and parsed once; every analysis call then refers to it
@@ -21,10 +23,15 @@
   let fsManual    = $state(1000)
   let layoutOpen  = $state(false)   // the override panel stays shut unless needed
 
-  // ── column assignment ──────────────────────────────────────────────────────
-  let signalCols = $state([])
-  let signalColX = $state(0)
-  let signalColY = $state(1)
+  // ── channel selection ──────────────────────────────────────────────────────
+  // signalCols is the single source of truth. focusChannel and pairX/pairY are
+  // views onto it for analyses that take fewer channels than are selected; they
+  // are surfaced in the controls strip next to the plot, never only in a
+  // sidebar, so a result always states which channel it came from.
+  let signalCols   = $state([])
+  let focusChannel = $state(0)             // index, or ALL_CHANNELS for a grid
+  let pairX        = $state(0)
+  let pairY        = $state(1)
 
   // ── preprocessing state ────────────────────────────────────────────────────
   let preproc = $state({
@@ -56,6 +63,9 @@
 
   // ── category → sub-tabs mapping ────────────────────────────────────────────
   const CATEGORIES = [
+    { id: 'overview',      label: 'Overview',      tabs: [
+      { id: 'overview', label: 'Overview' },
+    ]},
     { id: 'inspect',       label: 'Inspect',       tabs: [
       { id: 'timeseries', label: 'Time series' },
       { id: 'datatable', label: 'Data table' },
@@ -92,10 +102,25 @@
   let hasFile     = $derived(file !== null)
   let hasParsed   = $derived(session !== null)
   let nSignals    = $derived(session ? session.n_columns : 0)
-  let dualSignal  = $derived(nSignals >= 2)
   let effectiveFs = $derived(session?.fs ?? fsManual)
+  let columnNames = $derived(session?.column_names ?? [])
+
+  // "Dual" now means two channels are actually *selected*, not merely present —
+  // a pairwise analysis needs two things to pair.
+  let dualSignal  = $derived(signalCols.length >= 2)
+
+  const channelName = (i) => columnNames[i] ?? `Ch ${i}`
 
   let currentCategory = $derived(CATEGORIES.find(c => c.id === activeCategory))
+
+  // Keep the derived picks pointing at channels that are still selected.
+  $effect(() => {
+    const sel = signalCols
+    if (sel.length === 0) return
+    if (focusChannel !== ALL_CHANNELS && !sel.includes(focusChannel)) focusChannel = sel[0]
+    if (!sel.includes(pairX)) pairX = sel[0]
+    if (!sel.includes(pairY)) pairY = sel[1] ?? sel[0]
+  })
 
   /** Plain-language summary of what the loader worked out on its own. */
   let detectSummary = $derived.by(() => {
@@ -116,8 +141,10 @@
     const cat = CATEGORIES.find(c => c.id === catId)
     if (cat && cat.tabs.length > 0) {
       const first = cat.tabs.find(t => !t.dual || dualSignal) ?? cat.tabs[0]
-      activeTab = first.id
+      switchTab(first.id)
     }
+    // Overview is a summary, not a form — coming back to it should re-run it.
+    if (catId === 'overview') runOverview()
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────
@@ -150,11 +177,12 @@
   }
 
   /** Default the signal selection to every non-time column. */
-  function applySessionDefaults(columnNames, tCol) {
-    const nonTime = columnNames.map((_, i) => i).filter(i => i !== tCol)
-    signalCols = nonTime
-    signalColX = nonTime[0] ?? 0
-    signalColY = nonTime[1] ?? signalColX
+  function applySessionDefaults(names, tCol) {
+    const nonTime = names.map((_, i) => i).filter(i => i !== tCol)
+    signalCols   = nonTime
+    focusChannel = nonTime[0] ?? 0
+    pairX        = nonTime[0] ?? 0
+    pairY        = nonTime[1] ?? pairX
   }
 
   /** Upload once; the backend detects layout and hands back a session. */
@@ -181,9 +209,9 @@
       parsing = false
     }
     // Show the data straight away rather than making the user hunt for a button.
-    activeCategory = 'inspect'
-    activeTab = 'timeseries'
-    await runAnalysis('/api/signal/timeseries', {})
+    activeCategory = 'overview'
+    activeTab = 'overview'
+    await runOverview()
   }
 
   /** Re-read the cached file with a layout the user changed by hand. */
@@ -221,22 +249,100 @@
     createSession(f)
   }
 
-  async function runAnalysis(endpoint, extraFields) {
+  // Results can arrive after the user has moved on. Only the newest run wins.
+  let runSeq = 0
+
+  /**
+   * The one way activeTab changes. Switching analysis must not leave the
+   * previous chart on screen — payload shapes differ between analyses, so a
+   * stale one renders as a wrong or blank plot — and it must invalidate any
+   * request still in flight. Done here rather than in an $effect so it can't
+   * race the incoming control's auto-run.
+   */
+  function switchTab(tabId) {
+    if (activeTab === tabId) return
+    runSeq++
+    plotData  = null
+    plotError = null
+    activeTab = tabId
+  }
+
+  /** One POST. Returns {data} or {error} rather than throwing. */
+  async function post(endpoint, extraFields = {}) {
+    try {
+      const res  = await fetch(buildPreprocUrl(endpoint), {
+        method: 'POST', body: buildFormData(extraFields),
+      })
+      const data = await res.json()
+      return res.ok ? { data } : { error: data.detail }
+    } catch (e) {
+      return { error: e.message }
+    }
+  }
+
+  async function runAnalysis(endpoint, extraFields = {}) {
     if (!session) return
+    if (signalCols.length === 0) { plotError = 'Select at least one channel.'; return }
+    if (extraFields.signal_col === ALL_CHANNELS) return runFanout(endpoint, extraFields)
+
+    const seq = ++runSeq
     loading = true
     plotData = null
     plotError = null
-    try {
-      const url  = buildPreprocUrl(endpoint)
-      const res  = await fetch(url, { method: 'POST', body: buildFormData(extraFields) })
-      const data = await res.json()
-      if (!res.ok) { plotError = data.detail; return }
-      plotData = data
-    } catch (e) {
-      plotError = e.message
-    } finally {
-      loading = false
-    }
+    const { data, error } = await post(endpoint, extraFields)
+    if (seq !== runSeq) return
+    if (error) plotError = error
+    else plotData = data
+    loading = false
+  }
+
+  /**
+   * Run a single-channel analysis once per selected channel, in parallel, and
+   * collect the results into a small-multiples grid. Every endpoint that takes
+   * one channel names the field `signal_col`, so this needs no per-analysis
+   * knowledge. The session means each call re-uses the already-parsed file.
+   */
+  async function runFanout(endpoint, extraFields) {
+    const seq = ++runSeq
+    loading = true
+    plotData = null
+    plotError = null
+    const channels = [...signalCols]
+    const results = await Promise.all(channels.map(async (ci) => {
+      const { data, error } = await post(endpoint, { ...extraFields, signal_col: ci })
+      return { name: channelName(ci), col: ci, data, error }
+    }))
+    if (seq !== runSeq) return
+    // A grid where every cell failed is just an error; show it as one.
+    if (results.every(r => r.error)) plotError = results[0].error
+    else plotData = { grid: results }
+    loading = false
+  }
+
+  /**
+   * The first look at a file: what the signals do, where their energy sits, and
+   * — with 2+ channels — the FDD singular values that suggest candidate modes.
+   * Composed from the existing endpoints so it honours preprocessing for free.
+   */
+  async function runOverview() {
+    if (!session || signalCols.length === 0) return
+    const seq = ++runSeq
+    loading = true
+    plotData = null
+    plotError = null
+    const [ts, psd, fdd] = await Promise.all([
+      post('/api/signal/timeseries', {}),
+      post('/api/spectral/psd', { window: 'hann', nperseg: 1024, scaling: 'density' }),
+      signalCols.length >= 2
+        ? post('/api/fdd/analyze', {
+            window: 'hann', nperseg: 1024, mac_threshold: 0.8, n_crossings: 10,
+          })
+        : Promise.resolve({ skipped: 'FDD needs at least 2 selected channels.' }),
+    ])
+    if (seq !== runSeq) return
+    if (ts.error && psd.error) plotError = ts.error
+    else plotData = { overview: { ts, psd, fdd } }
+    loading = false
   }
 </script>
 
@@ -310,38 +416,11 @@
         {/if}
       </div>
 
-      <div class="col-selectors">
-        <div class="field">
-          <label for="sig-cols">Signal columns</label>
-          <select id="sig-cols" multiple bind:value={signalCols}
-                  size={Math.min(nSignals, 5)} style="width:100%">
-            {#each session.column_names as name, i}
-              {#if i !== timeCol}
-                <option value={i}>{name}</option>
-              {/if}
-            {/each}
-          </select>
-        </div>
-
-        {#if dualSignal}
-          <div class="field">
-            <label for="ref-col">Reference (cross)</label>
-            <select id="ref-col" bind:value={signalColX}>
-              {#each session.column_names as name, i}
-                {#if i !== timeCol}<option value={i}>{name}</option>{/if}
-              {/each}
-            </select>
-          </div>
-          <div class="field">
-            <label for="resp-col">Response (cross)</label>
-            <select id="resp-col" bind:value={signalColY}>
-              {#each session.column_names as name, i}
-                {#if i !== timeCol}<option value={i}>{name}</option>{/if}
-              {/each}
-            </select>
-          </div>
-        {/if}
-      </div>
+      <ChannelSelect
+        columnNames={session.column_names}
+        {timeCol}
+        bind:selected={signalCols}
+      />
 
       <!-- Layout overrides — only needed when detection guessed wrong -->
       <hr />
@@ -413,7 +492,7 @@
               class="sub-tab-btn"
               class:active={activeTab === tab.id}
               disabled={tab.dual && !dualSignal}
-              onclick={() => activeTab = tab.id}
+              onclick={() => switchTab(tab.id)}
             >{tab.label}</button>
           {/each}
         </div>
@@ -423,13 +502,15 @@
       <AnalysisPanel
         {activeTab}
         {dualSignal}
-        {signalColX}
-        {signalColY}
-        {timeCol}
-        fsManual={effectiveFs}
+        {columnNames}
+        selected={signalCols}
+        bind:focusChannel
+        bind:pairX
+        bind:pairY
         {loading}
         {plotError}
         {runAnalysis}
+        {runOverview}
       />
 
       <!-- Plot area -->

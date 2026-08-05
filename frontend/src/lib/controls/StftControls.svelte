@@ -1,17 +1,22 @@
 <script>
-  let { signalColX, timeCol, fsManual, loading, runAnalysis } = $props()
+  import { onMount } from 'svelte'
+  let { signalCol, loading, runAnalysis, autoRun = false} = $props()
   let window_  = $state('hann')
   let nperseg  = $state(256)
   let noverlap = $state(null)
 
   function run() {
     runAnalysis('/api/timefreq/stft', {
-      signal_col: signalColX,
+      signal_col: signalCol,
       window: window_,
       nperseg,
       noverlap: noverlap || undefined,
     })
   }
+
+  // Opening the tab computes with the current settings; the Run button is for
+  // re-running after a change. Guarded so an expensive tab can opt out.
+  onMount(() => { if (autoRun) run() })
 </script>
 
 <div class="field">

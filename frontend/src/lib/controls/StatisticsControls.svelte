@@ -1,21 +1,38 @@
 <script>
-  let { signalColX, signalColY, timeCol, fsManual, loading, runAnalysis, dualSignal } = $props()
+  import { onMount } from 'svelte'
+  import ChannelScope from '../ChannelScope.svelte'
+
+  // The only control whose channel arity changes with its own mode, so it
+  // renders its own scope picker rather than letting AnalysisPanel guess.
+  let {
+    columnNames = [], selected = [],
+    focusChannel = $bindable(null), pairX = $bindable(null), pairY = $bindable(null),
+    loading, runAnalysis, dualSignal, autoRun = false,} = $props()
+
   let mode       = $state('pdf')
   let bins       = $state(50)
   let bandwidth  = $state(null)
   let percentile = $state(99)
 
+  const SCOPE_BY_MODE = {
+    pdf:         'single',
+    joint:       'pair',
+    covariance:  'multi',
+    mahalanobis: 'multi',
+  }
+  let scope = $derived(SCOPE_BY_MODE[mode])
+
   function run() {
     if (mode === 'pdf') {
       runAnalysis('/api/statistics/pdf', {
-        signal_col: signalColX,
+        signal_col: focusChannel,
         bins,
         bandwidth: bandwidth || undefined,
       })
     } else if (mode === 'joint') {
       runAnalysis('/api/statistics/joint', {
-        signal_col_x: signalColX,
-        signal_col_y: signalColY,
+        signal_col_x: pairX,
+        signal_col_y: pairY,
         bins,
       })
     } else if (mode === 'covariance') {
@@ -24,6 +41,10 @@
       runAnalysis('/api/statistics/mahalanobis', { percentile })
     }
   }
+
+  // Opening the tab computes with the current settings; the Run button is for
+  // re-running after a change. Guarded so an expensive tab can opt out.
+  onMount(() => { if (autoRun) run() })
 </script>
 
 <div class="field">
@@ -35,6 +56,16 @@
     <option value="mahalanobis" disabled={!dualSignal}>Mahalanobis distance</option>
   </select>
 </div>
+
+<ChannelScope
+  kind={scope}
+  {columnNames}
+  {selected}
+  bind:focus={focusChannel}
+  bind:pairX
+  bind:pairY
+/>
+
 {#if mode === 'pdf'}
   <div class="field">
     <label>Bins</label>

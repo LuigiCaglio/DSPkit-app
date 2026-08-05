@@ -1,5 +1,6 @@
 <script>
-  let { signalColX, timeCol, fsManual, loading, runAnalysis } = $props()
+  import { onMount } from 'svelte'
+  let { signalCol, loading, runAnalysis, autoRun = false} = $props()
   let filterType  = $state('lowpass')
   let cutoff      = $state(100)
   let low         = $state(50)
@@ -13,12 +14,16 @@
   const NEEDS_FREQ    = new Set(['notch'])
 
   function run() {
-    const extra = { signal_col: signalColX, filter_type: filterType, order, zero_phase: zeroPhase }
+    const extra = { signal_col: signalCol, filter_type: filterType, order, zero_phase: zeroPhase }
     if (NEEDS_CUTOFF.has(filterType))  extra.cutoff = cutoff
     if (NEEDS_LOWHIGH.has(filterType)) { extra.low = low; extra.high = high }
     if (NEEDS_FREQ.has(filterType))    extra.freq = freq
     runAnalysis('/api/filter/apply', extra)
   }
+
+  // Opening the tab computes with the current settings; the Run button is for
+  // re-running after a change. Guarded so an expensive tab can opt out.
+  onMount(() => { if (autoRun) run() })
 </script>
 
 <div class="field">

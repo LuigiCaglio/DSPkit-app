@@ -1,18 +1,23 @@
 <script>
-  let { signalColX, signalColY, timeCol, fsManual, loading, runAnalysis, dualSignal } = $props()
+  import { onMount } from 'svelte'
+  let { pairX, pairY, loading, runAnalysis, dualSignal, autoRun = false} = $props()
   let window_  = $state('hann')
   let nperseg  = $state(1024)
   let noverlap = $state(null)
 
   function run() {
     runAnalysis('/api/spectral/csd', {
-      signal_col_x: signalColX,
-      signal_col_y: signalColY,
+      signal_col_x: pairX,
+      signal_col_y: pairY,
       window: window_,
       nperseg,
       noverlap: noverlap || undefined,
     })
   }
+
+  // Opening the tab computes with the current settings; the Run button is for
+  // re-running after a change. Guarded so an expensive tab can opt out.
+  onMount(() => { if (autoRun && dualSignal) run() })
 </script>
 
 {#if !dualSignal}

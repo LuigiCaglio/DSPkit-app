@@ -1,12 +1,12 @@
 <script>
-  let { signalColX, timeCol, fsManual, loading, runAnalysis } = $props()
+  let { signalCol, loading, runAnalysis } = $props()
   let maxImfs    = $state(null)
   let maxSifting = $state(10)
   let nBins      = $state(512)
 
   function run() {
     runAnalysis('/api/emd/hht', {
-      signal_col:  signalColX,
+      signal_col:  signalCol,
       max_imfs:    maxImfs    || undefined,
       max_sifting: maxSifting,
       n_bins:      nBins,

@@ -1,5 +1,6 @@
 <script>
-  let { loading, runAnalysis, dualSignal } = $props()
+  import { onMount } from 'svelte'
+  let { loading, runAnalysis, dualSignal, autoRun = false} = $props()
   let window_       = $state('hann')
   let nperseg       = $state(1024)
   let prominence    = $state(null)
@@ -23,6 +24,10 @@
       n_crossings,
     })
   }
+
+  // Opening the tab computes with the current settings; the Run button is for
+  // re-running after a change. Guarded so an expensive tab can opt out.
+  onMount(() => { if (autoRun && dualSignal) run() })
 </script>
 
 <div class="field">
@@ -68,4 +73,8 @@
 </button>
 {#if !dualSignal}
   <div style="font-size:11px;color:var(--warning);margin-top:4px">Requires 2+ channels</div>
+{:else}
+  <div style="font-size:11px;color:var(--text-muted);margin-top:4px;max-width:190px">
+    Output-only method — deselect excitation/force channels.
+  </div>
 {/if}

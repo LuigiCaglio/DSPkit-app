@@ -1,16 +1,21 @@
 <script>
-  let { signalColX, signalColY, timeCol, fsManual, loading, runAnalysis, dualSignal } = $props()
+  import { onMount } from 'svelte'
+  let { pairX, pairY, loading, runAnalysis, dualSignal, autoRun = false} = $props()
   let normalize = $state(true)
   let maxLag    = $state(null)
 
   function run() {
     runAnalysis('/api/spectral/cross_correlation', {
-      signal_col_x: signalColX,
-      signal_col_y: signalColY,
+      signal_col_x: pairX,
+      signal_col_y: pairY,
       normalize,
       max_lag: maxLag || undefined,
     })
   }
+
+  // Opening the tab computes with the current settings; the Run button is for
+  // re-running after a change. Guarded so an expensive tab can opt out.
+  onMount(() => { if (autoRun && dualSignal) run() })
 </script>
 
 {#if !dualSignal}

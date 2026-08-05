@@ -1,5 +1,6 @@
 <script>
-  let { signalColX, timeCol, fsManual, loading, runAnalysis } = $props()
+  import { onMount } from 'svelte'
+  let { signalCol, loading, runAnalysis, autoRun = false} = $props()
   let spectrum_type = $state('fft')
   let window_       = $state('hann')
   let nperseg       = $state(1024)
@@ -10,7 +11,7 @@
 
   function run() {
     runAnalysis('/api/peaks/detect', {
-      signal_col: signalColX,
+      signal_col: signalCol,
       spectrum_type,
       window: window_,
       nperseg,
@@ -20,6 +21,10 @@
       max_peaks: max_peaks || undefined,
     })
   }
+
+  // Opening the tab computes with the current settings; the Run button is for
+  // re-running after a change. Guarded so an expensive tab can opt out.
+  onMount(() => { if (autoRun) run() })
 </script>
 
 <div class="field">

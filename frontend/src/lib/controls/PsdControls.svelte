@@ -1,5 +1,6 @@
 <script>
-  let { loading, runAnalysis } = $props()
+  import { onMount } from 'svelte'
+  let { loading, runAnalysis, autoRun = false} = $props()
   let window_  = $state('hann')
   let nperseg  = $state(1024)
   let noverlap = $state(null)
@@ -13,6 +14,10 @@
       scaling,
     })
   }
+
+  // Opening the tab computes with the current settings; the Run button is for
+  // re-running after a change. Guarded so an expensive tab can opt out.
+  onMount(() => { if (autoRun) run() })
 </script>
 
 <div class="field">

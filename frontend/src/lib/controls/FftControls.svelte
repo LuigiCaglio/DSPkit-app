@@ -1,11 +1,16 @@
 <script>
-  let { loading, runAnalysis } = $props()
+  import { onMount } from 'svelte'
+  let { loading, runAnalysis, autoRun = false} = $props()
   let window_ = $state('hann')
   let scaling  = $state('amplitude')
 
   function run() {
     runAnalysis('/api/spectral/fft', { window: window_, scaling })
   }
+
+  // Opening the tab computes with the current settings; the Run button is for
+  // re-running after a change. Guarded so an expensive tab can opt out.
+  onMount(() => { if (autoRun) run() })
 </script>
 
 <div class="field">

@@ -1,5 +1,6 @@
 <script>
-  let { loading, runAnalysis } = $props()
+  import { onMount } from 'svelte'
+  let { loading, runAnalysis, autoRun = false} = $props()
   let normalize = $state(true)
   let maxLag    = $state(null)
 
@@ -9,6 +10,10 @@
       max_lag: maxLag || undefined,
     })
   }
+
+  // Opening the tab computes with the current settings; the Run button is for
+  // re-running after a change. Guarded so an expensive tab can opt out.
+  onMount(() => { if (autoRun) run() })
 </script>
 
 <div class="checkbox-row">

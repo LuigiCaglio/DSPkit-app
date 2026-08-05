@@ -1,5 +1,5 @@
 <script>
-  let { signalColX, timeCol, fsManual, loading, runAnalysis } = $props()
+  let { signalCol, loading, runAnalysis } = $props()
   let fMin   = $state(1.0)
   let fMax   = $state(null)
   let nFreqs = $state(50)
@@ -7,7 +7,7 @@
 
   function run() {
     runAnalysis('/api/timefreq/cwt', {
-      signal_col: signalColX,
+      signal_col: signalCol,
       f_min: fMin,
       f_max: fMax || undefined,
       n_freqs: nFreqs,

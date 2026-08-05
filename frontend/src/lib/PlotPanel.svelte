@@ -1,24 +1,38 @@
 <script>
-  import { onDestroy } from 'svelte'
-  import Plotly from 'plotly.js-dist-min'
+  import PlotCanvas from './PlotCanvas.svelte'
+  import ResizablePane from './ResizablePane.svelte'
   import { plotTheme, themeState } from './theme.svelte.js'
+  import { buildPlot, buildPhasePlot, isDownsampledFor, MAX_PLOT_POINTS } from './plotSpec.js'
+  import { ZOOMABLE } from './analyses.js'
 
   let { activeTab, plotData, loading, plotError } = $props()
 
-  let container  = $state(null)
-  let container2 = $state(null)
+  // Three shapes arrive here:
+  //   {grid: [...]}      a single-channel analysis fanned out per channel
+  //   {overview: {...}}  the composed first-look
+  //   anything else      one analysis, one chart
+  let grid     = $derived(plotData?.grid ?? null)
+  let overview = $derived(plotData?.overview ?? null)
+  let single   = $derived(plotData && !grid && !overview ? plotData : null)
 
   // ── display options (local state) ───────────────────────────────────────────
   let showPhase        = $state(false)
   let normalizeSignals = $state(false)
   let yLogScale        = $state(false)
 
+  // Shared row height for the small-multiples grid; every cell binds to it.
+  let gridCellH = $state(270)
+
+  // Which half of the cross-correlation lag axis to show.
+  let lagSide = $state('both')
+  $effect(() => { const _ = activeTab; lagSide = 'both' })
+
   // ── PSD-specific axis controls ───────────────────────────────────────────────
-  let psdYLog    = $state(true)   // default: log scale
-  let psdXMin    = $state('')
-  let psdXMax    = $state('')
-  let psdYMin    = $state('')
-  let psdYMax    = $state('')
+  let psdYLog = $state(true)   // default: log scale
+  let psdXMin = $state('')
+  let psdXMax = $state('')
+  let psdYMin = $state('')
+  let psdYMax = $state('')
 
   // Reset phase panel when switching tabs
   $effect(() => { const _ = activeTab; showPhase = false })
@@ -30,518 +44,215 @@
     }
   })
 
+  // ── large-data downsampling ────────────────────────────────────────────────
+  let showAllPoints = $state(false)
+  $effect(() => { const _ = plotData; showAllPoints = false })
+
+  let isDownsampled = $derived(
+    !!single && isDownsampledFor(activeTab, single) && !showAllPoints
+  )
+
+  // ── zoom-follows-resolution ────────────────────────────────────────────────
+  // A long record is decimated to fit the point budget. When the user zooms in,
+  // re-spend that budget on the visible window instead, up to the raw sample
+  // rate — the data is already here, so no request is needed.
+  let zoomable = $derived(ZOOMABLE.has(activeTab) && !!single)
+  let xRange   = $state(null)
+
+  // A new payload or a different analysis invalidates the old window.
+  $effect(() => { const _ = plotData, __ = activeTab; xRange = null })
+
+  function onRelayout(e) {
+    if (!e) return
+    if (e['xaxis.autorange'] || e.autosize) { xRange = null; return }
+    const lo = e['xaxis.range[0]'] ?? e['xaxis.range']?.[0]
+    const hi = e['xaxis.range[1]'] ?? e['xaxis.range']?.[1]
+    if (lo == null || hi == null) return
+    // Ignore the echo of our own pinned range, which would loop.
+    if (xRange && Math.abs(xRange[0] - lo) < 1e-12 && Math.abs(xRange[1] - hi) < 1e-12) return
+    xRange = [lo, hi]
+  }
+
+  /** Points actually drawn for the first series, so the gain is visible. */
+  let drawnPoints = $derived.by(() => {
+    if (!mainSpec?.traces?.length) return 0
+    return mainSpec.traces.reduce((m, t) => Math.max(m, t.x?.length ?? 0), 0)
+  })
+  /** True once the window is small enough to be drawn at full sample rate. */
+  let atFullRate = $derived(!!xRange && drawnPoints < MAX_PLOT_POINTS)
+
   // ── derived ─────────────────────────────────────────────────────────────────
   let canShowPhase = $derived(
-    plotData !== null && (activeTab === 'fft' || activeTab === 'coherence')
+    single !== null && (activeTab === 'fft' || activeTab === 'coherence')
   )
   let hasPhaseData = $derived(
     canShowPhase && (
-      (activeTab === 'fft'       && plotData?.signals?.[0]?.phase != null) ||
-      (activeTab === 'coherence' && plotData?.phase_deg != null)
+      (activeTab === 'fft'       && single?.signals?.[0]?.phase != null) ||
+      (activeTab === 'coherence' && single?.phase_deg != null)
     )
   )
 
   // ── theme ───────────────────────────────────────────────────────────────────
-  // Resolved from the active theme; every colour below flows from here so a
-  // theme switch repaints the plots without touching this file.
+  // Resolved from the active theme; every colour flows from here so a theme
+  // switch repaints the plots without touching this file.
   let T = $derived.by(() => {
     const _ = themeState.id, __ = themeState.custom
     return plotTheme()
   })
 
-  // Categorical hues, assigned by series index in fixed order.
-  let COLORS = $derived(T.series)
-
-  let LAYOUT = $derived({
-    paper_bgcolor: T.paper,
-    plot_bgcolor:  T.bg,
-    font:          { color: T.text, size: 12 },
-    margin:        { l: 60, r: 20, t: 30, b: 50 },
-    xaxis:         { gridcolor: T.grid, zerolinecolor: T.grid },
-    yaxis:         { gridcolor: T.grid, zerolinecolor: T.grid },
-    // A legend is always shown for >= 2 series so identity is never colour-alone.
-    legend:        { bgcolor: T.legend, bordercolor: T.border, borderwidth: 1 },
+  /** Options shared by every chart on screen. */
+  let baseOpts = $derived({
+    T,
+    colors: T.series,
+    normalize: normalizeSignals,
+    yLog: yLogScale,
+    psd: { yLog: psdYLog, xMin: psdXMin, xMax: psdXMax, yMin: psdYMin, yMax: psdYMax },
+    downsample: !showAllPoints,
+    lagSide,
   })
 
-  let LAYOUT_COMPACT = $derived({ ...LAYOUT, margin: { l: 60, r: 20, t: 10, b: 50 } })
-
-  // ── helpers ─────────────────────────────────────────────────────────────────
-
-  function merge(...objs) { return Object.assign({}, ...objs) }
-
-  function norm(arr) {
-    if (!normalizeSignals) return arr
-    const rms = Math.sqrt(arr.reduce((s, v) => s + v * v, 0) / arr.length)
-    return rms > 0 ? arr.map(v => v / rms) : arr
-  }
-
-  function line(x, y, name, dash = 'solid', yaxis = 'y', color = undefined) {
-    return { x, y, type: 'scatter', mode: 'lines', name,
-             line: { dash, ...(color ? { color } : {}) }, yaxis }
-  }
-
-  function heatmap(x, y, z) {
-    return [{ x, y, z, type: 'heatmap', colorscale: 'Viridis',
-              colorbar: { thickness: 14, outlinewidth: 0 } }]
-  }
-
-  function yaxisType() { return yLogScale ? 'log' : 'linear' }
-
-  // ── large-data downsampling ────────────────────────────────────────────────
-  const MAX_PLOT_POINTS = 50_000
-  let showAllPoints = $state(false)
-
-  // Reset showAllPoints when data changes
-  $effect(() => { const _ = plotData; showAllPoints = false })
-
-  function downsample(x, y) {
-    if (showAllPoints || !x || x.length <= MAX_PLOT_POINTS) return { x, y }
-    const step = Math.ceil(x.length / MAX_PLOT_POINTS)
-    const xd = [], yd = []
-    for (let i = 0; i < x.length; i += step) { xd.push(x[i]); yd.push(y[i]) }
-    return { x: xd, y: yd }
-  }
-
-  let isDownsampled = $derived(
-    plotData && (
-      (activeTab === 'timeseries' && (plotData.times_raw?.length > MAX_PLOT_POINTS || plotData.times_proc?.length > MAX_PLOT_POINTS)) ||
-      (activeTab === 'filter' && plotData.times?.length > MAX_PLOT_POINTS) ||
-      (activeTab === 'instantaneous' && plotData.times?.length > MAX_PLOT_POINTS)
-    ) && !showAllPoints
+  let mainSpec = $derived(
+    single
+      ? buildPlot(activeTab, single, { ...baseOpts, xRange: zoomable ? xRange : null })
+      : null
+  )
+  let phaseSpec = $derived(
+    showPhase && hasPhaseData ? buildPhasePlot(activeTab, single, baseOpts) : null
   )
 
+  let gridSpecs = $derived(
+    grid
+      ? grid.map(r => ({
+          name: r.name,
+          error: r.error,
+          spec: r.data ? buildPlot(activeTab, r.data, { ...baseOpts, cell: true, title: r.name }) : null,
+        }))
+      : []
+  )
+
+  let overviewSpecs = $derived.by(() => {
+    if (!overview) return null
+    const { ts, psd, fdd } = overview
+    return {
+      ts:  ts.data  ? buildPlot('timeseries', ts.data, { ...baseOpts, title: 'Time series' }) : null,
+      psd: psd.data ? buildPlot('psd', psd.data, { ...baseOpts, title: 'Power spectral density' }) : null,
+      fdd: fdd.data
+        ? buildPlot('fdd', fdd.data, {
+            ...baseOpts,
+            title: `FDD — Singular Values (${fdd.data.labels.length} ch: ${fdd.data.labels.join(', ')})`,
+          })
+        : null,
+      tsError: ts.error, psdError: psd.error,
+      fddError: fdd.error, fddSkipped: fdd.skipped,
+      fddData: fdd.data ?? null,
+    }
+  })
+
   // ── CSV export ───────────────────────────────────────────────────────────────
-  function exportCsv() {
-    if (!plotData) return
+  /** Build [headers, rows] for one analysis payload, or null if unsupported. */
+  function csvFor(tab, d) {
     let headers = [], rows = []
-    const tab = activeTab
 
     if (tab === 'timeseries') {
-      const times = plotData.preprocessed ? plotData.times_proc : plotData.times_raw
-      headers = ['time_s', ...plotData.signals.map(s => s.name)]
-      const arr = plotData.preprocessed
-        ? plotData.signals.map(s => s.signal_proc)
-        : plotData.signals.map(s => s.signal_raw)
-      for (let i = 0; i < times.length; i++)
-        rows.push([times[i], ...arr.map(a => a[i])])
+      const times = d.preprocessed ? d.times_proc : d.times_raw
+      headers = ['time_s', ...d.signals.map(s => s.name)]
+      const arr = d.preprocessed ? d.signals.map(s => s.signal_proc) : d.signals.map(s => s.signal_raw)
+      for (let i = 0; i < times.length; i++) rows.push([times[i], ...arr.map(a => a[i])])
 
     } else if (tab === 'fft') {
-      headers = ['frequency_Hz', ...plotData.signals.flatMap(s => [s.name, `${s.name}_phase_deg`])]
-      for (let i = 0; i < plotData.freqs.length; i++)
-        rows.push([plotData.freqs[i], ...plotData.signals.flatMap(s => [s.amplitude[i], s.phase?.[i] ?? ''])])
+      headers = ['frequency_Hz', ...d.signals.flatMap(s => [s.name, `${s.name}_phase_deg`])]
+      for (let i = 0; i < d.freqs.length; i++)
+        rows.push([d.freqs[i], ...d.signals.flatMap(s => [s.amplitude[i], s.phase?.[i] ?? ''])])
 
     } else if (tab === 'psd') {
-      headers = ['frequency_Hz', ...plotData.signals.map(s => s.name)]
-      for (let i = 0; i < plotData.freqs.length; i++)
-        rows.push([plotData.freqs[i], ...plotData.signals.map(s => s.Pxx[i])])
+      headers = ['frequency_Hz', ...d.signals.map(s => s.name)]
+      for (let i = 0; i < d.freqs.length; i++)
+        rows.push([d.freqs[i], ...d.signals.map(s => s.Pxx[i])])
 
     } else if (tab === 'autocorrelation') {
-      headers = ['lag_s', ...plotData.signals.map(s => s.name)]
-      for (let i = 0; i < plotData.lags.length; i++)
-        rows.push([plotData.lags[i], ...plotData.signals.map(s => s.acf[i])])
+      headers = ['lag_s', ...d.signals.map(s => s.name)]
+      for (let i = 0; i < d.lags.length; i++)
+        rows.push([d.lags[i], ...d.signals.map(s => s.acf[i])])
 
     } else if (tab === 'cross_correlation') {
       headers = ['lag_s', 'CCF']
-      for (let i = 0; i < plotData.lags.length; i++) rows.push([plotData.lags[i], plotData.ccf[i]])
+      for (let i = 0; i < d.lags.length; i++) rows.push([d.lags[i], d.ccf[i]])
 
     } else if (tab === 'csd') {
       headers = ['frequency_Hz', 'magnitude', 'phase_deg']
-      for (let i = 0; i < plotData.freqs.length; i++)
-        rows.push([plotData.freqs[i], plotData.magnitude[i], plotData.phase_deg[i]])
+      for (let i = 0; i < d.freqs.length; i++) rows.push([d.freqs[i], d.magnitude[i], d.phase_deg[i]])
 
     } else if (tab === 'coherence') {
       headers = ['frequency_Hz', 'coherence', 'phase_deg']
-      for (let i = 0; i < plotData.freqs.length; i++)
-        rows.push([plotData.freqs[i], plotData.Cxy[i], plotData.phase_deg?.[i] ?? ''])
+      for (let i = 0; i < d.freqs.length; i++)
+        rows.push([d.freqs[i], d.Cxy[i], d.phase_deg?.[i] ?? ''])
 
     } else if (tab === 'filter') {
       headers = ['time_s', 'raw', 'filtered']
-      for (let i = 0; i < plotData.times.length; i++)
-        rows.push([plotData.times[i], plotData.signal_raw[i], plotData.signal_filtered[i]])
+      for (let i = 0; i < d.times.length; i++)
+        rows.push([d.times[i], d.signal_raw[i], d.signal_filtered[i]])
 
     } else if (tab === 'peaks') {
       headers = ['frequency_Hz', 'amplitude', 'prominence', 'bandwidth_Hz', 'Q_factor']
-      for (let i = 0; i < plotData.peak_freqs.length; i++)
-        rows.push([plotData.peak_freqs[i], plotData.peak_values[i], plotData.prominences[i], plotData.bandwidths[i], plotData.q_factors[i]])
+      for (let i = 0; i < d.peak_freqs.length; i++)
+        rows.push([d.peak_freqs[i], d.peak_values[i], d.prominences[i], d.bandwidths[i], d.q_factors[i]])
 
     } else if (tab === 'indicators') {
       headers = ['time_s', 'rms', 'energy', 'dominant_freq_Hz']
-      const n = Math.max(plotData.rms_times.length, plotData.energy_times.length, plotData.freq_times.length)
+      const n = Math.max(d.rms_times.length, d.energy_times.length, d.freq_times.length)
       for (let i = 0; i < n; i++)
-        rows.push([plotData.rms_times[i] ?? '', plotData.rms_values[i] ?? '', plotData.energy_values[i] ?? '', plotData.dominant_freqs[i] ?? ''])
+        rows.push([d.rms_times[i] ?? '', d.rms_values[i] ?? '', d.energy_values[i] ?? '', d.dominant_freqs[i] ?? ''])
 
     } else if (tab === 'fdd') {
-      headers = ['mode', 'frequency_Hz', 'damping_pct', ...plotData.labels]
-      for (let i = 0; i < plotData.peak_freqs.length; i++)
-        rows.push([i + 1, plotData.natural_freqs?.[i] ?? plotData.peak_freqs[i],
-          plotData.damping_ratios?.[i] != null ? plotData.damping_ratios[i] * 100 : '',
-          ...(plotData.modes[i] ?? [])])
+      headers = ['mode', 'frequency_Hz', 'damping_pct', ...d.labels]
+      for (let i = 0; i < d.peak_freqs.length; i++)
+        rows.push([i + 1, d.natural_freqs?.[i] ?? d.peak_freqs[i],
+          d.damping_ratios?.[i] != null ? d.damping_ratios[i] * 100 : '',
+          ...(d.modes[i] ?? [])])
 
-    } else { return }
+    } else { return null }
 
+    return [headers, rows]
+  }
+
+  function download(name, headers, rows) {
     const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
     const a = Object.assign(document.createElement('a'), {
       href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })),
-      download: `${tab}.csv`,
+      download: name,
     })
     a.click()
     URL.revokeObjectURL(a.href)
   }
 
-  // ── draw main plot ───────────────────────────────────────────────────────────
-  function draw() {
-    if (!container || !plotData) return
-    const tab = activeTab
-
-    if (tab === 'timeseries') {
-      const traces = []
-      plotData.signals.forEach((sig, i) => {
-        const color = COLORS[i % COLORS.length]
-        if (plotData.preprocessed) {
-          const dr = downsample(plotData.times_raw, norm(sig.signal_raw))
-          traces.push({ x: dr.x, y: dr.y,
-            type: 'scatter', mode: 'lines', name: `${sig.name} (raw)`,
-            opacity: 0.35, line: { color, dash: 'dot' } })
-          const dp = downsample(plotData.times_proc, norm(sig.signal_proc))
-          traces.push({ x: dp.x, y: dp.y,
-            type: 'scatter', mode: 'lines', name: sig.name, line: { color } })
-        } else {
-          const d = downsample(plotData.times_raw, norm(sig.signal_raw))
-          traces.push({ x: d.x, y: d.y,
-            type: 'scatter', mode: 'lines', name: sig.name, line: { color } })
-        }
-      })
-      const dsLabel = isDownsampled ? '  (downsampled for display)' : ''
-      Plotly.react(container, traces, merge(LAYOUT, {
-        xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
-        yaxis: { ...LAYOUT.yaxis, title: normalizeSignals ? 'Amplitude (norm.)' : 'Amplitude', type: yaxisType() },
-        title: { text: `${plotData.n_proc.toLocaleString()} samples  ·  fs = ${plotData.fs_proc.toFixed(2)} Hz${dsLabel}`,
-                 font: { color: T.text, size: 11 } },
-      }))
-
-    } else if (tab === 'fft') {
-      const traces = plotData.signals.map((sig, i) =>
-        line(plotData.freqs, norm(sig.amplitude), sig.name, 'solid', 'y', COLORS[i % COLORS.length]))
-      Plotly.react(container, traces, merge(LAYOUT, {
-        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...LAYOUT.yaxis, title: normalizeSignals ? 'Amplitude (norm.)' : 'Amplitude', type: yaxisType() },
-      }))
-
-    } else if (tab === 'psd') {
-      const traces = plotData.signals.map((sig, i) =>
-        line(plotData.freqs, norm(sig.Pxx), sig.name, 'solid', 'y', COLORS[i % COLORS.length]))
-      const psdXRange = (psdXMin !== '' && psdXMax !== '') ? [parseFloat(psdXMin), parseFloat(psdXMax)] : undefined
-      const psdYRange = (psdYMin !== '' && psdYMax !== '') ? [parseFloat(psdYMin), parseFloat(psdYMax)] : undefined
-      Plotly.react(container, traces, merge(LAYOUT, {
-        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]',
-                 ...(psdXRange ? { range: psdXRange, autorange: false } : { autorange: true }) },
-        yaxis: { ...LAYOUT.yaxis, title: 'PSD', type: psdYLog ? 'log' : 'linear',
-                 ...(psdYRange ? { range: psdYRange, autorange: false } : { autorange: true }) },
-      }))
-
-    } else if (tab === 'autocorrelation') {
-      const traces = plotData.signals.map((sig, i) =>
-        line(plotData.lags, sig.acf, sig.name, 'solid', 'y', COLORS[i % COLORS.length]))
-      Plotly.react(container, traces, merge(LAYOUT, {
-        xaxis: { ...LAYOUT.xaxis, title: 'Lag [s]' },
-        yaxis: { ...LAYOUT.yaxis, title: 'ACF' },
-      }))
-
-    } else if (tab === 'cross_correlation') {
-      Plotly.react(container, [line(plotData.lags, plotData.ccf, 'CCF')], merge(LAYOUT, {
-        xaxis: { ...LAYOUT.xaxis, title: 'Lag [s]' },
-        yaxis: { ...LAYOUT.yaxis, title: 'CCF' },
-      }))
-
-    } else if (tab === 'csd') {
-      Plotly.react(container,
-        [line(plotData.freqs, plotData.magnitude, 'Magnitude'),
-         line(plotData.freqs, plotData.phase_deg, 'Phase [°]', 'solid', 'y2')],
-        merge(LAYOUT, {
-          xaxis:  { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
-          yaxis:  { ...LAYOUT.yaxis, title: '|CSD|' },
-          yaxis2: { ...LAYOUT.yaxis, title: 'Phase [°]', overlaying: 'y', side: 'right' },
-        }))
-
-    } else if (tab === 'coherence') {
-      Plotly.react(container, [line(plotData.freqs, plotData.Cxy, 'Coherence')], merge(LAYOUT, {
-        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...LAYOUT.yaxis, title: 'Coherence', range: [0, 1] },
-      }))
-
-    } else if (tab === 'filter') {
-      const dr = downsample(plotData.times, plotData.signal_raw)
-      const df = downsample(plotData.times, plotData.signal_filtered)
-      Plotly.react(container,
-        [line(dr.x, dr.y, 'Raw', 'dash'),
-         line(df.x, df.y, 'Filtered', 'solid')],
-        merge(LAYOUT, {
-          xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
-          yaxis: { ...LAYOUT.yaxis, title: 'Amplitude' },
-        }))
-
-    } else if (tab === 'stft' || tab === 'cwt') {
-      Plotly.react(container, heatmap(plotData.times, plotData.freqs, plotData.magnitude),
-        merge(LAYOUT, {
-          xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
-          yaxis: { ...LAYOUT.yaxis, title: 'Frequency [Hz]' },
-        }))
-
-    } else if (tab === 'wvd') {
-      Plotly.react(container, heatmap(plotData.times, plotData.freqs, plotData.wvd),
-        merge(LAYOUT, {
-          xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
-          yaxis: { ...LAYOUT.yaxis, title: 'Frequency [Hz]' },
-        }))
-
-    } else if (tab === 'spwvd') {
-      Plotly.react(container, heatmap(plotData.times, plotData.freqs, plotData.spwvd),
-        merge(LAYOUT, {
-          xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
-          yaxis: { ...LAYOUT.yaxis, title: 'Frequency [Hz]' },
-        }))
-
-    } else if (tab === 'instantaneous') {
-      const ds = downsample(plotData.times, plotData.signal)
-      const de = downsample(plotData.times, plotData.envelope)
-      const di = downsample(plotData.times, plotData.inst_freq)
-      Plotly.react(container,
-        [line(ds.x, ds.y, 'Signal', 'dash'),
-         line(de.x, de.y, 'Envelope', 'solid'),
-         line(di.x, di.y, 'Inst. Freq [Hz]', 'solid', 'y2')],
-        merge(LAYOUT, {
-          xaxis:  { ...LAYOUT.xaxis, title: 'Time [s]' },
-          yaxis:  { ...LAYOUT.yaxis, title: 'Amplitude' },
-          yaxis2: { ...LAYOUT.yaxis, title: 'Inst. Freq [Hz]', overlaying: 'y', side: 'right' },
-        }))
-
-    } else if (tab === 'emd') {
-      const traces = plotData.imfs.map((imf, i) => ({
-        x: plotData.times, y: imf, type: 'scatter', mode: 'lines', name: `IMF ${i + 1}`,
-      }))
-      traces.push({ x: plotData.times, y: plotData.residue,
-        type: 'scatter', mode: 'lines', name: 'Residue', line: { dash: 'dot' } })
-      Plotly.react(container, traces, merge(LAYOUT, {
-        xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
-        yaxis: { ...LAYOUT.yaxis, title: 'Amplitude' },
-      }))
-
-    } else if (tab === 'hht') {
-      const tfTraces = plotData.inst_freqs.map((fi, i) => ({
-        x: plotData.times, y: fi, mode: 'markers',
-        marker: { color: plotData.envelopes[i], colorscale: 'Viridis', size: 3,
-                  showscale: i === 0, colorbar: { thickness: 12, outlinewidth: 0 } },
-        name: `IMF ${i + 1}`, type: 'scatter',
-      }))
-      Plotly.react(container, tfTraces, merge(LAYOUT, {
-        xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
-        yaxis: { ...LAYOUT.yaxis, title: 'Inst. Freq [Hz]' },
-        title: { text: 'HHT time-frequency representation', font: { color: T.title } },
-      }))
-
-    } else if (tab === 'peaks') {
-      const traces = [
-        line(plotData.freqs, plotData.spectrum, 'Spectrum'),
-        { x: plotData.peak_freqs, y: plotData.peak_values,
-          type: 'scatter', mode: 'markers', name: 'Peaks',
-          marker: { symbol: 'triangle-up', size: 10, color: T.danger } },
-      ]
-      Plotly.react(container, traces, merge(LAYOUT, {
-        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...LAYOUT.yaxis, title: 'Amplitude', type: yaxisType() },
-      }))
-
-    } else if (tab === 'indicators') {
-      const traces = [
-        { x: plotData.rms_times, y: plotData.rms_values,
-          type: 'scatter', mode: 'lines', name: 'RMS', line: { color: COLORS[0] }, yaxis: 'y' },
-        { x: plotData.energy_times, y: plotData.energy_values,
-          type: 'scatter', mode: 'lines', name: 'Energy', line: { color: COLORS[1] }, yaxis: 'y2' },
-        { x: plotData.freq_times, y: plotData.dominant_freqs,
-          type: 'scatter', mode: 'lines', name: 'Dom. freq', line: { color: COLORS[2] }, yaxis: 'y3' },
-      ]
-      Plotly.react(container, traces, merge(LAYOUT, {
-        xaxis:  { ...LAYOUT.xaxis, title: 'Time [s]' },
-        yaxis:  { ...LAYOUT.yaxis, title: 'RMS', domain: [0.72, 1.0] },
-        yaxis2: { ...LAYOUT.yaxis, title: 'Energy', domain: [0.36, 0.66], anchor: 'x' },
-        yaxis3: { ...LAYOUT.yaxis, title: 'Freq [Hz]', domain: [0.0, 0.30], anchor: 'x' },
-        title: { text: `Entropy: ${plotData.spectral_entropy.toFixed(3)}  |  Kurtosis: ${plotData.kurtosis.toFixed(3)}  |  Skewness: ${plotData.skewness.toFixed(3)}`,
-                 font: { color: T.title, size: 12 } },
-      }))
-
-    } else if (tab === 'multisensor') {
-      if (plotData.R) {
-        Plotly.react(container, [{
-          z: plotData.R, x: plotData.labels, y: plotData.labels,
-          type: 'heatmap', colorscale: 'RdBu', zmin: -1, zmax: 1,
-          colorbar: { thickness: 14, outlinewidth: 0 },
-          text: plotData.R.map(row => row.map(v => v.toFixed(3))),
-          texttemplate: '%{text}', textfont: { size: 11 },
-        }], merge(LAYOUT, {
-          title: { text: 'Correlation Matrix', font: { color: T.title } },
-          yaxis: { ...LAYOUT.yaxis, autorange: 'reversed' },
-        }))
-      } else if (plotData.pairs) {
-        const traces = plotData.pairs.map((p, i) =>
-          line(plotData.freqs, p.Cxy, p.label, 'solid', 'y', COLORS[i % COLORS.length]))
-        Plotly.react(container, traces, merge(LAYOUT, {
-          xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
-          yaxis: { ...LAYOUT.yaxis, title: 'Coherence', range: [0, 1] },
-          title: { text: 'Coherence Matrix', font: { color: T.title } },
-        }))
-      }
-
-    } else if (tab === 'fdd') {
-      const nSv = plotData.S[0]?.length ?? 0
-      const traces = []
-      for (let sv = 0; sv < nSv; sv++) {
-        const vals = plotData.S.map(row => 10 * Math.log10(Math.max(row[sv], 1e-30)))
-        traces.push(line(plotData.freqs, vals, `SV${sv + 1}`, 'solid', 'y', COLORS[sv % COLORS.length]))
-      }
-      if (plotData.peak_freqs?.length) {
-        const sv1 = plotData.S.map(row => 10 * Math.log10(Math.max(row[0], 1e-30)))
-        const peakVals = plotData.peak_freqs.map(f => {
-          const idx = plotData.freqs.reduce((best, freq, i) =>
-            Math.abs(freq - f) < Math.abs(plotData.freqs[best] - f) ? i : best, 0)
-          return sv1[idx]
-        })
-        traces.push({
-          x: plotData.peak_freqs, y: peakVals,
-          type: 'scatter', mode: 'markers', name: 'Peaks',
-          marker: { symbol: 'triangle-up', size: 12, color: T.danger },
-        })
-      }
-      Plotly.react(container, traces, merge(LAYOUT, {
-        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...LAYOUT.yaxis, title: 'Singular Value [dB]' },
-        title: { text: 'FDD \u2014 Singular Values', font: { color: T.title } },
-      }))
-
-    } else if (tab === 'statistics') {
-      if (plotData.xi) {
-        const traces = [
-          { x: plotData.bin_centres, y: plotData.hist_density,
-            type: 'bar', name: 'Histogram', marker: { color: COLORS[0], opacity: 0.4 } },
-          line(plotData.xi, plotData.density, 'KDE', 'solid', 'y', T.danger),
-        ]
-        Plotly.react(container, traces, merge(LAYOUT, {
-          xaxis: { ...LAYOUT.xaxis, title: 'Value' },
-          yaxis: { ...LAYOUT.yaxis, title: 'Density' },
-          barmode: 'overlay',
-          title: { text: 'Probability Density', font: { color: T.title } },
-        }))
-      } else if (plotData.H) {
-        Plotly.react(container, [{
-          x: plotData.x_centres, y: plotData.y_centres, z: plotData.H,
-          type: 'heatmap', colorscale: 'Viridis',
-          colorbar: { thickness: 14, outlinewidth: 0 },
-        }], merge(LAYOUT, {
-          xaxis: { ...LAYOUT.xaxis, title: plotData.xlabel },
-          yaxis: { ...LAYOUT.yaxis, title: plotData.ylabel },
-          title: { text: 'Joint Distribution', font: { color: T.title } },
-        }))
-      } else if (plotData.C) {
-        Plotly.react(container, [{
-          z: plotData.C, x: plotData.labels, y: plotData.labels,
-          type: 'heatmap', colorscale: 'RdBu',
-          colorbar: { thickness: 14, outlinewidth: 0 },
-          text: plotData.C.map(row => row.map(v => v.toPrecision(3))),
-          texttemplate: '%{text}', textfont: { size: 11 },
-        }], merge(LAYOUT, {
-          title: { text: 'Covariance Matrix', font: { color: T.title } },
-          yaxis: { ...LAYOUT.yaxis, autorange: 'reversed' },
-        }))
-      } else if (plotData.distances) {
-        const thresh = plotData.threshold
-        const colors = plotData.distances.map(d => d > thresh ? T.danger : COLORS[0])
-        Plotly.react(container, [{
-          x: plotData.times, y: plotData.distances,
-          type: 'scatter', mode: 'markers', name: 'Mahalanobis',
-          marker: { color: colors, size: 3 },
-        }, {
-          x: [plotData.times[0], plotData.times[plotData.times.length - 1]],
-          y: [thresh, thresh],
-          type: 'scatter', mode: 'lines', name: `${plotData.percentile}th pct`,
-          line: { color: T.warning, dash: 'dash' },
-        }], merge(LAYOUT, {
-          xaxis: { ...LAYOUT.xaxis, title: 'Time [s]' },
-          yaxis: { ...LAYOUT.yaxis, title: 'Mahalanobis Distance' },
-          title: { text: 'Mahalanobis Distance \u2014 Outlier Detection', font: { color: T.title } },
-        }))
-      }
-    }
+  function exportCsv(tab = activeTab, d = single, name = `${activeTab}.csv`) {
+    if (!d) return
+    const built = csvFor(tab, d)
+    if (!built) return
+    download(name, built[0], built[1])
   }
 
-  // ── draw phase panel ─────────────────────────────────────────────────────────
-  function drawPhase() {
-    if (!container2 || !plotData) return
-    const tab = activeTab
-
-    if (tab === 'fft') {
-      const traces = plotData.signals.map((sig, i) => ({
-        x: plotData.freqs, y: sig.phase,
-        type: 'scatter', mode: 'lines', name: sig.name,
-        line: { color: COLORS[i % COLORS.length] },
-      }))
-      Plotly.react(container2, traces, merge(LAYOUT_COMPACT, {
-        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...LAYOUT.yaxis, title: 'Phase [°]' },
-      }))
-
-    } else if (tab === 'coherence') {
-      Plotly.react(container2, [{
-        x: plotData.freqs, y: plotData.phase_deg,
-        type: 'scatter', mode: 'lines', name: 'Phase',
-        line: { color: COLORS[1] },
-      }], merge(LAYOUT_COMPACT, {
-        xaxis: { ...LAYOUT.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...LAYOUT.yaxis, title: 'Phase [°]' },
-      }))
+  /** Grid export: one file, with a channel column identifying each block. */
+  function exportGridCsv() {
+    const usable = gridSpecs.filter((_, i) => grid[i].data)
+    if (!usable.length) return
+    let headers = null
+    const rows = []
+    for (const cell of grid) {
+      if (!cell.data) continue
+      const built = csvFor(activeTab, cell.data)
+      if (!built) continue
+      if (!headers) headers = ['channel', ...built[0]]
+      for (const r of built[1]) rows.push([cell.name, ...r])
     }
+    if (!headers) return
+    download(`${activeTab}_all_channels.csv`, headers, rows)
   }
 
-  // ── effects ──────────────────────────────────────────────────────────────────
-  $effect(() => {
-    // touch all reactive deps that should trigger a redraw
-    const _ = plotData; const __ = activeTab
-    const _n = normalizeSignals; const _l = yLogScale; const _s = showAllPoints
-    const _pl = psdYLog; const _px1 = psdXMin; const _px2 = psdXMax
-    const _py1 = psdYMin; const _py2 = psdYMax
-    const _t = T
-    if (!container) return
-    if (plotData) {
-      draw()
-    } else {
-      // No traces yet — render an empty themed surface. react() initialises the
-      // div on first call, so this doubles as the plot's setup.
-      Plotly.react(container, [], LAYOUT, { responsive: true })
-    }
-  })
-
-  $effect(() => {
-    // phase panel: redraw whenever showPhase, plotData, or activeTab changes
-    const _ = showPhase; const __ = plotData; const ___ = activeTab; const _t = T
-    if (showPhase && hasPhaseData) drawPhase()
-    // Resize main plot after DOM updates so flexbox recalculates heights
-    requestAnimationFrame(() => { if (container) Plotly.Plots.resize(container) })
-  })
-
-  // Initialize container2 when it first appears in the DOM
-  $effect(() => {
-    if (container2) {
-      Plotly.newPlot(container2, [], LAYOUT_COMPACT, { responsive: true })
-      drawPhase()
-    }
-  })
-
-  // No onMount plot setup on purpose: the draw effect above owns the container.
-  // Initialising here raced it — effects run before onMount, so a newPlot() with
-  // an empty trace list could wipe a chart the effect had just drawn.
-
-  onDestroy(() => {
-    if (container)  Plotly.purge(container)
-    if (container2) Plotly.purge(container2)
-  })
+  let csvSupported = $derived(!!single && csvFor(activeTab, single) !== null)
+  let gridCsvSupported = $derived(
+    !!grid && grid.some(c => c.data && csvFor(activeTab, c.data) !== null)
+  )
 </script>
 
 <div class="plot-wrap">
@@ -553,15 +264,40 @@
         <label><input type="checkbox" bind:checked={showPhase} /> Phase</label>
       {/if}
       <label><input type="checkbox" bind:checked={normalizeSignals} /> Normalize</label>
-      {#if activeTab !== 'psd'}
+      {#if activeTab !== 'psd' && !overview}
         <label><input type="checkbox" bind:checked={yLogScale} /> Log Y</label>
       {/if}
       {#if isDownsampled || showAllPoints}
         <label><input type="checkbox" bind:checked={showAllPoints} /> All points</label>
       {/if}
-      {#if activeTab === 'psd'}
+      {#if activeTab === 'cross_correlation'}
         <span class="plot-toolbar-sep"></span>
-        <label><input type="checkbox" bind:checked={psdYLog} /> Log Y</label>
+        <span class="plot-toolbar-group">
+          <span class="plot-toolbar-grouplabel">Lags</span>
+          <span class="seg">
+            <button class="seg-btn" class:on={lagSide === 'both'}
+                    onclick={() => lagSide = 'both'}>Both</button>
+            <button class="seg-btn" class:on={lagSide === 'positive'}
+                    onclick={() => lagSide = 'positive'}>Positive</button>
+            <button class="seg-btn" class:on={lagSide === 'negative'}
+                    onclick={() => lagSide = 'negative'}>Negative</button>
+          </span>
+        </span>
+      {/if}
+      {#if zoomable && xRange}
+        <span class="plot-toolbar-sep"></span>
+        <span class="zoom-chip" class:full={atFullRate}>
+          {(xRange[1] - xRange[0]).toPrecision(3)} s window ·
+          {drawnPoints.toLocaleString()} pts
+          {atFullRate ? ' · full rate' : ' · decimated'}
+        </span>
+        <button class="btn-ghost" onclick={() => xRange = null}>Reset zoom</button>
+      {/if}
+      {#if activeTab === 'psd' || overview}
+        <span class="plot-toolbar-sep"></span>
+        <label><input type="checkbox" bind:checked={psdYLog} /> PSD log Y</label>
+      {/if}
+      {#if activeTab === 'psd'}
         <span class="plot-toolbar-sep"></span>
         <span class="plot-toolbar-group">
           <span class="plot-toolbar-grouplabel">X range</span>
@@ -574,79 +310,262 @@
           <input type="number" bind:value={psdYMax} placeholder="max" class="plot-axis-input" />
         </span>
       {/if}
-      <button class="btn-ghost btn-csv" onclick={exportCsv}>↓ CSV</button>
+      {#if csvSupported}
+        <button class="btn-ghost btn-csv" onclick={() => exportCsv()}>↓ CSV</button>
+      {:else if gridCsvSupported}
+        <button class="btn-ghost btn-csv" onclick={exportGridCsv}>↓ CSV (all channels)</button>
+      {/if}
     </div>
   {/if}
 
-  <!-- main plot -->
-  <div class="plot-canvas-wrap">
-    {#if loading}
-      <div class="plot-overlay">
-        <div class="spinner"></div>
-        <div class="plot-overlay-text">Computing…</div>
+  <!-- ── overview: the composed first look ── -->
+  {#if overview}
+    <div class="stack-scroll">
+      {#if loading}
+        <div class="plot-overlay"><div class="spinner"></div><div class="plot-overlay-text">Computing…</div></div>
+      {/if}
+
+      <section class="ov-block">
+        {#if overviewSpecs.ts}
+          <ResizablePane id="ov-ts" initial={300} label="Resize time series panel">
+            {#snippet children()}<PlotCanvas spec={overviewSpecs.ts} height="100%" />{/snippet}
+          </ResizablePane>
+        {:else}
+          <div class="ov-fail">Time series unavailable: {overviewSpecs.tsError}</div>
+        {/if}
+      </section>
+
+      <section class="ov-block">
+        {#if overviewSpecs.psd}
+          <ResizablePane id="ov-psd" initial={320} label="Resize PSD panel">
+            {#snippet children()}<PlotCanvas spec={overviewSpecs.psd} height="100%" />{/snippet}
+          </ResizablePane>
+        {:else}
+          <div class="ov-fail">PSD unavailable: {overviewSpecs.psdError}</div>
+        {/if}
+      </section>
+
+      <section class="ov-block">
+        {#if overviewSpecs.fdd}
+          <!-- The singular-value plot carries one curve per channel plus the
+               peak markers, so it needs materially more room than the others. -->
+          <ResizablePane id="ov-fdd" initial={520} label="Resize FDD panel">
+            {#snippet children()}<PlotCanvas spec={overviewSpecs.fdd} height="100%" />{/snippet}
+          </ResizablePane>
+          <!-- Overview runs FDD on whatever is selected, which the user did not
+               choose per-analysis. An excitation channel in the mix moves the
+               peaks a long way, so say so rather than let it pass as a result. -->
+          <div class="ov-note">
+            FDD assumes output-only (response) channels. Ran on:
+            <strong>{overviewSpecs.fddData.labels.join(', ')}</strong>.
+            If any of those are excitation/force inputs, deselect them in the
+            sidebar — the mode estimates will change.
+          </div>
+          {#if overviewSpecs.fddData?.peak_freqs?.length}
+            <div class="ov-table-head">
+              <span>Candidate modes — first-pass FDD peak picking</span>
+              <button class="btn-ghost btn-csv"
+                      onclick={() => exportCsv('fdd', overviewSpecs.fddData, 'fdd_overview.csv')}>
+                ↓ CSV
+              </button>
+            </div>
+            <div class="results-table-wrap">
+              <table class="results-table">
+                <thead>
+                  <tr><th>Mode</th><th>Freq [Hz]</th><th>Damping [%]</th>
+                    {#each overviewSpecs.fddData.labels as lbl}<th>{lbl}</th>{/each}
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each overviewSpecs.fddData.peak_freqs as f, i}
+                    <tr>
+                      <td>{i + 1}</td>
+                      <td>{(overviewSpecs.fddData.natural_freqs?.[i] ?? f).toFixed(2)}</td>
+                      <td>{overviewSpecs.fddData.damping_ratios?.[i] != null
+                            ? (overviewSpecs.fddData.damping_ratios[i] * 100).toFixed(2) : '—'}</td>
+                      {#each overviewSpecs.fddData.modes[i] ?? [] as v}<td>{v.toFixed(3)}</td>{/each}
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        {:else if overviewSpecs.fddSkipped}
+          <div class="ov-note">{overviewSpecs.fddSkipped}</div>
+        {:else}
+          <div class="ov-fail">FDD unavailable: {overviewSpecs.fddError}</div>
+        {/if}
+      </section>
+    </div>
+
+  <!-- ── grid: one single-channel analysis, run per channel ── -->
+  {:else if grid}
+    <div class="stack-scroll">
+      {#if loading}
+        <div class="plot-overlay"><div class="spinner"></div><div class="plot-overlay-text">Computing…</div></div>
+      {/if}
+      <div class="plot-grid">
+        {#each gridSpecs as cell (cell.name)}
+          <!-- Every cell binds the same height, so dragging any one keeps the
+               rows aligned instead of leaving a ragged grid. -->
+          <ResizablePane id="grid-cell" initial={270} bind:height={gridCellH}
+                         label="Resize grid rows">
+            {#snippet children()}
+              <div class="plot-grid-cell">
+                {#if cell.spec}
+                  <PlotCanvas spec={cell.spec} height="100%" />
+                {:else}
+                  <div class="ov-fail">{cell.name}: {cell.error ?? 'no result'}</div>
+                {/if}
+              </div>
+            {/snippet}
+          </ResizablePane>
+        {/each}
+      </div>
+    </div>
+
+  <!-- ── single result ── -->
+  {:else}
+    <!-- Fills the available space until dragged, then holds the height you set. -->
+    <ResizablePane id="main-plot" fill initial={420} label="Resize plot">
+      {#snippet children()}
+        <div class="plot-canvas-wrap">
+          {#if loading}
+            <div class="plot-overlay">
+              <div class="spinner"></div>
+              <div class="plot-overlay-text">Computing…</div>
+            </div>
+          {/if}
+          {#if !plotData && !loading && !plotError}
+            <div class="plot-placeholder">
+              Select an analysis and press Run.
+            </div>
+          {/if}
+          <PlotCanvas spec={mainSpec} onRelayout={zoomable ? onRelayout : null} />
+        </div>
+      {/snippet}
+    </ResizablePane>
+
+    <!-- phase panel -->
+    {#if phaseSpec}
+      <div class="plot-phase-pane">
+        <PlotCanvas spec={phaseSpec} />
       </div>
     {/if}
-    {#if !plotData && !loading && !plotError}
-      <div class="plot-placeholder">
-        Select an analysis and press Run.
+
+    <!-- peaks results table -->
+    {#if activeTab === 'peaks' && single?.peak_freqs?.length}
+      <div class="results-table-wrap">
+        <table class="results-table">
+          <thead>
+            <tr><th>#</th><th>Freq [Hz]</th><th>Amplitude</th><th>Prominence</th><th>BW [Hz]</th><th>Q</th></tr>
+          </thead>
+          <tbody>
+            {#each single.peak_freqs as f, i}
+              <tr>
+                <td>{i + 1}</td>
+                <td>{f.toFixed(2)}</td>
+                <td>{single.peak_values[i]?.toPrecision(4)}</td>
+                <td>{single.prominences[i]?.toPrecision(3)}</td>
+                <td>{single.bandwidths[i]?.toFixed(2) ?? '—'}</td>
+                <td>{single.q_factors[i]?.toFixed(1) ?? '—'}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
       </div>
     {/if}
-    <div bind:this={container} class="plot-canvas"></div>
-  </div>
 
-  <!-- phase panel -->
-  {#if showPhase && hasPhaseData}
-    <div class="plot-phase-pane">
-      <div bind:this={container2} class="plot-canvas"></div>
-    </div>
-  {/if}
-
-  <!-- peaks results table -->
-  {#if activeTab === 'peaks' && plotData?.peak_freqs?.length}
-    <div class="results-table-wrap">
-      <table class="results-table">
-        <thead>
-          <tr><th>#</th><th>Freq [Hz]</th><th>Amplitude</th><th>Prominence</th><th>BW [Hz]</th><th>Q</th></tr>
-        </thead>
-        <tbody>
-          {#each plotData.peak_freqs as f, i}
-            <tr>
-              <td>{i + 1}</td>
-              <td>{f.toFixed(2)}</td>
-              <td>{plotData.peak_values[i]?.toPrecision(4)}</td>
-              <td>{plotData.prominences[i]?.toPrecision(3)}</td>
-              <td>{plotData.bandwidths[i]?.toFixed(2) ?? '—'}</td>
-              <td>{plotData.q_factors[i]?.toFixed(1) ?? '—'}</td>
+    <!-- FDD results table + mode shapes -->
+    {#if activeTab === 'fdd' && single?.peak_freqs?.length}
+      <div class="results-table-wrap">
+        <table class="results-table">
+          <thead>
+            <tr><th>Mode</th><th>Freq [Hz]</th><th>Damping [%]</th>
+              {#each single.labels as lbl}<th>{lbl}</th>{/each}
             </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {/if}
-
-  <!-- FDD results table + mode shapes -->
-  {#if activeTab === 'fdd' && plotData?.peak_freqs?.length}
-    <div class="results-table-wrap">
-      <table class="results-table">
-        <thead>
-          <tr><th>Mode</th><th>Freq [Hz]</th><th>Damping [%]</th>
-            {#each plotData.labels as lbl}<th>{lbl}</th>{/each}
-          </tr>
-        </thead>
-        <tbody>
-          {#each plotData.peak_freqs as f, i}
-            <tr>
-              <td>{i + 1}</td>
-              <td>{(plotData.natural_freqs?.[i] ?? f).toFixed(2)}</td>
-              <td>{plotData.damping_ratios?.[i] != null ? (plotData.damping_ratios[i] * 100).toFixed(2) : '—'}</td>
-              {#each plotData.modes[i] ?? [] as v}
-                <td>{v.toFixed(3)}</td>
-              {/each}
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {#each single.peak_freqs as f, i}
+              <tr>
+                <td>{i + 1}</td>
+                <td>{(single.natural_freqs?.[i] ?? f).toFixed(2)}</td>
+                <td>{single.damping_ratios?.[i] != null ? (single.damping_ratios[i] * 100).toFixed(2) : '—'}</td>
+                {#each single.modes[i] ?? [] as v}
+                  <td>{v.toFixed(3)}</td>
+                {/each}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
   {/if}
 
 </div>
+
+<style>
+  /* Overview and the grid size to their content and let .plot-wrap do the
+     scrolling — a nested scroller here would give the page two scrollbars and
+     trap the wheel inside the inner one. */
+  .stack-scroll {
+    position: relative;
+    flex: 0 0 auto;
+    padding: 4px 2px 12px;
+  }
+  .ov-block {
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 12px;
+  }
+  .ov-block:last-child { border-bottom: none; margin-bottom: 0; }
+  .ov-table-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 12px; color: var(--text-secondary);
+    margin: 8px 2px 4px;
+  }
+  .ov-note, .ov-fail {
+    font-size: 12px; padding: 14px 10px;
+    color: var(--text-muted);
+  }
+  .ov-fail { color: var(--danger); }
+
+  .plot-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+    gap: 10px;
+  }
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+  .seg-btn {
+    font: inherit;
+    font-size: 11px;
+    padding: 2px 9px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background var(--transition), color var(--transition);
+  }
+  .seg-btn + .seg-btn { border-left: 1px solid var(--border); }
+  .seg-btn:hover { background: var(--bg-hover); }
+  .seg-btn.on { background: var(--accent); color: var(--accent-contrast); }
+
+  .zoom-chip {
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+  .zoom-chip.full { color: var(--success); }
+
+  .plot-grid-cell {
+    height: 100%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+</style>
