@@ -1,4 +1,5 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   import { onMount } from 'svelte'
   import ChannelScope from '../ChannelScope.svelte'
 
@@ -9,11 +10,24 @@
     focusChannel = $bindable(null), pairX = $bindable(null), pairY = $bindable(null),
     loading, runAnalysis, dualSignal, autoRun = false,} = $props()
 
-  let mode       = $state('pdf')
-  let bins       = $state(50)
-  let bandwidth  = $state(null)
-  let percentile = $state(99)
+  // Settings persist across tab switches; see paramStore.
 
+  const kept = paramsFor('statistics', {
+
+    mode: 'pdf',
+
+    bins: 50,
+
+    bandwidth: null,
+
+    percentile: 99,
+
+  })
+
+  let mode = $state(kept.mode)
+  let bins = $state(kept.bins)
+  let bandwidth = $state(kept.bandwidth)
+  let percentile = $state(kept.percentile)
   const SCOPE_BY_MODE = {
     pdf:         'single',
     joint:       'pair',
@@ -45,17 +59,28 @@
   // Opening the tab computes with the current settings; the Run button is for
   // re-running after a change. Guarded so an expensive tab can opt out.
   onMount(() => { if (autoRun) run() })
+
+
+  $effect(() => remember(kept, { mode, bins, bandwidth, percentile }))
 </script>
 
 <div class="field">
   <label>Analysis</label>
   <select bind:value={mode}>
     <option value="pdf">PDF / Histogram</option>
-    <option value="joint" disabled={!dualSignal}>Joint distribution</option>
+    <!-- Joint works against a single channel (X = Y); the two matrix methods
+         are between-channel by definition and stay gated. -->
+    <option value="joint">Joint distribution</option>
     <option value="covariance" disabled={!dualSignal}>Covariance matrix</option>
     <option value="mahalanobis" disabled={!dualSignal}>Mahalanobis distance</option>
   </select>
 </div>
+
+{#if !dualSignal && (mode === 'covariance' || mode === 'mahalanobis')}
+  <div class="status" style="max-width:250px">
+    Needs at least 2 channels — both describe how channels vary together.
+  </div>
+{/if}
 
 <ChannelScope
   kind={scope}

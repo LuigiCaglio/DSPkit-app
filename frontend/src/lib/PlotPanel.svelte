@@ -5,7 +5,7 @@
   import { buildPlot, buildPhasePlot, isDownsampledFor, MAX_PLOT_POINTS } from './plotSpec.js'
   import { ZOOMABLE } from './analyses.js'
 
-  let { activeTab, plotData, loading, plotError } = $props()
+  let { activeTab, plotData, loading, plotError, preprocSummary = [] } = $props()
 
   // Three shapes arrive here:
   //   {grid: [...]}      a single-channel analysis fanned out per channel
@@ -260,6 +260,15 @@
   <!-- toolbar -->
   {#if plotData}
     <div class="plot-toolbar">
+      <!-- Provenance first: what is plotted has been through this. -->
+      {#if preprocSummary.length}
+        <span class="prov-chip on" title="Applied before every analysis">
+          ⚙ {preprocSummary.join(' · ')}
+        </span>
+      {:else}
+        <span class="prov-chip">raw data</span>
+      {/if}
+      <span class="plot-toolbar-sep"></span>
       {#if canShowPhase}
         <label><input type="checkbox" bind:checked={showPhase} /> Phase</label>
       {/if}
@@ -535,6 +544,21 @@
     grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
     gap: 10px;
   }
+  .prov-chip {
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+  /* Active preprocessing is a caveat on every number read off the plot, so it
+     is tinted rather than left to blend into the rest of the toolbar. */
+  .prov-chip.on {
+    color: var(--warning);
+    border-color: var(--warning);
+  }
+
   .seg {
     display: inline-flex;
     border: 1px solid var(--border);

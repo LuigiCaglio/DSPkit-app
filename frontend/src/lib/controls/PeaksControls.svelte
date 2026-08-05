@@ -1,14 +1,24 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   import { onMount } from 'svelte'
   let { signalCol, loading, runAnalysis, autoRun = false} = $props()
-  let spectrum_type = $state('fft')
-  let window_       = $state('hann')
-  let nperseg       = $state(1024)
-  let scaling       = $state('amplitude')
-  let prominence    = $state(null)
-  let distance_hz   = $state(null)
-  let max_peaks     = $state(null)
-
+  // Settings persist across tab switches; see paramStore.
+  const kept = paramsFor('peaks', {
+    spectrum_type: 'fft',
+    window_: 'hann',
+    nperseg: 1024,
+    scaling: 'amplitude',
+    prominence: null,
+    distance_hz: null,
+    max_peaks: null,
+  })
+  let spectrum_type = $state(kept.spectrum_type)
+  let window_ = $state(kept.window_)
+  let nperseg = $state(kept.nperseg)
+  let scaling = $state(kept.scaling)
+  let prominence = $state(kept.prominence)
+  let distance_hz = $state(kept.distance_hz)
+  let max_peaks = $state(kept.max_peaks)
   function run() {
     runAnalysis('/api/peaks/detect', {
       signal_col: signalCol,
@@ -25,6 +35,8 @@
   // Opening the tab computes with the current settings; the Run button is for
   // re-running after a change. Guarded so an expensive tab can opt out.
   onMount(() => { if (autoRun) run() })
+
+  $effect(() => remember(kept, { spectrum_type, window_, nperseg, scaling, prominence, distance_hz, max_peaks }))
 </script>
 
 <div class="field">

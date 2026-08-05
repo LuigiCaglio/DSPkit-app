@@ -75,9 +75,9 @@
       { id: 'peaks', label: 'Peaks' }, { id: 'autocorrelation', label: 'Autocorrelation' },
     ]},
     { id: 'crossSignal',   label: 'Cross-Signal',  tabs: [
-      { id: 'cross_correlation', label: 'Cross-corr', dual: true },
-      { id: 'csd', label: 'CSD', dual: true },
-      { id: 'coherence', label: 'Coherence', dual: true },
+      { id: 'cross_correlation', label: 'Cross-corr' },
+      { id: 'csd', label: 'CSD' },
+      { id: 'coherence', label: 'Coherence' },
     ]},
     { id: 'filtering',     label: 'Filtering',     tabs: [{ id: 'filter', label: 'Filter' }] },
     { id: 'timeFreq',      label: 'Time-Freq',     tabs: [
@@ -89,8 +89,8 @@
       { id: 'emd', label: 'EMD' }, { id: 'hht', label: 'HHT' },
     ]},
     { id: 'multiChannel',  label: 'Multi-Ch',      tabs: [
-      { id: 'multisensor', label: 'Multi-Sensor', dual: true },
-      { id: 'fdd', label: 'FDD', dual: true },
+      { id: 'multisensor', label: 'Multi-Sensor' },
+      { id: 'fdd', label: 'FDD' },
     ]},
     { id: 'statistics',    label: 'Statistics',     tabs: [
       { id: 'statistics', label: 'Distributions' },
@@ -110,6 +110,28 @@
   let dualSignal  = $derived(signalCols.length >= 2)
 
   const channelName = (i) => columnNames[i] ?? `Ch ${i}`
+
+  /**
+   * What preprocessing every result on screen has been through. A high-pass
+   * silently shifts PSD levels, FDD peaks and damping estimates, so this is
+   * shown in the plot toolbar next to the result rather than only in the
+   * sidebar that set it. The conditions mirror buildPreprocUrl exactly, so the
+   * chip states what was actually sent, not what the panel merely has toggled.
+   */
+  let preprocSummary = $derived.by(() => {
+    const bits = []
+    if (preproc.windowEnabled) {
+      const s = preproc.winStart, e = preproc.winEnd
+      const has = (v) => v !== null && v !== undefined && v !== ''
+      if (has(s) || has(e)) {
+        bits.push(`window ${has(s) ? s : 'start'}–${has(e) ? e : 'end'} ${preproc.winUnit}`)
+      }
+    }
+    if (preproc.hpEnabled && preproc.hpCutoff) bits.push(`high-pass ${preproc.hpCutoff} Hz`)
+    if (preproc.lpEnabled && preproc.lpCutoff) bits.push(`low-pass ${preproc.lpCutoff} Hz`)
+    if (preproc.resampleEnabled && preproc.targetFs) bits.push(`resampled to ${preproc.targetFs} Hz`)
+    return bits
+  })
 
   let currentCategory = $derived(CATEGORIES.find(c => c.id === activeCategory))
 
@@ -139,10 +161,10 @@
   function selectCategory(catId) {
     activeCategory = catId
     const cat = CATEGORIES.find(c => c.id === catId)
-    if (cat && cat.tabs.length > 0) {
-      const first = cat.tabs.find(t => !t.dual || dualSignal) ?? cat.tabs[0]
-      switchTab(first.id)
-    }
+    // Every category is reachable with a single channel. The four genuinely
+    // between-sensor analyses (multi-sensor, FDD, covariance, Mahalanobis) say
+    // so in their own panel rather than presenting a dead disabled tab.
+    if (cat && cat.tabs.length > 0) switchTab(cat.tabs[0].id)
     // Overview is a summary, not a form — coming back to it should re-run it.
     if (catId === 'overview') runOverview()
   }
@@ -478,7 +500,6 @@
           <button
             class="cat-btn"
             class:active={activeCategory === cat.id}
-            disabled={cat.tabs.every(t => t.dual) && !dualSignal}
             onclick={() => selectCategory(cat.id)}
           >{cat.label}</button>
         {/each}
@@ -491,7 +512,6 @@
             <button
               class="sub-tab-btn"
               class:active={activeTab === tab.id}
-              disabled={tab.dual && !dualSignal}
               onclick={() => switchTab(tab.id)}
             >{tab.label}</button>
           {/each}
@@ -549,7 +569,7 @@
             </div>
           </div>
         {:else}
-          <PlotPanel {activeTab} {plotData} {loading} {plotError} />
+          <PlotPanel {activeTab} {plotData} {loading} {plotError} {preprocSummary} />
         {/if}
       </div>
     {:else if parseError}

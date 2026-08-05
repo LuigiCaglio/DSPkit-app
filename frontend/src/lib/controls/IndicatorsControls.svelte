@@ -1,9 +1,14 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   import { onMount } from 'svelte'
   let { signalCol, loading, runAnalysis, autoRun = false} = $props()
-  let segment_duration = $state(null)
-  let excess           = $state(true)
-
+  // Settings persist across tab switches; see paramStore.
+  const kept = paramsFor('indicators', {
+    segment_duration: null,
+    excess: true,
+  })
+  let segment_duration = $state(kept.segment_duration)
+  let excess = $state(kept.excess)
   function run() {
     runAnalysis('/api/indicators', {
       signal_col: signalCol,
@@ -15,6 +20,8 @@
   // Opening the tab computes with the current settings; the Run button is for
   // re-running after a change. Guarded so an expensive tab can opt out.
   onMount(() => { if (autoRun) run() })
+
+  $effect(() => remember(kept, { segment_duration, excess }))
 </script>
 
 <div class="field">

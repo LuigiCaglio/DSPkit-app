@@ -1,14 +1,24 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   import { onMount } from 'svelte'
   let { signalCol, loading, runAnalysis, autoRun = false} = $props()
-  let filterType  = $state('lowpass')
-  let cutoff      = $state(100)
-  let low         = $state(50)
-  let high        = $state(200)
-  let freq        = $state(60)
-  let order       = $state(4)
-  let zeroPhase   = $state(true)
-
+  // Settings persist across tab switches; see paramStore.
+  const kept = paramsFor('filter', {
+    filterType: 'lowpass',
+    cutoff: 100,
+    low: 50,
+    high: 200,
+    freq: 60,
+    order: 4,
+    zeroPhase: true,
+  })
+  let filterType = $state(kept.filterType)
+  let cutoff = $state(kept.cutoff)
+  let low = $state(kept.low)
+  let high = $state(kept.high)
+  let freq = $state(kept.freq)
+  let order = $state(kept.order)
+  let zeroPhase = $state(kept.zeroPhase)
   const NEEDS_CUTOFF  = new Set(['lowpass', 'highpass'])
   const NEEDS_LOWHIGH = new Set(['bandpass', 'bandstop'])
   const NEEDS_FREQ    = new Set(['notch'])
@@ -24,6 +34,8 @@
   // Opening the tab computes with the current settings; the Run button is for
   // re-running after a change. Guarded so an expensive tab can opt out.
   onMount(() => { if (autoRun) run() })
+
+  $effect(() => remember(kept, { filterType, cutoff, low, high, freq, order, zeroPhase }))
 </script>
 
 <div class="field">

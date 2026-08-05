@@ -1,9 +1,14 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   import { onMount } from 'svelte'
   let { pairX, pairY, loading, runAnalysis, dualSignal, autoRun = false} = $props()
-  let normalize = $state(true)
-  let maxLag    = $state(null)
-
+  // Settings persist across tab switches; see paramStore.
+  const kept = paramsFor('cross_correlation', {
+    normalize: true,
+    maxLag: null,
+  })
+  let normalize = $state(kept.normalize)
+  let maxLag = $state(kept.maxLag)
   function run() {
     runAnalysis('/api/spectral/cross_correlation', {
       signal_col_x: pairX,
@@ -15,21 +20,22 @@
 
   // Opening the tab computes with the current settings; the Run button is for
   // re-running after a change. Guarded so an expensive tab can opt out.
-  onMount(() => { if (autoRun && dualSignal) run() })
+  onMount(() => { if (autoRun) run() })
+
+  $effect(() => remember(kept, { normalize, maxLag }))
 </script>
 
 {#if !dualSignal}
-  <div class="status">Requires at least 2 signal columns. Assign Signal Y in the sidebar.</div>
-{:else}
-  <div class="checkbox-row">
-    <input type="checkbox" id="norm-ccf" bind:checked={normalize} />
-    <label for="norm-ccf" style="margin:0">Normalize</label>
-  </div>
-  <div class="field">
-    <label>Max lag (s, blank=full)</label>
-    <input type="number" bind:value={maxLag} min="0" step="0.01" placeholder="full" style="width:90px" />
-  </div>
-  <button class="btn btn-primary" onclick={run} disabled={loading}>
-    {loading ? 'Running…' : 'Run Cross-correlation'}
-  </button>
+  <div class="status" style="max-width:230px">With one channel selected this is the autocorrelation (X = Y).</div>
 {/if}
+<div class="checkbox-row">
+  <input type="checkbox" id="norm-ccf" bind:checked={normalize} />
+  <label for="norm-ccf" style="margin:0">Normalize</label>
+</div>
+<div class="field">
+  <label>Max lag (s, blank=full)</label>
+  <input type="number" bind:value={maxLag} min="0" step="0.01" placeholder="full" style="width:90px" />
+</div>
+<button class="btn btn-primary" onclick={run} disabled={loading}>
+  {loading ? 'Running…' : 'Run Cross-correlation'}
+</button>

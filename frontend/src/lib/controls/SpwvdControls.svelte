@@ -1,8 +1,13 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   let { signalCol, loading, runAnalysis } = $props()
-  let lagSamples  = $state(null)
-  let timeSamples = $state(null)
-
+  // Settings persist across tab switches; see paramStore.
+  const kept = paramsFor('spwvd', {
+    lagSamples: null,
+    timeSamples: null,
+  })
+  let lagSamples = $state(kept.lagSamples)
+  let timeSamples = $state(kept.timeSamples)
   function run() {
     runAnalysis('/api/timefreq/spwvd', {
       signal_col: signalCol,
@@ -10,6 +15,8 @@
       time_samples: timeSamples || undefined,
     })
   }
+
+  $effect(() => remember(kept, { lagSamples, timeSamples }))
 </script>
 
 <div class="status" style="color:var(--warning)">

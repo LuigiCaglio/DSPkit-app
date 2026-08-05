@@ -1,9 +1,14 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   import { onMount } from 'svelte'
   let { loading, runAnalysis, autoRun = false} = $props()
-  let window_ = $state('hann')
-  let scaling  = $state('amplitude')
-
+  // Settings persist across tab switches; see paramStore.
+  const kept = paramsFor('fft', {
+    window_: 'hann',
+    scaling: 'amplitude',
+  })
+  let window_ = $state(kept.window_)
+  let scaling = $state(kept.scaling)
   function run() {
     runAnalysis('/api/spectral/fft', { window: window_, scaling })
   }
@@ -11,6 +16,8 @@
   // Opening the tab computes with the current settings; the Run button is for
   // re-running after a change. Guarded so an expensive tab can opt out.
   onMount(() => { if (autoRun) run() })
+
+  $effect(() => remember(kept, { window_, scaling }))
 </script>
 
 <div class="field">

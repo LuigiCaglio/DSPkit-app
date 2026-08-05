@@ -1,11 +1,18 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   import { onMount } from 'svelte'
   let { loading, runAnalysis, autoRun = false} = $props()
-  let window_  = $state('hann')
-  let nperseg  = $state(1024)
-  let noverlap = $state(null)
-  let scaling  = $state('density')
-
+  // Settings persist across tab switches; see paramStore.
+  const kept = paramsFor('psd', {
+    window_: 'hann',
+    nperseg: 1024,
+    noverlap: null,
+    scaling: 'density',
+  })
+  let window_ = $state(kept.window_)
+  let nperseg = $state(kept.nperseg)
+  let noverlap = $state(kept.noverlap)
+  let scaling = $state(kept.scaling)
   function run() {
     runAnalysis('/api/spectral/psd', {
       window: window_,
@@ -18,6 +25,8 @@
   // Opening the tab computes with the current settings; the Run button is for
   // re-running after a change. Guarded so an expensive tab can opt out.
   onMount(() => { if (autoRun) run() })
+
+  $effect(() => remember(kept, { window_, nperseg, noverlap, scaling }))
 </script>
 
 <div class="field">

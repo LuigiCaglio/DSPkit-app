@@ -1,10 +1,17 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   let { signalCol, loading, runAnalysis } = $props()
-  let fMin   = $state(1.0)
-  let fMax   = $state(null)
-  let nFreqs = $state(50)
-  let w      = $state(6.0)
-
+  // Settings persist across tab switches; see paramStore.
+  const kept = paramsFor('cwt', {
+    fMin: 1.0,
+    fMax: null,
+    nFreqs: 50,
+    w: 6.0,
+  })
+  let fMin = $state(kept.fMin)
+  let fMax = $state(kept.fMax)
+  let nFreqs = $state(kept.nFreqs)
+  let w = $state(kept.w)
   function run() {
     runAnalysis('/api/timefreq/cwt', {
       signal_col: signalCol,
@@ -14,6 +21,8 @@
       w,
     })
   }
+
+  $effect(() => remember(kept, { fMin, fMax, nFreqs, w }))
 </script>
 
 <div class="field">

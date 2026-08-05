@@ -1,9 +1,14 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   import { onMount } from 'svelte'
   let { loading, runAnalysis, autoRun = false} = $props()
-  let normalize = $state(true)
-  let maxLag    = $state(null)
-
+  // Settings persist across tab switches; see paramStore.
+  const kept = paramsFor('autocorrelation', {
+    normalize: true,
+    maxLag: null,
+  })
+  let normalize = $state(kept.normalize)
+  let maxLag = $state(kept.maxLag)
   function run() {
     runAnalysis('/api/spectral/autocorrelation', {
       normalize,
@@ -14,6 +19,8 @@
   // Opening the tab computes with the current settings; the Run button is for
   // re-running after a change. Guarded so an expensive tab can opt out.
   onMount(() => { if (autoRun) run() })
+
+  $effect(() => remember(kept, { normalize, maxLag }))
 </script>
 
 <div class="checkbox-row">

@@ -1,16 +1,28 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   import { onMount } from 'svelte'
   let { loading, runAnalysis, dualSignal, autoRun = false} = $props()
-  let window_       = $state('hann')
-  let nperseg       = $state(1024)
-  let prominence    = $state(null)
-  let distance_hz   = $state(null)
-  let max_peaks     = $state(null)
-  let freq_min      = $state(null)
-  let freq_max      = $state(null)
-  let mac_threshold = $state(0.8)
-  let n_crossings   = $state(10)
-
+  // Settings persist across tab switches; see paramStore.
+  const kept = paramsFor('fdd', {
+    window_: 'hann',
+    nperseg: 1024,
+    prominence: null,
+    distance_hz: null,
+    max_peaks: null,
+    freq_min: null,
+    freq_max: null,
+    mac_threshold: 0.8,
+    n_crossings: 10,
+  })
+  let window_ = $state(kept.window_)
+  let nperseg = $state(kept.nperseg)
+  let prominence = $state(kept.prominence)
+  let distance_hz = $state(kept.distance_hz)
+  let max_peaks = $state(kept.max_peaks)
+  let freq_min = $state(kept.freq_min)
+  let freq_max = $state(kept.freq_max)
+  let mac_threshold = $state(kept.mac_threshold)
+  let n_crossings = $state(kept.n_crossings)
   function run() {
     runAnalysis('/api/fdd/analyze', {
       window: window_,
@@ -28,6 +40,8 @@
   // Opening the tab computes with the current settings; the Run button is for
   // re-running after a change. Guarded so an expensive tab can opt out.
   onMount(() => { if (autoRun && dualSignal) run() })
+
+  $effect(() => remember(kept, { window_, nperseg, prominence, distance_hz, max_peaks, freq_min, freq_max, mac_threshold, n_crossings }))
 </script>
 
 <div class="field">
@@ -72,7 +86,11 @@
   {loading ? 'Running…' : 'Run FDD'}
 </button>
 {#if !dualSignal}
-  <div style="font-size:11px;color:var(--warning);margin-top:4px">Requires 2+ channels</div>
+  <div class="status" style="max-width:250px">
+    FDD takes the SVD of the cross-spectral matrix <em>between</em> sensors, so it
+    needs at least 2 channels. Select another in the sidebar. For a single
+    channel, use Spectral &gt; Peaks instead.
+  </div>
 {:else}
   <div style="font-size:11px;color:var(--text-muted);margin-top:4px;max-width:190px">
     Output-only method — deselect excitation/force channels.

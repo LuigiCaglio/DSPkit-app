@@ -1,10 +1,16 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   import { onMount } from 'svelte'
   let { signalCol, loading, runAnalysis, autoRun = false} = $props()
-  let window_  = $state('hann')
-  let nperseg  = $state(256)
-  let noverlap = $state(null)
-
+  // Settings persist across tab switches; see paramStore.
+  const kept = paramsFor('stft', {
+    window_: 'hann',
+    nperseg: 256,
+    noverlap: null,
+  })
+  let window_ = $state(kept.window_)
+  let nperseg = $state(kept.nperseg)
+  let noverlap = $state(kept.noverlap)
   function run() {
     runAnalysis('/api/timefreq/stft', {
       signal_col: signalCol,
@@ -17,6 +23,8 @@
   // Opening the tab computes with the current settings; the Run button is for
   // re-running after a change. Guarded so an expensive tab can opt out.
   onMount(() => { if (autoRun) run() })
+
+  $effect(() => remember(kept, { window_, nperseg, noverlap }))
 </script>
 
 <div class="field">

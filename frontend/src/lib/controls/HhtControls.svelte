@@ -1,9 +1,15 @@
 <script>
+  import { paramsFor, remember } from '../paramStore.svelte.js'
   let { signalCol, loading, runAnalysis } = $props()
-  let maxImfs    = $state(null)
-  let maxSifting = $state(10)
-  let nBins      = $state(512)
-
+  // Settings persist across tab switches; see paramStore.
+  const kept = paramsFor('hht', {
+    maxImfs: null,
+    maxSifting: 10,
+    nBins: 512,
+  })
+  let maxImfs = $state(kept.maxImfs)
+  let maxSifting = $state(kept.maxSifting)
+  let nBins = $state(kept.nBins)
   function run() {
     runAnalysis('/api/emd/hht', {
       signal_col:  signalCol,
@@ -12,6 +18,8 @@
       n_bins:      nBins,
     })
   }
+
+  $effect(() => remember(kept, { maxImfs, maxSifting, nBins }))
 </script>
 
 <div class="status" style="color:var(--warning)">⚠ HHT runs EMD first — slow for signals > 5000 samples.</div>
