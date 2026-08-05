@@ -1,10 +1,13 @@
 # DSPkit-app — what's left
 
-State as of 2026-08-05, branch `plug-and-play-gui` (2 commits ahead of `master`:
-`bb3a186`, `02f252e`).
+State as of 2026-08-05. `master` is at `df2fa36` (the plug-and-play work is
+merged and pushed); current branch is `timefreq-display`, which carries §3.1 and
+is pushed but **not yet merged**.
 
 The app is usable for day-to-day work now. Everything below is either
 *repeatability* or *someone-else-sized* — nothing here blocks your own use.
+
+Run the tests with `python tests/run_all.py` — no third-party packages needed.
 
 ---
 
