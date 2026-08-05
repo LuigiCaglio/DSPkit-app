@@ -64,9 +64,35 @@
   let zoomable = $derived(ZOOMABLE.has(activeTab) && !!single)
   let xRange   = $state(null)
 
-  // The PSD captures a range for a different reason: to set filter cutoffs from
-  // the spectrum you are looking at. No resampling — just the frequency bounds.
-  let bandPick = $derived(activeTab === 'psd' && !!single && !!setFilterFromRange)
+  // ── filter band picking (PSD and FFT) ──────────────────────────────────────
+  // Set cutoffs from the spectrum you are looking at. The default drag zooms,
+  // which is not a selection and gives no feedback, so picking is an explicit
+  // mode that switches Plotly to a horizontal select rectangle. The numbers
+  // stay editable — a typed cutoff is often what you actually want.
+  let bandPick = $derived(
+    (activeTab === 'psd' || activeTab === 'fft') && !!single && !!setFilterFromRange
+  )
+  let picking = $state(false)
+  let bandLo  = $state('')
+  let bandHi  = $state('')
+
+  $effect(() => {
+    const _ = activeTab, __ = plotData
+    picking = false; bandLo = ''; bandHi = ''
+  })
+
+  function onSelected(e) {
+    const r = e?.range?.x
+    if (!r) return
+    bandLo = Number(Math.max(r[0], 0).toPrecision(4))
+    bandHi = Number(Math.max(r[1], 0).toPrecision(4))
+    picking = false          // one pick, then back to normal zooming
+  }
+
+  let bandReady = $derived(
+    bandLo !== '' && bandHi !== '' && Number(bandHi) > Number(bandLo)
+  )
+  const applyBand = (kind) => setFilterFromRange(kind, Number(bandLo), Number(bandHi))
 
   // A new payload or a different analysis invalidates the old window.
   $effect(() => { const _ = plotData, __ = activeTab; xRange = null })
@@ -126,6 +152,7 @@
           ...baseOpts,
           xRange: zoomable ? xRange : null,
           band: filterBand,
+          dragmode: picking ? 'select' : null,
         })
       : null
   )
@@ -319,27 +346,26 @@
       {/if}
       {#if bandPick}
         <span class="plot-toolbar-sep"></span>
-        {#if xRange}
-          <span class="plot-toolbar-group">
-            <span class="plot-toolbar-grouplabel">
-              {xRange[0].toPrecision(4)}–{xRange[1].toPrecision(4)} Hz →
-            </span>
-            <span class="seg">
-              <button class="seg-btn"
-                      onclick={() => setFilterFromRange('highpass', xRange[0], xRange[1])}
-                      title="Keep everything above {xRange[0].toPrecision(4)} Hz">High-pass</button>
-              <button class="seg-btn"
-                      onclick={() => setFilterFromRange('lowpass', xRange[0], xRange[1])}
-                      title="Keep everything below {xRange[1].toPrecision(4)} Hz">Low-pass</button>
-              <button class="seg-btn"
-                      onclick={() => setFilterFromRange('bandpass', xRange[0], xRange[1])}
-                      title="Keep only this band">Band-pass</button>
-            </span>
+        <span class="plot-toolbar-group">
+          <span class="plot-toolbar-grouplabel">Filter</span>
+          <button class="seg-btn pick-btn" class:on={picking}
+                  onclick={() => picking = !picking}
+                  title="Then drag across the spectrum to select a frequency band">
+            {picking ? '✓ drag across the plot…' : '⌖ Pick from plot'}
+          </button>
+          <input type="number" bind:value={bandLo} placeholder="from Hz"
+                 class="plot-axis-input" min="0" step="any" aria-label="Band lower edge (Hz)" />
+          <input type="number" bind:value={bandHi} placeholder="to Hz"
+                 class="plot-axis-input" min="0" step="any" aria-label="Band upper edge (Hz)" />
+          <span class="seg">
+            <button class="seg-btn" disabled={!bandReady} onclick={() => applyBand('highpass')}
+                    title="Keep everything above the lower edge">High-pass</button>
+            <button class="seg-btn" disabled={!bandReady} onclick={() => applyBand('lowpass')}
+                    title="Keep everything below the upper edge">Low-pass</button>
+            <button class="seg-btn" disabled={!bandReady} onclick={() => applyBand('bandpass')}
+                    title="Keep only this band">Band-pass</button>
           </span>
-          <button class="btn-ghost" onclick={() => xRange = null}>Clear selection</button>
-        {:else}
-          <span class="zoom-chip">drag on the plot to pick a filter band</span>
-        {/if}
+        </span>
         {#if filterBand?.hp || filterBand?.lp}
           <button class="btn-ghost" onclick={clearFilter}>Remove filter</button>
         {/if}
@@ -539,7 +565,11 @@
               Select an analysis and press Run.
             </div>
           {/if}
-          <PlotCanvas spec={mainSpec} onRelayout={(zoomable || bandPick) ? onRelayout : null} />
+          <PlotCanvas
+            spec={mainSpec}
+            onRelayout={zoomable ? onRelayout : null}
+            onSelected={bandPick ? onSelected : null}
+          />
         </div>
       {/snippet}
     </ResizablePane>
@@ -667,6 +697,13 @@
   .seg-btn + .seg-btn { border-left: 1px solid var(--border); }
   .seg-btn:hover { background: var(--bg-hover); }
   .seg-btn.on { background: var(--accent); color: var(--accent-contrast); }
+  .seg-btn:disabled { opacity: .45; cursor: default; }
+  .seg-btn:disabled:hover { background: transparent; }
+  /* The pick toggle stands alone rather than inside a .seg group. */
+  .pick-btn {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
 
   .zoom-chip {
     font-size: 11px;

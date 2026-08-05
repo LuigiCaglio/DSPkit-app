@@ -25,25 +25,13 @@ Watch out: `.mat` and `.tdms` carry channel names and often a sample rate, so
 they can skip the `_detect_time_col` guesswork entirely — the session response
 already has fields for both.
 
-### 1.2 Commit a test suite
-Currently **zero committed tests** against ~1,700 lines of backend and a
-frontend that was just restructured.
+### 1.2 Widen test coverage
+`tests/` now holds 70 assertions (36 API, 34 frontend) — run with
+`python tests/run_all.py`, no third-party packages needed. See `tests/README.md`.
 
-> ⚠️ The suites written during this work live in a **session temp directory that
-> will be deleted**. They are not in the repo. Recreate or ask for them to be
-> committed before they're gone.
-
-What they covered, worth reproducing:
-
-| suite | asserts |
-|---|---|
-| API smoke | session create → Overview trio → STFT/peaks fan-out per channel → pairwise → FDD refusing 1 channel |
-| single-channel | 14 analyses reachable with one channel; the 4 between-sensor ones return 422; `coherence(x,x) == 1.000000` |
-| zoom unit (node) | window-before-decimate: point budget, full-rate at 1 s, x/y pairing, over-wide windows, out-of-range and inverted ranges |
-| cross-corr lag unit (node) | axis ranges per side, full trace retained, peak found *within the visible half*, anticorrelation sign, one-sided records |
-
-The node suites import `frontend/src/lib/plotSpec.js` directly — it's pure, so it
-tests without a browser. That was a deliberate reason to extract it.
+Still uncovered, because it needs a rendered DOM: drag-resizing, the plot area's
+scroll behaviour, parameter persistence across tab switches, and whether
+auto-run fires on mount.
 
 ### 1.3 Error messages are raw exception strings
 `ValueError: At least 2 channels required` is fine for you; it reads as a crash
@@ -159,11 +147,12 @@ decimation/length-cap story first, or it will hang on a real record.
 
 ## Done since this file was written
 
-- **Filter cutoffs picked from the PSD** (`setFilterFromRange` in `App.svelte`).
-  Drag on the PSD, then High-pass / Low-pass / Band-pass. The rejected bands are
-  shaded onto the PSD so the filter is visible against the spectrum it was
-  chosen from. Band-pass is the high- and low-pass together, which is how
-  preprocessing already represents it.
+- **Filter cutoffs picked from the PSD *and* FFT** (`setFilterFromRange` in
+  `App.svelte`). "Pick from plot" switches the chart to a horizontal selection
+  and the bounds stay typeable; the rejected bands are shaded onto the spectrum
+  so the filter is visible against the data it was chosen from. Band-pass is the
+  high- and low-pass together, which is how preprocessing already represents it.
+- **Committed test suites** under `tests/` (see §1.2).
 
 ---
 

@@ -91,6 +91,7 @@ export function buildPlot(tab, d, opts) {
     xRange = null,
     lagSide = 'both',        // 'both' | 'positive' | 'negative'
     band = null,             // {hp, lp} — the pass band currently in force
+    dragmode = null,         // 'select' puts the plot in band-picking mode
   } = opts
 
   const L = baseLayout(T, cell)
@@ -120,6 +121,25 @@ export function buildPlot(tab, d, opts) {
   }]
 
   /** Cell charts carry their channel name as the title; the main canvas may not. */
+  /** Shade what the filter removes, against the spectrum it was chosen from. */
+  const bandShapes = (freqs) => {
+    if (!band || (!band.hp && !band.lp)) return {}
+    const reject = (x0, x1) => ({
+      type: 'rect', xref: 'x', yref: 'paper', x0, x1, y0: 0, y1: 1,
+      fillcolor: T.danger, opacity: 0.10, line: { width: 0 }, layer: 'below',
+    })
+    const shapes = []
+    if (band.hp) shapes.push(reject(freqs[0], band.hp))
+    if (band.lp) shapes.push(reject(band.lp, freqs[freqs.length - 1]))
+    return shapes.length ? { shapes } : {}
+  }
+
+  // 'select' with a horizontal-only rectangle is the band-picking gesture; the
+  // default drag zooms, which is not a selection and gave no visible feedback.
+  const dragOpts = dragmode
+    ? { dragmode, selectdirection: 'h' }
+    : {}
+
   const titled = (extra = {}) => title
     ? merge(extra, { title: { text: title, font: { color: T.title, size: cell ? 11 : 13 } } })
     : extra
@@ -156,6 +176,8 @@ export function buildPlot(tab, d, opts) {
     const traces = d.signals.map((sig, i) =>
       line(d.freqs, norm(sig.amplitude), sig.name, 'solid', 'y', colors[i % colors.length]))
     return { traces, layout: merge(L, titled({
+      ...bandShapes(d.freqs),
+      ...dragOpts,
       xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
       yaxis: { ...L.yaxis, title: normalize ? 'Amplitude (norm.)' : 'Amplitude', type: yType },
     }))}
@@ -169,18 +191,9 @@ export function buildPlot(tab, d, opts) {
     const yr = (psd.yMin !== '' && psd.yMin != null && psd.yMax !== '' && psd.yMax != null)
       ? [parseFloat(psd.yMin), parseFloat(psd.yMax)] : undefined
 
-    // Show what the filter removes, against the spectrum it was chosen from.
-    // A cutoff typed into another tab is invisible here otherwise.
-    const shapes = []
-    const reject = (x0, x1) => ({
-      type: 'rect', xref: 'x', yref: 'paper', x0, x1, y0: 0, y1: 1,
-      fillcolor: T.danger, opacity: 0.10, line: { width: 0 }, layer: 'below',
-    })
-    if (band?.hp) shapes.push(reject(d.freqs[0], band.hp))
-    if (band?.lp) shapes.push(reject(band.lp, d.freqs[d.freqs.length - 1]))
-
     return { traces, layout: merge(L, titled({
-      ...(shapes.length ? { shapes } : {}),
+      ...bandShapes(d.freqs),
+      ...dragOpts,
       xaxis: { ...L.xaxis, title: 'Frequency [Hz]',
                ...(xr ? { range: xr, autorange: false } : { autorange: true }) },
       yaxis: { ...L.yaxis, title: 'PSD', type: (psd.yLog ?? true) ? 'log' : 'linear',
