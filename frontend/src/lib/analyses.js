@@ -54,3 +54,6 @@ export const AUTORUN = new Set([
 
 /** Tabs whose x-axis is time and whose traces are decimated for display. */
 export const ZOOMABLE = new Set(['timeseries', 'filter', 'instantaneous'])
+
+/** Tabs drawn as a time-frequency surface, sharing one set of scaling controls. */
+export const HEATMAP = new Set(['stft', 'cwt', 'wvd', 'spwvd'])

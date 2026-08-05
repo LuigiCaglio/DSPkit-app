@@ -55,6 +55,59 @@ export function isDownsampledFor(tab, d) {
   return false
 }
 
+/**
+ * Perceptually uniform sequential ramps only.
+ *
+ * A spectrogram encodes magnitude, so the colour must be monotonic in lightness
+ * — jet/turbo/rainbow invent bands of contrast where the data has none and are
+ * unreadable with colour-vision deficiency. All four below are monotonic and
+ * CVD-safe; Cividis is additionally optimised for it.
+ */
+export const HEATMAP_SCALES = ['Viridis', 'Cividis', 'Magma', 'Inferno']
+
+/** Largest |value| in a 2-D array, ignoring non-finite entries. */
+function peakAbs(z) {
+  let peak = 0
+  for (const row of z) {
+    for (const v of row) {
+      const a = Math.abs(v)
+      if (Number.isFinite(a) && a > peak) peak = a
+    }
+  }
+  return peak
+}
+
+/** Percentile over a flattened 2-D array, ignoring non-finite entries. */
+function percentileOf(z, p) {
+  const flat = []
+  for (const row of z) for (const v of row) if (Number.isFinite(v)) flat.push(v)
+  if (!flat.length) return null
+  flat.sort((a, b) => a - b)
+  const i = Math.min(flat.length - 1, Math.max(0, Math.round((p / 100) * (flat.length - 1))))
+  return flat[i]
+}
+
+/**
+ * Convert a time-frequency distribution to dB relative to its own peak.
+ *
+ * WVD and SPWVD are quasi-probability distributions and go negative, so the
+ * magnitude is taken first — a raw log of those arrays produces NaN holes.
+ * Values below the floor are clamped rather than left as -Infinity, which
+ * Plotly renders as gaps.
+ */
+export function toDecibels(z, floorDb) {
+  const peak = peakAbs(z)
+  if (!(peak > 0)) return { z, zmin: undefined, zmax: undefined }
+  const floor = -Math.abs(floorDb)
+  const out = z.map(row => row.map(v => {
+    const a = Math.abs(v) / peak
+    if (!(a > 0)) return floor
+    const db = 20 * Math.log10(a)
+    return db < floor ? floor : db
+  }))
+  return { z: out, zmin: floor, zmax: 0 }
+}
+
 function baseLayout(T, cell = false) {
   return {
     paper_bgcolor: T.paper,
@@ -93,6 +146,7 @@ export function buildPlot(tab, d, opts) {
     band = null,             // {hp, lp} — the pass band currently in force
     dragmode = null,         // 'select' puts the plot in band-picking mode
     response = null,         // {freqs, magnitude} — the filter's own response
+    tf = {},                 // heatmap scaling: {db, rangeDb, clipPct, colorscale}
   } = opts
 
   const L = baseLayout(T, cell)
@@ -116,10 +170,40 @@ export function buildPlot(tab, d, opts) {
     line: { dash, ...(color ? { color } : {}) }, yaxis,
   })
 
-  const heatmap = (x, y, z) => [{
-    x, y, z, type: 'heatmap', colorscale: 'Viridis',
-    colorbar: { thickness: cell ? 10 : 14, outlinewidth: 0 },
-  }]
+  /**
+   * A time-frequency surface.
+   *
+   * Linear magnitude is the wrong default here: real vibration data spans
+   * several decades, so one bright ridge saturates the ramp and everything else
+   * collapses to the bottom colour — the chart reads as a black rectangle with
+   * a streak. dB relative to the peak, with an explicit dynamic range, is what
+   * makes the structure visible.
+   */
+  const heatmap = (x, y, z) => {
+    const { db = true, rangeDb = 60, clipPct = 99, colorscale = 'Viridis' } = tf
+    let zz = z, zmin, zmax, unit
+
+    if (db) {
+      ({ z: zz, zmin, zmax } = toDecibels(z, rangeDb))
+      unit = 'dB re peak'
+    } else {
+      // Clip the top percentile so a few outliers cannot own the whole ramp.
+      const hi = percentileOf(z, clipPct)
+      const lo = percentileOf(z, 0)
+      if (hi != null && lo != null && hi > lo) { zmin = lo; zmax = hi }
+      unit = 'magnitude'
+    }
+
+    return [{
+      x, y, z: zz, type: 'heatmap', colorscale,
+      ...(zmin != null ? { zmin, zmax, zauto: false } : {}),
+      colorbar: {
+        thickness: cell ? 10 : 14, outlinewidth: 0,
+        title: { text: unit, side: 'right', font: { size: cell ? 9 : 11 } },
+      },
+      hovertemplate: `%{x:.4g} s, %{y:.4g} Hz — %{z:.3g} ${db ? 'dB' : ''}<extra></extra>`,
+    }]
+  }
 
   /** Shade what the filter removes, against the spectrum it was chosen from. */
   const bandShapes = (freqs) => {

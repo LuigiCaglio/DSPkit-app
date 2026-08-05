@@ -26,7 +26,7 @@ they can skip the `_detect_time_col` guesswork entirely — the session response
 already has fields for both.
 
 ### 1.2 Widen test coverage
-`tests/` now holds 97 assertions (63 API, 34 frontend) — run with
+`tests/` now holds 108 assertions (63 API, 45 frontend) — run with
 `python tests/run_all.py`, no third-party packages needed. See `tests/README.md`.
 
 Still uncovered, because it needs a rendered DOM: drag-resizing, the plot area's
@@ -93,14 +93,8 @@ A standalone app would have to re-implement the loading, auto-detection,
 preprocessing and channel selection that already work here. The value is being
 next to them.
 
-### 3.1 dB and colour-range control on the existing heatmaps
-**Do this first — it is small and probably accounts for most of the "feels
-weak".** A linear-magnitude spectrogram of real vibration data renders as a
-black rectangle with one bright streak. Needs: dB scaling, and a colour range
-set by percentile clipping (e.g. 5th–99th) rather than min/max.
-
-Touches `buildPlot`'s `stft`/`cwt`/`wvd`/`spwvd` branches in `plotSpec.js`,
-which all funnel through the same `heatmap()` helper.
+### 3.1 dB and colour-range control — done
+See "Done since this file was written" below.
 
 ### 3.2 A linked Time-Frequency Explorer tab
 Time series on top, spectrogram below, PSD rotated on the right, all sharing
@@ -153,6 +147,10 @@ decimation/length-cap story first, or it will hang on a real record.
   so the filter is visible against the data it was chosen from. Band-pass is the
   high- and low-pass together, which is how preprocessing already represents it.
 - **Committed test suites** under `tests/` (see §1.2).
+- **dB and colour-range control on the time-frequency heatmaps** (§3.1). dB
+  relative to peak is now the default with an adjustable dynamic range; linear
+  mode clips the top percentile. Ramp is selectable among perceptually uniform
+  options only. Settings persist.
 
 ---
 

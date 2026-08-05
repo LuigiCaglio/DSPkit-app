@@ -1,9 +1,11 @@
 <script>
+  import { onMount } from 'svelte'
   import PlotCanvas from './PlotCanvas.svelte'
   import ResizablePane from './ResizablePane.svelte'
   import { plotTheme, themeState } from './theme.svelte.js'
-  import { buildPlot, buildPhasePlot, buildPairOverlay, isDownsampledFor, MAX_PLOT_POINTS } from './plotSpec.js'
-  import { ZOOMABLE } from './analyses.js'
+  import { buildPlot, buildPhasePlot, buildPairOverlay, isDownsampledFor,
+           MAX_PLOT_POINTS, HEATMAP_SCALES } from './plotSpec.js'
+  import { ZOOMABLE, HEATMAP } from './analyses.js'
 
   let {
     activeTab, plotData, loading, plotError,
@@ -31,6 +33,38 @@
   // Which half of the cross-correlation lag axis to show.
   let lagSide = $state('both')
   $effect(() => { const _ = activeTab; lagSide = 'both' })
+
+  // ── time-frequency surface scaling ─────────────────────────────────────────
+  // dB by default: a linear-magnitude spectrogram of real vibration data is one
+  // bright ridge on a black field, because the dynamic range is several decades.
+  // These are display preferences, so they persist rather than reset per tab.
+  const TF_KEY = 'dspkit.tfDisplay'
+  let tfDb         = $state(true)
+  let tfRangeDb    = $state(60)
+  let tfClipPct    = $state(99)
+  let tfColorscale = $state('Viridis')
+  let tfLoaded     = false
+
+  onMount(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(TF_KEY) ?? 'null')
+      if (v) {
+        tfDb = v.db ?? tfDb
+        tfRangeDb = v.rangeDb ?? tfRangeDb
+        tfClipPct = v.clipPct ?? tfClipPct
+        tfColorscale = HEATMAP_SCALES.includes(v.colorscale) ? v.colorscale : tfColorscale
+      }
+    } catch { /* defaults are fine */ }
+    tfLoaded = true
+  })
+
+  $effect(() => {
+    const v = { db: tfDb, rangeDb: tfRangeDb, clipPct: tfClipPct, colorscale: tfColorscale }
+    if (!tfLoaded) return          // don't overwrite storage before it is read
+    try { localStorage.setItem(TF_KEY, JSON.stringify(v)) } catch { /* ignore */ }
+  })
+
+  let isHeatmap = $derived(HEATMAP.has(activeTab))
 
   // ── PSD-specific axis controls ───────────────────────────────────────────────
   let psdYLog = $state(true)   // default: log scale
@@ -147,6 +181,7 @@
     psd: { yLog: psdYLog, xMin: psdXMin, xMax: psdXMax, yMin: psdYMin, yMax: psdYMax },
     downsample: !showAllPoints,
     lagSide,
+    tf: { db: tfDb, rangeDb: tfRangeDb, clipPct: tfClipPct, colorscale: tfColorscale },
   })
 
   let mainSpec = $derived(
@@ -373,6 +408,32 @@
         {#if filterBand?.hp || filterBand?.lp}
           <button class="btn-ghost" onclick={clearFilter}>Remove filter</button>
         {/if}
+      {/if}
+      {#if isHeatmap}
+        <span class="plot-toolbar-sep"></span>
+        <label><input type="checkbox" bind:checked={tfDb} /> dB</label>
+        {#if tfDb}
+          <span class="plot-toolbar-group">
+            <span class="plot-toolbar-grouplabel">range</span>
+            <input type="number" bind:value={tfRangeDb} min="10" max="160" step="10"
+                   class="plot-axis-input" aria-label="Dynamic range below peak (dB)" />
+            <span class="plot-toolbar-grouplabel">dB below peak</span>
+          </span>
+        {:else}
+          <span class="plot-toolbar-group">
+            <span class="plot-toolbar-grouplabel">clip at</span>
+            <input type="number" bind:value={tfClipPct} min="50" max="100" step="1"
+                   class="plot-axis-input" aria-label="Upper percentile clip" />
+            <span class="plot-toolbar-grouplabel">th pct</span>
+          </span>
+        {/if}
+        <span class="plot-toolbar-group">
+          <span class="plot-toolbar-grouplabel">colour</span>
+          <select bind:value={tfColorscale} class="plot-axis-input" style="width:auto"
+                  aria-label="Colour ramp">
+            {#each HEATMAP_SCALES as c}<option value={c}>{c}</option>{/each}
+          </select>
+        </span>
       {/if}
       {#if activeTab === 'cross_correlation'}
         <span class="plot-toolbar-sep"></span>
