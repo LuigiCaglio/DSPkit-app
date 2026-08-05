@@ -456,6 +456,84 @@ export function buildPlot(tab, d, opts) {
   return null
 }
 
+/**
+ * One reference channel against several others, overlaid on a single axis.
+ *
+ * @param tab    'cross_correlation' | 'csd' | 'coherence'
+ * @param items  [{name, data}] — one entry per compared channel
+ * @param opts   as buildPlot, plus `ref` (the reference channel's name)
+ */
+export function buildPairOverlay(tab, items, opts) {
+  const { T, colors = T.series, lagSide = 'both', cell = false, ref = null } = opts
+  const L = baseLayout(T, cell)
+  const usable = items.filter(it => it.data)
+  if (!usable.length) return null
+
+  const line = (x, y, name, color) => ({
+    x, y, type: 'scatter', mode: 'lines', name, line: { color },
+  })
+  const colorAt = (i) => colors[i % colors.length]
+  const heading = (what) => ref ? `${what} — ${ref} vs ${usable.length} channel${usable.length > 1 ? 's' : ''}` : what
+
+  if (tab === 'cross_correlation') {
+    const first = usable[0].data
+    const loLag = first.lags[0]
+    const hiLag = first.lags[first.lags.length - 1]
+    const lagRange =
+      lagSide === 'positive' ? [0, hiLag] :
+      lagSide === 'negative' ? [loLag, 0] : null
+
+    const traces = usable.map((it, i) => line(it.data.lags, it.data.ccf, it.name, colorAt(i)))
+
+    // Mark each curve's peak within the visible half — with several overlaid,
+    // reading the lag off the x-axis by eye is exactly what goes wrong.
+    const px = [], py = [], ptext = []
+    for (const it of usable) {
+      let bl = null, bv = null
+      for (let i = 0; i < it.data.lags.length; i++) {
+        const lag = it.data.lags[i]
+        if (lagRange && (lag < lagRange[0] || lag > lagRange[1])) continue
+        if (bv === null || Math.abs(it.data.ccf[i]) > Math.abs(bv)) { bv = it.data.ccf[i]; bl = lag }
+      }
+      if (bl !== null) { px.push(bl); py.push(bv); ptext.push(`${it.name}: ${bl.toPrecision(4)} s`) }
+    }
+    if (px.length) {
+      traces.push({
+        x: px, y: py, type: 'scatter', mode: 'markers', name: 'peaks',
+        text: ptext, hoverinfo: 'text',
+        marker: { symbol: 'circle-open', size: cell ? 8 : 11, line: { width: 2 }, color: T.danger },
+      })
+    }
+
+    return { traces, layout: merge(L, {
+      xaxis: { ...L.xaxis, title: 'Lag [s]',
+               ...(lagRange ? { range: lagRange, autorange: false } : { autorange: true }) },
+      yaxis: { ...L.yaxis, title: 'CCF' },
+      title: { text: heading('Cross-correlation'), font: { color: T.title, size: cell ? 11 : 13 } },
+    })}
+  }
+
+  if (tab === 'csd') {
+    return { traces: usable.map((it, i) => line(it.data.freqs, it.data.magnitude, it.name, colorAt(i))),
+      layout: merge(L, {
+        xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
+        yaxis: { ...L.yaxis, title: '|CSD|' },
+        title: { text: heading('Cross-spectral density'), font: { color: T.title, size: cell ? 11 : 13 } },
+      })}
+  }
+
+  if (tab === 'coherence') {
+    return { traces: usable.map((it, i) => line(it.data.freqs, it.data.Cxy, it.name, colorAt(i))),
+      layout: merge(L, {
+        xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
+        yaxis: { ...L.yaxis, title: 'Coherence', range: [0, 1] },
+        title: { text: heading('Coherence'), font: { color: T.title, size: cell ? 11 : 13 } },
+      })}
+  }
+
+  return null
+}
+
 /** The optional second pane under FFT and Coherence. */
 export function buildPhasePlot(tab, d, opts) {
   const { T, colors = T.series } = opts

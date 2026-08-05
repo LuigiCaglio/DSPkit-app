@@ -38,6 +38,17 @@
     </select>
   </div>
 
+{:else if kind === 'ref'}
+  <!-- One channel, but as the reference of a comparison rather than the subject
+       of the analysis — and with no "All selected", which means something else
+       here (see the overlay toggle in the pairwise controls). -->
+  <div class="field scope-field">
+    <label for="scope-ref">Reference</label>
+    <select id="scope-ref" bind:value={pairX}>
+      {#each selected as i}<option value={i}>{nameOf(i)}</option>{/each}
+    </select>
+  </div>
+
 {:else if kind === 'pair'}
   <div class="field scope-field">
     <label for="scope-x">Channel X</label>

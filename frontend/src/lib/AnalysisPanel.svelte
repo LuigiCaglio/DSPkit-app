@@ -26,7 +26,7 @@
   let {
     activeTab, dualSignal, columnNames = [], selected = [],
     focusChannel = $bindable(null), pairX = $bindable(null), pairY = $bindable(null),
-    loading, plotError, runAnalysis, runOverview,
+    loading, plotError, runAnalysis, runOverview, runPairOverlay,
   } = $props()
 
   let scope   = $derived(scopeOf(activeTab))
@@ -61,11 +61,17 @@
   {:else if activeTab === 'autocorrelation'}
     <AutocorrControls {autoRun} {loading} {runAnalysis} />
   {:else if activeTab === 'cross_correlation'}
-    <CrossCorrControls {pairX} {pairY} {autoRun} {loading} {runAnalysis} {dualSignal} />
+    <CrossCorrControls
+      {columnNames} {selected} bind:focusChannel bind:pairX bind:pairY
+      {runPairOverlay} {autoRun} {loading} {runAnalysis} {dualSignal} />
   {:else if activeTab === 'csd'}
-    <CsdControls {pairX} {pairY} {autoRun} {loading} {runAnalysis} {dualSignal} />
+    <CsdControls
+      {columnNames} {selected} bind:focusChannel bind:pairX bind:pairY
+      {runPairOverlay} {autoRun} {loading} {runAnalysis} {dualSignal} />
   {:else if activeTab === 'coherence'}
-    <CoherenceControls {pairX} {pairY} {autoRun} {loading} {runAnalysis} {dualSignal} />
+    <CoherenceControls
+      {columnNames} {selected} bind:focusChannel bind:pairX bind:pairY
+      {runPairOverlay} {autoRun} {loading} {runAnalysis} {dualSignal} />
   {:else if activeTab === 'filter'}
     <FilterControls signalCol={focusChannel} {autoRun} {loading} {runAnalysis} />
   {:else if activeTab === 'stft'}

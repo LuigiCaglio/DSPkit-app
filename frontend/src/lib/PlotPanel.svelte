@@ -2,7 +2,7 @@
   import PlotCanvas from './PlotCanvas.svelte'
   import ResizablePane from './ResizablePane.svelte'
   import { plotTheme, themeState } from './theme.svelte.js'
-  import { buildPlot, buildPhasePlot, isDownsampledFor, MAX_PLOT_POINTS } from './plotSpec.js'
+  import { buildPlot, buildPhasePlot, buildPairOverlay, isDownsampledFor, MAX_PLOT_POINTS } from './plotSpec.js'
   import { ZOOMABLE } from './analyses.js'
 
   let { activeTab, plotData, loading, plotError, preprocSummary = [] } = $props()
@@ -13,7 +13,8 @@
   //   anything else      one analysis, one chart
   let grid     = $derived(plotData?.grid ?? null)
   let overview = $derived(plotData?.overview ?? null)
-  let single   = $derived(plotData && !grid && !overview ? plotData : null)
+  let overlay  = $derived(plotData?.overlay ?? null)
+  let single   = $derived(plotData && !grid && !overview && !overlay ? plotData : null)
 
   // ── display options (local state) ───────────────────────────────────────────
   let showPhase        = $state(false)
@@ -119,6 +120,14 @@
   let phaseSpec = $derived(
     showPhase && hasPhaseData ? buildPhasePlot(activeTab, single, baseOpts) : null
   )
+
+  // Several comparisons against one reference, drawn on a single axis.
+  let overlaySpec = $derived(
+    overlay
+      ? buildPairOverlay(activeTab, overlay.items, { ...baseOpts, ref: overlay.ref })
+      : null
+  )
+  let overlayFailures = $derived(overlay ? overlay.items.filter(i => i.error) : [])
 
   let gridSpecs = $derived(
     grid
@@ -249,6 +258,23 @@
     download(`${activeTab}_all_channels.csv`, headers, rows)
   }
 
+  /** Overlay export: shared x column, one column per compared channel. */
+  function exportOverlayCsv() {
+    const usable = overlay.items.filter(i => i.data)
+    if (!usable.length) return
+    const d0 = usable[0].data
+    const xName = activeTab === 'cross_correlation' ? 'lag_s' : 'frequency_Hz'
+    const xs = activeTab === 'cross_correlation' ? d0.lags : d0.freqs
+    const pick = (d) =>
+      activeTab === 'cross_correlation' ? d.ccf :
+      activeTab === 'coherence'         ? d.Cxy : d.magnitude
+    const headers = [xName, ...usable.map(i => i.name)]
+    const cols = usable.map(i => pick(i.data))
+    const rows = []
+    for (let i = 0; i < xs.length; i++) rows.push([xs[i], ...cols.map(c => c[i] ?? '')])
+    download(`${activeTab}_vs_all.csv`, headers, rows)
+  }
+
   let csvSupported = $derived(!!single && csvFor(activeTab, single) !== null)
   let gridCsvSupported = $derived(
     !!grid && grid.some(c => c.data && csvFor(activeTab, c.data) !== null)
@@ -321,6 +347,8 @@
       {/if}
       {#if csvSupported}
         <button class="btn-ghost btn-csv" onclick={() => exportCsv()}>↓ CSV</button>
+      {:else if overlay}
+        <button class="btn-ghost btn-csv" onclick={exportOverlayCsv}>↓ CSV (all pairs)</button>
       {:else if gridCsvSupported}
         <button class="btn-ghost btn-csv" onclick={exportGridCsv}>↓ CSV (all channels)</button>
       {/if}
@@ -406,6 +434,28 @@
         {/if}
       </section>
     </div>
+
+  <!-- ── overlay: one reference against several channels, on one axis ── -->
+  {:else if overlay}
+    <ResizablePane id="main-plot" fill initial={420} label="Resize plot">
+      {#snippet children()}
+        <div class="plot-canvas-wrap">
+          {#if loading}
+            <div class="plot-overlay">
+              <div class="spinner"></div>
+              <div class="plot-overlay-text">Computing…</div>
+            </div>
+          {/if}
+          <PlotCanvas spec={overlaySpec} />
+        </div>
+      {/snippet}
+    </ResizablePane>
+    {#if overlayFailures.length}
+      <div class="ov-fail">
+        {overlayFailures.length} comparison{overlayFailures.length > 1 ? 's' : ''} failed:
+        {overlayFailures.map(f => `${f.name} (${f.error})`).join('; ')}
+      </div>
+    {/if}
 
   <!-- ── grid: one single-channel analysis, run per channel ── -->
   {:else if grid}

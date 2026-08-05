@@ -342,6 +342,35 @@
   }
 
   /**
+   * One reference channel against every other selected channel, overlaid on a
+   * single axis. Same fan-out as runFanout, but the results belong on one plot
+   * rather than in a grid — comparing correlations is the whole point, and
+   * separate panels make curves impossible to compare by eye.
+   */
+  async function runPairOverlay(endpoint, extraFields, refCol) {
+    if (!session) return
+    const seq = ++runSeq
+    loading = true
+    plotData = null
+    plotError = null
+    // Comparing the reference against itself adds a trivial curve (unity
+    // coherence, the autocorrelation) that crowds the real ones out.
+    let targets = signalCols.filter(c => c !== refCol)
+    if (targets.length === 0) targets = [refCol]
+
+    const items = await Promise.all(targets.map(async (ci) => {
+      const { data, error } = await post(endpoint, {
+        ...extraFields, signal_col_x: refCol, signal_col_y: ci,
+      })
+      return { name: `${channelName(refCol)} → ${channelName(ci)}`, col: ci, data, error }
+    }))
+    if (seq !== runSeq) return
+    if (items.every(r => r.error)) plotError = items[0].error
+    else plotData = { overlay: { ref: channelName(refCol), items } }
+    loading = false
+  }
+
+  /**
    * The first look at a file: what the signals do, where their energy sits, and
    * — with 2+ channels — the FDD singular values that suggest candidate modes.
    * Composed from the existing endpoints so it honours preprocessing for free.
@@ -531,6 +560,7 @@
         {plotError}
         {runAnalysis}
         {runOverview}
+        {runPairOverlay}
       />
 
       <!-- Plot area -->

@@ -14,9 +14,11 @@ export const SCOPE = {
   psd:               'multi',
   autocorrelation:   'multi',
   peaks:             'single',
-  cross_correlation: 'pair',
-  csd:               'pair',
-  coherence:         'pair',
+  // 'dynamic': these can run as a single X→Y pair or as one reference against
+  // every other selected channel, so the control renders its own picker.
+  cross_correlation: 'dynamic',
+  csd:               'dynamic',
+  coherence:         'dynamic',
   filter:            'single',
   stft:              'single',
   cwt:               'single',
