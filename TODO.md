@@ -122,6 +122,21 @@ decimation/length-cap story first, or it will hang on a real record.
 - Multitaper spectrogram
 - Stockwell (S) transform
 
+### 3.4 Move the filter response off a second y-axis
+The response overlay on the FFT and PSD (`plotSpec.js`, `responseTrace`) draws
+filter gain on `yaxis2`, over the spectrum. A dual-axis chart is the most common
+charting mistake: two unrelated scales share one plot area, so where the curves
+cross reads as meaningful when it is an artefact of how each axis was scaled.
+
+The remedy is a **small linked panel below the spectrum sharing the x-axis**,
+rather than an overlay — the response then gets a readable 0–1 axis of its own
+instead of being squeezed against the PSD. `ResizablePane` and `PlotCanvas`
+already make this cheap; roughly half an hour.
+
+Deferred 2026-08-05 to see whether the overlay is a problem in practice. If it
+stays, it should at least keep its dotted, muted styling so it reads as an
+annotation rather than a second data series.
+
 ---
 
 ## 4. Nice, not blocking
