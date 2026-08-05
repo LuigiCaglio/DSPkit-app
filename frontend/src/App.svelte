@@ -39,10 +39,18 @@
     winUnit:         'samples',
     winStart:        null,
     winEnd:          null,
+    detrendEnabled:  false,
+    detrendOrder:    0,
     hpEnabled:       false,
     hpCutoff:        10,
+    hpOrder:         4,
     lpEnabled:       false,
     lpCutoff:        500,
+    lpOrder:         4,
+    notchEnabled:    false,
+    notchFreq:       50,      // mains hum in Europe
+    notchQ:          30,
+    zeroPhase:       true,    // offline analysis: no phase distortion
     resampleEnabled: false,
     targetFs:        512,
   })
@@ -127,8 +135,22 @@
         bits.push(`window ${has(s) ? s : 'start'}–${has(e) ? e : 'end'} ${preproc.winUnit}`)
       }
     }
-    if (preproc.hpEnabled && preproc.hpCutoff) bits.push(`high-pass ${preproc.hpCutoff} Hz`)
-    if (preproc.lpEnabled && preproc.lpCutoff) bits.push(`low-pass ${preproc.lpCutoff} Hz`)
+    if (preproc.detrendEnabled) {
+      const DT = ['mean removed', 'linear detrend', 'quadratic detrend', 'cubic detrend']
+      bits.push(DT[preproc.detrendOrder] ?? `detrend order ${preproc.detrendOrder}`)
+    }
+    if (preproc.notchEnabled && preproc.notchFreq) {
+      bits.push(`notch ${preproc.notchFreq} Hz (Q ${preproc.notchQ})`)
+    }
+    if (preproc.hpEnabled && preproc.hpCutoff) {
+      bits.push(`high-pass ${preproc.hpCutoff} Hz (order ${preproc.hpOrder})`)
+    }
+    if (preproc.lpEnabled && preproc.lpCutoff) {
+      bits.push(`low-pass ${preproc.lpCutoff} Hz (order ${preproc.lpOrder})`)
+    }
+    if ((preproc.hpEnabled || preproc.lpEnabled || preproc.notchEnabled) && !preproc.zeroPhase) {
+      bits.push('causal')
+    }
     if (preproc.resampleEnabled && preproc.targetFs) bits.push(`resampled to ${preproc.targetFs} Hz`)
     return bits
   })
@@ -137,6 +159,45 @@
   let filterBand = $derived({
     hp: preproc.hpEnabled && preproc.hpCutoff ? Number(preproc.hpCutoff) : null,
     lp: preproc.lpEnabled && preproc.lpCutoff ? Number(preproc.lpCutoff) : null,
+  })
+
+  /**
+   * The filter's own magnitude response, to draw over the spectrum.
+   *
+   * Computed on the backend with the same scipy calls dspkit uses, so it is the
+   * filter that actually runs — including the squaring that zero-phase implies.
+   * Reimplementing the design in JS would risk drawing a curve that disagrees
+   * with the data underneath it.
+   */
+  let filterResponse = $state(null)
+
+  $effect(() => {
+    const on = preproc.hpEnabled || preproc.lpEnabled || preproc.notchEnabled
+    const fsNow = effectiveFs
+    if (!on || !fsNow) { filterResponse = null; return }
+
+    const fd = new FormData()
+    fd.append('fs', String(fsNow))
+    if (preproc.hpEnabled && preproc.hpCutoff) {
+      fd.append('hp_cutoff', String(preproc.hpCutoff))
+      fd.append('hp_order', String(preproc.hpOrder))
+    }
+    if (preproc.lpEnabled && preproc.lpCutoff) {
+      fd.append('lp_cutoff', String(preproc.lpCutoff))
+      fd.append('lp_order', String(preproc.lpOrder))
+    }
+    if (preproc.notchEnabled && preproc.notchFreq) {
+      fd.append('notch_freq', String(preproc.notchFreq))
+      fd.append('notch_q', String(preproc.notchQ))
+    }
+    fd.append('zero_phase', String(preproc.zeroPhase))
+
+    let stale = false
+    fetch('/api/filter/response', { method: 'POST', body: fd })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!stale) filterResponse = d?.applied ? d : null })
+      .catch(() => { if (!stale) filterResponse = null })
+    return () => { stale = true }
   })
 
   /**
@@ -240,8 +301,25 @@
       if (preproc.winEnd   !== null && preproc.winEnd   !== '') p.set('win_end',   preproc.winEnd)
       p.set('win_unit', preproc.winUnit)
     }
-    if (preproc.hpEnabled  && preproc.hpCutoff)  p.set('hp_cutoff', preproc.hpCutoff)
-    if (preproc.lpEnabled  && preproc.lpCutoff)  p.set('lp_cutoff', preproc.lpCutoff)
+    if (preproc.detrendEnabled && preproc.detrendOrder !== null) {
+      p.set('detrend_order', preproc.detrendOrder)
+    }
+    if (preproc.hpEnabled && preproc.hpCutoff) {
+      p.set('hp_cutoff', preproc.hpCutoff)
+      p.set('hp_order', preproc.hpOrder)
+    }
+    if (preproc.lpEnabled && preproc.lpCutoff) {
+      p.set('lp_cutoff', preproc.lpCutoff)
+      p.set('lp_order', preproc.lpOrder)
+    }
+    if (preproc.notchEnabled && preproc.notchFreq) {
+      p.set('notch_freq', preproc.notchFreq)
+      p.set('notch_q', preproc.notchQ)
+    }
+    // Only worth sending when a filter is actually on.
+    if (preproc.hpEnabled || preproc.lpEnabled || preproc.notchEnabled) {
+      p.set('zero_phase', String(preproc.zeroPhase))
+    }
     if (preproc.resampleEnabled && preproc.targetFs) p.set('target_fs', preproc.targetFs)
     const qs = p.toString()
     return qs ? `${endpoint}?${qs}` : endpoint
@@ -575,7 +653,7 @@
         </div>
       {/if}
 
-      <PreprocessPanel {preproc} />
+      <PreprocessPanel {preproc} onchange={rerunActive} />
     {/if}
   </aside>
 
@@ -660,7 +738,7 @@
         {:else}
           <PlotPanel
             {activeTab} {plotData} {loading} {plotError}
-            {preprocSummary} {filterBand} {setFilterFromRange} {clearFilter}
+            {preprocSummary} {filterBand} {filterResponse} {setFilterFromRange} {clearFilter}
           />
         {/if}
       </div>

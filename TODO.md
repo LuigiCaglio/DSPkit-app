@@ -26,7 +26,7 @@ they can skip the `_detect_time_col` guesswork entirely — the session response
 already has fields for both.
 
 ### 1.2 Widen test coverage
-`tests/` now holds 76 assertions (42 API, 34 frontend) — run with
+`tests/` now holds 97 assertions (63 API, 34 frontend) — run with
 `python tests/run_all.py`, no third-party packages needed. See `tests/README.md`.
 
 Still uncovered, because it needs a rendered DOM: drag-resizing, the plot area's

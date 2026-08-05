@@ -219,6 +219,112 @@ def test_preprocessing_reaches_analyses(base, sess, r):
                 "the PSD is filtered the same way", f"{below(psd0):.4g} -> {below(psd_hp):.4g}")
 
 
+def test_filter_options(base, sess, r):
+    """Detrend, notch, order and zero-phase are exposed, and each does its job."""
+    r.section("Preprocessing filter options")
+    f = base_fields(sess, [1])
+    fft = lambda q: post(  # noqa: E731
+        base, f"/api/spectral/fft{q}", {**f, "window": "hann", "scaling": "amplitude"})
+
+    # Detrend, measured on the signal itself rather than through a windowed FFT:
+    # order 0 must drive the mean to zero, order 1 must also flatten the slope.
+    fg = base_fields(sess, [3])          # force1 has a non-zero mean
+    st0, plain = post(base, "/api/signal/timeseries", fg)
+    st1, dt0 = post(base, "/api/signal/timeseries?detrend_order=0", fg)
+    if r.check(st0 == 200 and st1 == 200, "timeseries responds with and without detrend"):
+        mean = lambda d: sum(d["signals"][0]["signal_proc"]) / len(d["signals"][0]["signal_proc"])  # noqa: E731
+        m0, m1 = mean(plain), mean(dt0)
+        r.check(abs(m1) < abs(m0) * 1e-6 + 1e-9,
+                "detrend order 0 removes the mean", f"{m0:.6g} -> {m1:.3g}")
+
+    st2, dt1 = post(base, "/api/signal/timeseries?detrend_order=1", fg)
+    if r.check(st2 == 200, "linear detrend is accepted"):
+        y = dt1["signals"][0]["signal_proc"]
+        n = len(y)
+        # Least-squares slope; a linear detrend must leave essentially none.
+        xs = list(range(n))
+        xbar, ybar = (n - 1) / 2, sum(y) / n
+        num = sum((xi - xbar) * (yi - ybar) for xi, yi in zip(xs, y))
+        den = sum((xi - xbar) ** 2 for xi in xs)
+        slope = num / den if den else 0.0
+        spread = max(y) - min(y)
+        r.check(abs(slope) * n < spread * 1e-6,
+                "detrend order 1 removes the linear trend",
+                f"slope*n = {abs(slope) * n:.3g} vs range {spread:.3g}")
+
+    # Order: a higher order rolls off faster, so less survives beyond the cutoff.
+    st_a, o2 = fft("?lp_cutoff=50&lp_order=2")
+    st_b, o8 = fft("?lp_cutoff=50&lp_order=8")
+    if r.check(st_a == 200 and st_b == 200, "order is accepted"):
+        beyond = lambda d: sum(  # noqa: E731
+            a for fq, a in zip(d["freqs"], d["signals"][0]["amplitude"]) if fq > 75)
+        r.check(beyond(o8) < beyond(o2),
+                "a higher order rolls off faster", f"{beyond(o2):.4g} -> {beyond(o8):.4g}")
+
+    # Zero-phase off is a different (causal) result.
+    st_c, causal = fft("?lp_cutoff=50&zero_phase=false")
+    st_d, zp = fft("?lp_cutoff=50&zero_phase=true")
+    if r.check(st_c == 200 and st_d == 200, "zero_phase is accepted both ways"):
+        r.check(causal["signals"][0]["amplitude"] != zp["signals"][0]["amplitude"],
+                "causal and zero-phase give different results")
+
+    # Notch: energy at the notch frequency drops, neighbours survive.
+    st_n0, no_notch = fft("")
+    st_n1, notched = fft("?notch_freq=10&notch_q=30")
+    if r.check(st_n0 == 200 and st_n1 == 200, "notch is accepted"):
+        at = lambda d, f0, w: sum(  # noqa: E731
+            a for fq, a in zip(d["freqs"], d["signals"][0]["amplitude"]) if abs(fq - f0) < w)
+        r.check(at(notched, 10, 0.5) < at(no_notch, 10, 0.5),
+                "a notch attenuates its own frequency",
+                f"{at(no_notch, 10, 0.5):.4g} -> {at(notched, 10, 0.5):.4g}")
+        far0, far1 = at(no_notch, 200, 5), at(notched, 200, 5)
+        r.check(abs(far1 - far0) < far0 * 0.05 + 1e-12,
+                "and leaves distant frequencies alone", f"{far0:.4g} -> {far1:.4g}")
+
+
+def test_filter_response(base, sess, r):
+    """The response curve drawn over the spectrum must be the filter that runs."""
+    r.section("Filter response endpoint")
+    fs = 1024.0
+
+    st, d = post(base, "/api/filter/response",
+                 {"fs": fs, "lp_cutoff": 100, "lp_order": 4, "zero_phase": "false"})
+    if not r.check(st == 200 and d.get("applied"), "response returns a curve", str(st)):
+        return
+    r.check(len(d["freqs"]) == len(d["magnitude"]), "freqs and magnitude line up")
+    r.check(d["freqs"][-1] <= fs / 2 + 1e-9, "the curve stops at Nyquist", f"{d['freqs'][-1]:.1f}")
+    r.check(max(d["magnitude"]) <= 1.0001, "gain never exceeds 1", f"{max(d['magnitude']):.4f}")
+
+    # A single-pass Butterworth is exactly -3 dB at its cutoff.
+    r.check(d["minus3db"] and abs(d["minus3db"][0] - 100) < 2,
+            "causal: -3 dB lands on the nominal cutoff", str(d["minus3db"][:1]))
+
+    # filtfilt squares the response, so -3 dB moves inside the cutoff. This is
+    # the discrepancy the overlay exists to show.
+    st, z = post(base, "/api/filter/response",
+                 {"fs": fs, "lp_cutoff": 100, "lp_order": 4, "zero_phase": "true"})
+    if r.check(st == 200, "zero-phase response returns"):
+        r.check(z["minus3db"] and z["minus3db"][0] < 100,
+                "zero-phase: -3 dB moves inside the nominal cutoff",
+                f"{z['minus3db'][0]:.1f} Hz vs nominal 100")
+        r.check(z["effective_order"]["lp"] == 8, "and the effective order is doubled",
+                str(z["effective_order"]))
+
+    # Band-pass: low gain outside, near unity inside.
+    st, bp = post(base, "/api/filter/response",
+                  {"fs": fs, "hp_cutoff": 50, "lp_cutoff": 200, "zero_phase": "true"})
+    if st == 200:
+        gain_at = lambda f0: min(  # noqa: E731
+            zip(bp["freqs"], bp["magnitude"]), key=lambda p: abs(p[0] - f0))[1]
+        r.check(gain_at(125) > 0.9 and gain_at(10) < 0.1 and gain_at(400) < 0.1,
+                "band-pass passes the middle and rejects both sides",
+                f"10Hz={gain_at(10):.3f} 125Hz={gain_at(125):.3f} 400Hz={gain_at(400):.3f}")
+
+    st, none = post(base, "/api/filter/response", {"fs": fs})
+    r.check(st == 200 and not none.get("applied"),
+            "no filter reports applied=false, so nothing is drawn")
+
+
 def test_session_errors(base, sess, r):
     r.section("Session handling")
     st, d = post(base, "/api/signal/timeseries",
@@ -241,6 +347,8 @@ def main(base):
     test_fanout(base, sess, r)
     test_single_channel(base, sess, r)
     test_preprocessing_reaches_analyses(base, sess, r)
+    test_filter_options(base, sess, r)
+    test_filter_response(base, sess, r)
     test_session_errors(base, sess, r)
     return r.report()
 

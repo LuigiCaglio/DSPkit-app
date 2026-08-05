@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -331,23 +331,61 @@ def get_signal_times_fs(
 # ─── preprocessing ────────────────────────────────────────────────────────────
 
 
+class PreprocParams:
+    """
+    Preprocessing applied before every analysis, taken from query parameters.
+
+    Bundled into one dependency because 27 endpoints need the identical set —
+    listing them separately meant every new option had to be added in 27 places
+    and passed positionally through two helpers.
+    """
+
+    def __init__(
+        self,
+        win_start: Optional[float] = Query(None),
+        win_end: Optional[float] = Query(None),
+        win_unit: str = Query("samples"),           # "samples" | "time"
+        detrend_order: Optional[int] = Query(None), # 0 = mean, 1 = linear, n = poly
+        hp_cutoff: Optional[float] = Query(None),
+        hp_order: int = Query(4),
+        lp_cutoff: Optional[float] = Query(None),
+        lp_order: int = Query(4),
+        notch_freq: Optional[float] = Query(None),
+        notch_q: float = Query(30.0),
+        zero_phase: bool = Query(True),
+        target_fs: Optional[float] = Query(None),
+    ):
+        self.win_start = win_start
+        self.win_end = win_end
+        self.win_unit = win_unit
+        self.detrend_order = detrend_order
+        self.hp_cutoff = hp_cutoff
+        self.hp_order = hp_order
+        self.lp_cutoff = lp_cutoff
+        self.lp_order = lp_order
+        self.notch_freq = notch_freq
+        self.notch_q = notch_q
+        self.zero_phase = zero_phase
+        self.target_fs = target_fs
+
+
 def apply_preprocessing(
     x: np.ndarray,
     fs: float,
     times: Optional[np.ndarray],
-    win_start: Optional[float],
-    win_end: Optional[float],
-    win_unit: str,          # "samples" | "time"
-    hp_cutoff: Optional[float],
-    lp_cutoff: Optional[float],
-    target_fs: Optional[float],
+    pp: PreprocParams,
 ) -> tuple[np.ndarray, float, np.ndarray]:
     """
     Apply preprocessing steps in order:
       1. Window (select time range)
-      2. High-pass filter
-      3. Low-pass filter
-      4. Resample (up or down)
+      2. Detrend
+      3. Notch
+      4. High-pass filter
+      5. Low-pass filter
+      6. Resample (up or down)
+
+    Detrending comes before the filters on purpose: a large DC offset or drift
+    makes a high-pass ring badly at the edges of the record.
 
     Returns (x_processed, fs_processed, times_processed).
     """
@@ -356,33 +394,41 @@ def apply_preprocessing(
         times = np.arange(N) / fs
 
     # 1. Windowing
-    if win_start is not None or win_end is not None:
-        if win_unit == "time":
-            i0 = int((win_start or 0.0) * fs) if win_start is not None else 0
-            i1 = int(win_end * fs) if win_end is not None else N
+    if pp.win_start is not None or pp.win_end is not None:
+        if pp.win_unit == "time":
+            i0 = int((pp.win_start or 0.0) * fs) if pp.win_start is not None else 0
+            i1 = int(pp.win_end * fs) if pp.win_end is not None else N
         else:  # samples
-            i0 = int(win_start) if win_start is not None else 0
-            i1 = int(win_end) if win_end is not None else N
+            i0 = int(pp.win_start) if pp.win_start is not None else 0
+            i1 = int(pp.win_end) if pp.win_end is not None else N
         i0 = max(0, min(i0, N - 1))
         i1 = max(i0 + 1, min(i1, N))
         x = x[i0:i1]
         times = times[i0:i1]
 
-    # 2. High-pass filter
-    if hp_cutoff is not None and hp_cutoff > 0:
-        x = dsp.highpass(x, fs, hp_cutoff, order=4, zero_phase=True)
+    # 2. Detrend
+    if pp.detrend_order is not None and pp.detrend_order >= 0:
+        x = dsp.detrend(x, order=pp.detrend_order)
 
-    # 3. Low-pass filter
-    if lp_cutoff is not None and lp_cutoff > 0:
-        x = dsp.lowpass(x, fs, lp_cutoff, order=4, zero_phase=True)
+    # 3. Notch (mains hum and other fixed tones)
+    if pp.notch_freq is not None and pp.notch_freq > 0:
+        x = dsp.notch(x, fs, pp.notch_freq, q=pp.notch_q, zero_phase=pp.zero_phase)
 
-    # 4. Resample — use linear interpolation to avoid group-delay time shift
-    if target_fs is not None and abs(target_fs - fs) > 0.01:
-        n_new = round(len(x) * target_fs / fs)
+    # 4. High-pass filter
+    if pp.hp_cutoff is not None and pp.hp_cutoff > 0:
+        x = dsp.highpass(x, fs, pp.hp_cutoff, order=pp.hp_order, zero_phase=pp.zero_phase)
+
+    # 5. Low-pass filter
+    if pp.lp_cutoff is not None and pp.lp_cutoff > 0:
+        x = dsp.lowpass(x, fs, pp.lp_cutoff, order=pp.lp_order, zero_phase=pp.zero_phase)
+
+    # 6. Resample — use linear interpolation to avoid group-delay time shift
+    if pp.target_fs is not None and abs(pp.target_fs - fs) > 0.01:
+        n_new = round(len(x) * pp.target_fs / fs)
         t_new = np.linspace(times[0], times[-1], n_new)
         x     = np.interp(t_new, times, x)
         times = t_new
-        fs    = float(target_fs)
+        fs    = float(pp.target_fs)
 
     return x, fs, times
 
@@ -392,16 +438,11 @@ def get_preprocessed(
     time_col: int,
     signal_col: int,
     fs_manual: Optional[float],
-    win_start: Optional[float],
-    win_end: Optional[float],
-    win_unit: str,
-    hp_cutoff: Optional[float],
-    lp_cutoff: Optional[float],
-    target_fs: Optional[float],
+    pp: PreprocParams,
 ) -> tuple[np.ndarray, float, np.ndarray]:
     """Column extraction + preprocessing in one call. Returns (x, fs, times)."""
     x, times, fs = get_signal_times_fs(parsed, time_col, signal_col, fs_manual)
-    return apply_preprocessing(x, fs, times, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+    return apply_preprocessing(x, fs, times, pp)
 
 
 # ─── /api/session ────────────────────────────────────────────────────────────
@@ -608,12 +649,7 @@ async def signal_timeseries(
     time_col: int = Form(-1),
     signal_cols: str = Form(...),   # JSON array e.g. "[0, 1, 2]"
     fs: Optional[float] = Form(None),
-    win_start:  Optional[float] = Query(None),
-    win_end:    Optional[float] = Query(None),
-    win_unit:   str             = Query("samples"),
-    hp_cutoff:  Optional[float] = Query(None),
-    lp_cutoff:  Optional[float] = Query(None),
-    target_fs:  Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
@@ -627,20 +663,17 @@ async def signal_timeseries(
             t_raw = np.arange(len(x0)) / fs_raw
 
         # Process first column to get processed time axis
-        x0_proc, fs_proc, t_proc = apply_preprocessing(
-            x0.copy(), fs_raw, t_raw.copy(),
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
+        x0_proc, fs_proc, t_proc = apply_preprocessing(x0.copy(), fs_raw, t_raw.copy(), pp)
 
-        preprocessed = any(v is not None for v in [win_start, win_end, hp_cutoff, lp_cutoff, target_fs])
+        preprocessed = any(v is not None for v in [
+            pp.win_start, pp.win_end, pp.detrend_order,
+            pp.hp_cutoff, pp.lp_cutoff, pp.notch_freq, pp.target_fs,
+        ])
 
         signals = []
         for i, col in enumerate(cols):
             x_raw = extract_col(parsed, col)
-            x_proc, _, _ = apply_preprocessing(
-                x_raw.copy(), fs_raw, t_raw.copy(),
-                win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-            )
+            x_proc, _, _ = apply_preprocessing(x_raw.copy(), fs_raw, t_raw.copy(), pp)
             signals.append({
                 "name": parsed["column_names"][col],
                 "signal_raw": to_list(x_raw),
@@ -678,20 +711,18 @@ async def spectral_fft(
     fs: Optional[float] = Form(None),
     window: str = Form("hann"),
     scaling: str = Form("amplitude"),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
             raise ValueError("No signal columns selected")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, pp)
         freqs, _ = dsp.fft_spectrum(x0, fs_, window=window, scaling=scaling)
         signals = []
         for col in cols:
-            x, _, _ = get_preprocessed(parsed, time_col, col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+            x, _, _ = get_preprocessed(parsed, time_col, col, fs, pp)
             _, amp = dsp.fft_spectrum(x, fs_, window=window, scaling=scaling)
             win_arr = get_window(window, len(x))
             phase = np.angle(np.fft.rfft(x * win_arr), deg=True)
@@ -718,20 +749,18 @@ async def spectral_psd(
     nperseg: int = Form(1024),
     noverlap: Optional[int] = Form(None),
     scaling: str = Form("density"),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
             raise ValueError("No signal columns selected")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, pp)
         freqs, _ = dsp.psd(x0, fs_, window=window, nperseg=nperseg, noverlap=noverlap, scaling=scaling)
         signals = []
         for col in cols:
-            x, _, _ = get_preprocessed(parsed, time_col, col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+            x, _, _ = get_preprocessed(parsed, time_col, col, fs, pp)
             _, Pxx = dsp.psd(x, fs_, window=window, nperseg=nperseg, noverlap=noverlap, scaling=scaling)
             signals.append({"name": parsed["column_names"][col], "Pxx": to_list(Pxx)})
         return {"freqs": to_list(freqs), "signals": signals}
@@ -754,20 +783,18 @@ async def spectral_autocorrelation(
     fs: Optional[float] = Form(None),
     normalize: bool = Form(True),
     max_lag: Optional[float] = Form(None),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
             raise ValueError("No signal columns selected")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, pp)
         lags, _ = dsp.autocorrelation(x0, fs=fs_, normalize=normalize, max_lag=max_lag)
         signals = []
         for col in cols:
-            x, _, _ = get_preprocessed(parsed, time_col, col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+            x, _, _ = get_preprocessed(parsed, time_col, col, fs, pp)
             _, acf = dsp.autocorrelation(x, fs=fs_, normalize=normalize, max_lag=max_lag)
             signals.append({"name": parsed["column_names"][col], "acf": to_list(acf)})
         return {"lags": to_list(lags), "signals": signals}
@@ -791,14 +818,12 @@ async def spectral_cross_correlation(
     fs: Optional[float] = Form(None),
     normalize: bool = Form(True),
     max_lag: Optional[float] = Form(None),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
-        y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
+        y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
         lags, ccf = dsp.cross_correlation(x, y, fs=fs_, normalize=normalize, max_lag=max_lag)
         return {"lags": to_list(lags), "ccf": to_list(ccf)}
     except HTTPException:
@@ -822,14 +847,12 @@ async def spectral_csd(
     window: str = Form("hann"),
     nperseg: int = Form(1024),
     noverlap: Optional[int] = Form(None),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
-        y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
+        y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
         freqs, Pxy = dsp.csd(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         return {"freqs": to_list(freqs), "magnitude": to_list(np.abs(Pxy)), "phase_deg": to_list(np.angle(Pxy, deg=True))}
     except HTTPException:
@@ -853,14 +876,12 @@ async def spectral_coherence(
     window: str = Form("hann"),
     nperseg: int = Form(1024),
     noverlap: Optional[int] = Form(None),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
-        y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
+        y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
         freqs, Cxy = dsp.coherence(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         _, Pxy = dsp.csd(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         return {"freqs": to_list(freqs), "Cxy": to_list(Cxy), "phase_deg": to_list(np.angle(Pxy, deg=True))}
@@ -891,13 +912,11 @@ async def filter_apply(
     freq: Optional[float] = Form(None),
     order: int = Form(4),
     zero_phase: bool = Form(True),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
 
         ft = filter_type.lower()
         if ft == "lowpass":
@@ -927,6 +946,83 @@ async def filter_apply(
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
+@app.post("/api/filter/response")
+async def filter_response(
+    fs: float = Form(...),
+    hp_cutoff: Optional[float] = Form(None),
+    hp_order: int = Form(4),
+    lp_cutoff: Optional[float] = Form(None),
+    lp_order: int = Form(4),
+    notch_freq: Optional[float] = Form(None),
+    notch_q: float = Form(30.0),
+    zero_phase: bool = Form(True),
+    n_points: int = Form(512),
+):
+    """
+    Magnitude response of the preprocessing filter chain, for overlaying on a
+    spectrum.
+
+    Designed with the same scipy calls dspkit uses, so the curve is the filter
+    that actually runs rather than an idealised one. Zero-phase filtering
+    applies the filter forwards and backwards, so the magnitude response is
+    squared -- which moves the real -3 dB point well inside the nominal cutoff.
+    That discrepancy is the main reason to draw this at all.
+    """
+    try:
+        from scipy import signal as _sig
+
+        if fs <= 0:
+            raise ValueError("fs must be positive")
+        nyq = fs / 2.0
+        w = np.linspace(0.0, nyq, max(16, min(n_points, 8192)))
+        mag = np.ones_like(w)
+        stages = []
+
+        if hp_cutoff is not None and 0 < hp_cutoff < nyq:
+            stages.append(_sig.butter(hp_order, hp_cutoff, btype="high", fs=fs, output="sos"))
+        if lp_cutoff is not None and 0 < lp_cutoff < nyq:
+            stages.append(_sig.butter(lp_order, lp_cutoff, btype="low", fs=fs, output="sos"))
+        for sos in stages:
+            _, h = _sig.sosfreqz(sos, worN=w, fs=fs)
+            mag *= np.abs(h)
+
+        if notch_freq is not None and 0 < notch_freq < nyq:
+            b, a = _sig.iirnotch(notch_freq, notch_q, fs=fs)
+            _, h = _sig.freqz(b, a, worN=w, fs=fs)
+            mag *= np.abs(h)
+
+        applied = bool(stages) or (notch_freq is not None and 0 < notch_freq < nyq)
+        if zero_phase:
+            mag = mag ** 2          # filtfilt: forward + reverse
+
+        # Where the response actually crosses -3 dB, which is what you read off.
+        half_power = float(1 / np.sqrt(2))
+        crossings = []
+        for i in range(1, len(w)):
+            a0, b0 = mag[i - 1], mag[i]
+            if (a0 - half_power) * (b0 - half_power) < 0:
+                frac = (half_power - a0) / (b0 - a0) if b0 != a0 else 0.0
+                crossings.append(float(w[i - 1] + frac * (w[i] - w[i - 1])))
+
+        return {
+            "freqs": to_list(w),
+            "magnitude": to_list(mag),
+            "applied": applied,
+            "zero_phase": zero_phase,
+            "minus3db": crossings[:4],
+            "effective_order": {
+                "hp": hp_order * (2 if zero_phase else 1),
+                "lp": lp_order * (2 if zero_phase else 1),
+            },
+        }
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
 # ─── time-frequency ───────────────────────────────────────────────────────────
 
 
@@ -942,13 +1038,11 @@ async def timefreq_stft(
     window: str = Form("hann"),
     nperseg: int = Form(256),
     noverlap: Optional[int] = Form(None),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         freqs, times, Zxx = dsp.stft(x, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         return {"freqs": to_list(freqs), "times": to_list(times), "magnitude": to_list(np.abs(Zxx))}
     except HTTPException:
@@ -972,13 +1066,11 @@ async def timefreq_cwt(
     f_max: Optional[float] = Form(None),
     n_freqs: int = Form(50),
     w: float = Form(6.0),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         f_max_ = f_max if f_max is not None else fs_ / 4.0
         freqs = np.geomspace(f_min, f_max_, n_freqs)
         freqs_out, times, W = dsp.cwt_scalogram(x, fs_, freqs=freqs, w=w)
@@ -1000,13 +1092,11 @@ async def timefreq_wvd(
     time_col: int = Form(-1),
     signal_col: int = Form(...),
     fs: Optional[float] = Form(None),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         if len(x) > 2048:
             raise HTTPException(status_code=422, detail=f"Signal too long for WVD ({len(x)} samples). Maximum is 2048.")
         freqs, times, WVD = dsp.wigner_ville(x, fs_)
@@ -1030,13 +1120,11 @@ async def timefreq_spwvd(
     fs: Optional[float] = Form(None),
     lag_samples: Optional[int] = Form(None),
     time_samples: Optional[int] = Form(None),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         if len(x) > 2048:
             raise HTTPException(status_code=422, detail=f"Signal too long for SPWVD ({len(x)} samples). Maximum is 2048.")
         freqs, times, SPWVD = dsp.smoothed_pseudo_wv(x, fs_, lag_samples=lag_samples, time_samples=time_samples)
@@ -1061,13 +1149,11 @@ async def instantaneous(
     time_col: int = Form(-1),
     signal_col: int = Form(...),
     fs: Optional[float] = Form(None),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         envelope, phase, inst_freq = dsp.hilbert_attributes(x, fs_)
         return {
             "times": to_list(t),
@@ -1098,13 +1184,11 @@ async def emd_decompose(
     fs: Optional[float] = Form(None),
     max_imfs: Optional[int] = Form(None),
     max_sifting: int = Form(10),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         imfs, residue = dsp.emd(x, max_imfs=max_imfs, max_sifting=max_sifting)
         return {"times": to_list(t), "imfs": to_list(imfs), "residue": to_list(residue)}
     except HTTPException:
@@ -1127,13 +1211,11 @@ async def emd_hht(
     max_imfs: Optional[int] = Form(None),
     max_sifting: int = Form(10),
     n_bins: int = Form(512),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs)
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         imfs, residue = dsp.emd(x, max_imfs=max_imfs, max_sifting=max_sifting)
         envelopes, inst_freqs = dsp.hht(imfs, fs_)
         marginal_freqs, marginal_spectrum = dsp.hht_marginal_spectrum(envelopes, inst_freqs, fs_, n_bins=n_bins)
@@ -1162,12 +1244,7 @@ def get_multichannel(
     time_col: int,
     signal_cols: list[int],
     fs_manual: Optional[float],
-    win_start: Optional[float],
-    win_end: Optional[float],
-    win_unit: str,
-    hp_cutoff: Optional[float],
-    lp_cutoff: Optional[float],
-    target_fs: Optional[float],
+    pp: PreprocParams,
 ) -> tuple[np.ndarray, float, np.ndarray, list[str]]:
     """Return (data [n_ch × N], fs, times, labels)."""
     channels = []
@@ -1175,10 +1252,7 @@ def get_multichannel(
     times_out = None
     labels = []
     for col in signal_cols:
-        x, fs_, t = get_preprocessed(
-            parsed, time_col, col, fs_manual,
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
+        x, fs_, t = get_preprocessed(parsed, time_col, col, fs_manual, pp)
         channels.append(x)
         if fs_out is None:
             fs_out, times_out = fs_, t
@@ -1205,16 +1279,11 @@ async def peaks_detect(
     prominence: Optional[float] = Form(None),
     distance_hz: Optional[float] = Form(None),
     max_peaks: Optional[int] = Form(None),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(
-            parsed, time_col, signal_col, fs,
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         if spectrum_type == "psd":
             freqs, spectrum = dsp.psd(x, fs_, window=window, nperseg=nperseg, scaling="density")
         else:
@@ -1259,16 +1328,11 @@ async def peaks_harmonics(
     scaling: str = Form("amplitude"),
     fundamental: float = Form(...),
     n_harmonics: int = Form(5),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(
-            parsed, time_col, signal_col, fs,
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         freqs, spectrum = dsp.fft_spectrum(x, fs_, window=window, scaling=scaling)
         from dspkit.peaks import find_harmonics as _find_harmonics
         harm_freqs, harm_vals, orders = _find_harmonics(
@@ -1305,16 +1369,11 @@ async def shm_indicators(
     excess: bool = Form(True),
     window: str = Form("hann"),
     nperseg: int = Form(1024),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(
-            parsed, time_col, signal_col, fs,
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         from dspkit.indicators import (
             spectral_entropy as _se, kurtosis as _kurt, skewness as _skew,
             rms_variation as _rms_var, energy_variation as _energy_var,
@@ -1359,19 +1418,14 @@ async def multisensor_correlation(
     time_col: int = Form(-1),
     signal_cols: str = Form(...),
     fs: Optional[float] = Form(None),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("At least 2 channels required")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        data, fs_, t, labels = get_multichannel(
-            parsed, time_col, cols, fs,
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
+        data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.multisensor import correlation_matrix as _corr_mat
         R = _corr_mat(data)
         return {"R": to_list(R), "labels": labels}
@@ -1394,19 +1448,14 @@ async def multisensor_coherence_mat(
     fs: Optional[float] = Form(None),
     window: str = Form("hann"),
     nperseg: int = Form(1024),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("At least 2 channels required")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        data, fs_, t, labels = get_multichannel(
-            parsed, time_col, cols, fs,
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
+        data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.multisensor import coherence_matrix as _coh_mat
         freqs, C = _coh_mat(data, fs_, window=window, nperseg=nperseg)
         n_ch = len(cols)
@@ -1447,19 +1496,14 @@ async def fdd_analyze(
     freq_max: Optional[float] = Form(None),
     mac_threshold: float = Form(0.8),
     n_crossings: int = Form(10),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("At least 2 channels required")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        data, fs_, t, labels = get_multichannel(
-            parsed, time_col, cols, fs,
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
+        data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.fdd import fdd_svd, fdd_peak_picking, fdd_mode_shapes, efdd_damping
 
         freqs, S, U = fdd_svd(data, fs_, window=window, nperseg=nperseg)
@@ -1518,16 +1562,11 @@ async def statistics_pdf(
     fs: Optional[float] = Form(None),
     bins: int = Form(50),
     bandwidth: Optional[float] = Form(None),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(
-            parsed, time_col, signal_col, fs,
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         from dspkit.statistics import pdf_estimate as _pdf, histogram as _hist
         xi, density = _pdf(x, bandwidth=bandwidth)
         bin_centres, counts = _hist(x, bins=bins, density=True)
@@ -1556,20 +1595,12 @@ async def statistics_joint(
     signal_col_y: int = Form(...),
     fs: Optional[float] = Form(None),
     bins: int = Form(50),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, _ = get_preprocessed(
-            parsed, time_col, signal_col_x, fs,
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
-        y, _, _ = get_preprocessed(
-            parsed, time_col, signal_col_y, fs,
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
+        x, fs_, _ = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
+        y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
         from dspkit.statistics import joint_histogram as _joint
         x_centres, y_centres, H = _joint(x, y, bins=bins, density=True)
         return {
@@ -1596,19 +1627,14 @@ async def statistics_covariance(
     time_col: int = Form(-1),
     signal_cols: str = Form(...),
     fs: Optional[float] = Form(None),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("At least 2 channels required")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        data, fs_, t, labels = get_multichannel(
-            parsed, time_col, cols, fs,
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
+        data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.statistics import covariance_matrix as _cov
         C = _cov(data)
         return {"C": to_list(C), "labels": labels}
@@ -1630,19 +1656,14 @@ async def statistics_mahalanobis(
     signal_cols: str = Form(...),
     fs: Optional[float] = Form(None),
     percentile: float = Form(99),
-    win_start: Optional[float] = Query(None), win_end: Optional[float] = Query(None),
-    win_unit: str = Query("samples"), hp_cutoff: Optional[float] = Query(None),
-    lp_cutoff: Optional[float] = Query(None), target_fs: Optional[float] = Query(None),
+    pp: PreprocParams = Depends(),
 ):
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("At least 2 channels required")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        data, fs_, t, labels = get_multichannel(
-            parsed, time_col, cols, fs,
-            win_start, win_end, win_unit, hp_cutoff, lp_cutoff, target_fs,
-        )
+        data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.statistics import mahalanobis as _maha
         distances = _maha(data)
         threshold = float(np.percentile(distances, percentile))

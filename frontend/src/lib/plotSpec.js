@@ -92,6 +92,7 @@ export function buildPlot(tab, d, opts) {
     lagSide = 'both',        // 'both' | 'positive' | 'negative'
     band = null,             // {hp, lp} — the pass band currently in force
     dragmode = null,         // 'select' puts the plot in band-picking mode
+    response = null,         // {freqs, magnitude} — the filter's own response
   } = opts
 
   const L = baseLayout(T, cell)
@@ -120,7 +121,6 @@ export function buildPlot(tab, d, opts) {
     colorbar: { thickness: cell ? 10 : 14, outlinewidth: 0 },
   }]
 
-  /** Cell charts carry their channel name as the title; the main canvas may not. */
   /** Shade what the filter removes, against the spectrum it was chosen from. */
   const bandShapes = (freqs) => {
     if (!band || (!band.hp && !band.lp)) return {}
@@ -140,6 +140,33 @@ export function buildPlot(tab, d, opts) {
     ? { dragmode, selectdirection: 'h' }
     : {}
 
+  /**
+   * The filter's magnitude response, on its own right-hand axis.
+   *
+   * The shaded band says which side is cut; this says *how sharply*, which is
+   * the part you cannot guess from an order number — especially under
+   * zero-phase filtering, where the real -3 dB point sits inside the cutoff.
+   */
+  const responseTrace = () => {
+    if (!response?.freqs?.length) return null
+    return {
+      trace: {
+        x: response.freqs, y: response.magnitude,
+        type: 'scatter', mode: 'lines', name: 'filter response',
+        yaxis: 'y2', hovertemplate: '%{x:.4g} Hz — gain %{y:.3f}<extra></extra>',
+        line: { color: T.danger, width: 1.5, dash: 'dot' },
+      },
+      axis: {
+        yaxis2: {
+          title: 'Filter gain', overlaying: 'y', side: 'right',
+          range: [0, 1.05], showgrid: false,
+          gridcolor: T.grid, zerolinecolor: T.grid,
+        },
+      },
+    }
+  }
+
+  /** Cell charts carry their channel name as the title; the main canvas may not. */
   const titled = (extra = {}) => title
     ? merge(extra, { title: { text: title, font: { color: T.title, size: cell ? 11 : 13 } } })
     : extra
@@ -175,9 +202,12 @@ export function buildPlot(tab, d, opts) {
   if (tab === 'fft') {
     const traces = d.signals.map((sig, i) =>
       line(d.freqs, norm(sig.amplitude), sig.name, 'solid', 'y', colors[i % colors.length]))
+    const rf = responseTrace()
+    if (rf) traces.push(rf.trace)
     return { traces, layout: merge(L, titled({
       ...bandShapes(d.freqs),
       ...dragOpts,
+      ...(rf ? rf.axis : {}),
       xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
       yaxis: { ...L.yaxis, title: normalize ? 'Amplitude (norm.)' : 'Amplitude', type: yType },
     }))}
@@ -186,6 +216,8 @@ export function buildPlot(tab, d, opts) {
   if (tab === 'psd') {
     const traces = d.signals.map((sig, i) =>
       line(d.freqs, norm(sig.Pxx), sig.name, 'solid', 'y', colors[i % colors.length]))
+    const rp = responseTrace()
+    if (rp) traces.push(rp.trace)
     const xr = (psd.xMin !== '' && psd.xMin != null && psd.xMax !== '' && psd.xMax != null)
       ? [parseFloat(psd.xMin), parseFloat(psd.xMax)] : undefined
     const yr = (psd.yMin !== '' && psd.yMin != null && psd.yMax !== '' && psd.yMax != null)
@@ -194,6 +226,7 @@ export function buildPlot(tab, d, opts) {
     return { traces, layout: merge(L, titled({
       ...bandShapes(d.freqs),
       ...dragOpts,
+      ...(rp ? rp.axis : {}),
       xaxis: { ...L.xaxis, title: 'Frequency [Hz]',
                ...(xr ? { range: xr, autorange: false } : { autorange: true }) },
       yaxis: { ...L.yaxis, title: 'PSD', type: (psd.yLog ?? true) ? 'log' : 'linear',

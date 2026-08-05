@@ -7,7 +7,7 @@
 
   let {
     activeTab, plotData, loading, plotError,
-    preprocSummary = [], filterBand = null,
+    preprocSummary = [], filterBand = null, filterResponse = null,
     setFilterFromRange = null, clearFilter = null,
   } = $props()
 
@@ -156,6 +156,7 @@
           xRange: zoomable ? xRange : null,
           band: filterBand,
           dragmode: picking ? 'select' : null,
+          response: filterResponse,
         })
       : null
   )
