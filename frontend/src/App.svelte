@@ -1,4 +1,5 @@
 <script>
+  import { tick }          from 'svelte'
   import DspkitLogo        from './lib/DspkitLogo.svelte'
   import FileUpload        from './lib/FileUpload.svelte'
   import AnalysisPanel     from './lib/AnalysisPanel.svelte'
@@ -132,6 +133,52 @@
     if (preproc.resampleEnabled && preproc.targetFs) bits.push(`resampled to ${preproc.targetFs} Hz`)
     return bits
   })
+
+  /** The pass band currently in force, for shading the rejected parts of a PSD. */
+  let filterBand = $derived({
+    hp: preproc.hpEnabled && preproc.hpCutoff ? Number(preproc.hpCutoff) : null,
+    lp: preproc.lpEnabled && preproc.lpCutoff ? Number(preproc.lpCutoff) : null,
+  })
+
+  /**
+   * Set the filter from a frequency range picked on the PSD.
+   *
+   * Choosing a cutoff means looking at the spectrum, finding the noise and
+   * cutting there — so the cutoff should be settable from the spectrum rather
+   * than read off by eye and retyped in another tab. A band-pass is just the
+   * high-pass and low-pass together, which is how preprocessing already
+   * represents it.
+   */
+  function setFilterFromRange(kind, lo, hi) {
+    const round = (v) => Number(v.toPrecision(4))
+    if (kind === 'highpass' || kind === 'bandpass') {
+      preproc.hpCutoff = round(Math.max(lo, 0))
+      preproc.hpEnabled = true
+    }
+    if (kind === 'lowpass' || kind === 'bandpass') {
+      preproc.lpCutoff = round(hi)
+      preproc.lpEnabled = true
+    }
+    rerunActive()
+  }
+
+  function clearFilter() {
+    preproc.hpEnabled = false
+    preproc.lpEnabled = false
+    rerunActive()
+  }
+
+  /** Recompute whatever is on screen, so a new cutoff shows immediately. */
+  async function rerunActive() {
+    if (activeTab === 'overview') { runOverview(); return }
+    // Remounting the control re-fires its auto-run with the settings it kept.
+    // tick() is required: without waiting for the DOM to settle, Svelte would
+    // batch the two assignments into no change at all and nothing would re-run.
+    const tab = activeTab
+    activeTab = ''
+    await tick()
+    activeTab = tab
+  }
 
   let currentCategory = $derived(CATEGORIES.find(c => c.id === activeCategory))
 
@@ -353,16 +400,19 @@
     loading = true
     plotData = null
     plotError = null
-    // Comparing the reference against itself adds a trivial curve (unity
-    // coherence, the autocorrelation) that crowds the real ones out.
-    let targets = signalCols.filter(c => c !== refCol)
-    if (targets.length === 0) targets = [refCol]
+    // The reference against itself comes first: for cross-correlation that is
+    // the autocorrelation, which is the baseline the other curves are read
+    // against — how much of the correlation is the channel's own structure.
+    const targets = [refCol, ...signalCols.filter(c => c !== refCol)]
 
     const items = await Promise.all(targets.map(async (ci) => {
       const { data, error } = await post(endpoint, {
         ...extraFields, signal_col_x: refCol, signal_col_y: ci,
       })
-      return { name: `${channelName(refCol)} → ${channelName(ci)}`, col: ci, data, error }
+      const label = ci === refCol
+        ? `${channelName(ci)} (self)`
+        : `${channelName(refCol)} → ${channelName(ci)}`
+      return { name: label, col: ci, data, error }
     }))
     if (seq !== runSeq) return
     if (items.every(r => r.error)) plotError = items[0].error
@@ -599,7 +649,10 @@
             </div>
           </div>
         {:else}
-          <PlotPanel {activeTab} {plotData} {loading} {plotError} {preprocSummary} />
+          <PlotPanel
+            {activeTab} {plotData} {loading} {plotError}
+            {preprocSummary} {filterBand} {setFilterFromRange} {clearFilter}
+          />
         {/if}
       </div>
     {:else if parseError}

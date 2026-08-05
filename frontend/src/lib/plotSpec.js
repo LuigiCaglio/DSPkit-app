@@ -90,6 +90,7 @@ export function buildPlot(tab, d, opts) {
     title = null,
     xRange = null,
     lagSide = 'both',        // 'both' | 'positive' | 'negative'
+    band = null,             // {hp, lp} — the pass band currently in force
   } = opts
 
   const L = baseLayout(T, cell)
@@ -167,7 +168,19 @@ export function buildPlot(tab, d, opts) {
       ? [parseFloat(psd.xMin), parseFloat(psd.xMax)] : undefined
     const yr = (psd.yMin !== '' && psd.yMin != null && psd.yMax !== '' && psd.yMax != null)
       ? [parseFloat(psd.yMin), parseFloat(psd.yMax)] : undefined
+
+    // Show what the filter removes, against the spectrum it was chosen from.
+    // A cutoff typed into another tab is invisible here otherwise.
+    const shapes = []
+    const reject = (x0, x1) => ({
+      type: 'rect', xref: 'x', yref: 'paper', x0, x1, y0: 0, y1: 1,
+      fillcolor: T.danger, opacity: 0.10, line: { width: 0 }, layer: 'below',
+    })
+    if (band?.hp) shapes.push(reject(d.freqs[0], band.hp))
+    if (band?.lp) shapes.push(reject(band.lp, d.freqs[d.freqs.length - 1]))
+
     return { traces, layout: merge(L, titled({
+      ...(shapes.length ? { shapes } : {}),
       xaxis: { ...L.xaxis, title: 'Frequency [Hz]',
                ...(xr ? { range: xr, autorange: false } : { autorange: true }) },
       yaxis: { ...L.yaxis, title: 'PSD', type: (psd.yLog ?? true) ? 'log' : 'linear',

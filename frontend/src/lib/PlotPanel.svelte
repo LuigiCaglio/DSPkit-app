@@ -5,7 +5,11 @@
   import { buildPlot, buildPhasePlot, buildPairOverlay, isDownsampledFor, MAX_PLOT_POINTS } from './plotSpec.js'
   import { ZOOMABLE } from './analyses.js'
 
-  let { activeTab, plotData, loading, plotError, preprocSummary = [] } = $props()
+  let {
+    activeTab, plotData, loading, plotError,
+    preprocSummary = [], filterBand = null,
+    setFilterFromRange = null, clearFilter = null,
+  } = $props()
 
   // Three shapes arrive here:
   //   {grid: [...]}      a single-channel analysis fanned out per channel
@@ -59,6 +63,10 @@
   // rate — the data is already here, so no request is needed.
   let zoomable = $derived(ZOOMABLE.has(activeTab) && !!single)
   let xRange   = $state(null)
+
+  // The PSD captures a range for a different reason: to set filter cutoffs from
+  // the spectrum you are looking at. No resampling — just the frequency bounds.
+  let bandPick = $derived(activeTab === 'psd' && !!single && !!setFilterFromRange)
 
   // A new payload or a different analysis invalidates the old window.
   $effect(() => { const _ = plotData, __ = activeTab; xRange = null })
@@ -114,7 +122,11 @@
 
   let mainSpec = $derived(
     single
-      ? buildPlot(activeTab, single, { ...baseOpts, xRange: zoomable ? xRange : null })
+      ? buildPlot(activeTab, single, {
+          ...baseOpts,
+          xRange: zoomable ? xRange : null,
+          band: filterBand,
+        })
       : null
   )
   let phaseSpec = $derived(
@@ -304,6 +316,33 @@
       {/if}
       {#if isDownsampled || showAllPoints}
         <label><input type="checkbox" bind:checked={showAllPoints} /> All points</label>
+      {/if}
+      {#if bandPick}
+        <span class="plot-toolbar-sep"></span>
+        {#if xRange}
+          <span class="plot-toolbar-group">
+            <span class="plot-toolbar-grouplabel">
+              {xRange[0].toPrecision(4)}–{xRange[1].toPrecision(4)} Hz →
+            </span>
+            <span class="seg">
+              <button class="seg-btn"
+                      onclick={() => setFilterFromRange('highpass', xRange[0], xRange[1])}
+                      title="Keep everything above {xRange[0].toPrecision(4)} Hz">High-pass</button>
+              <button class="seg-btn"
+                      onclick={() => setFilterFromRange('lowpass', xRange[0], xRange[1])}
+                      title="Keep everything below {xRange[1].toPrecision(4)} Hz">Low-pass</button>
+              <button class="seg-btn"
+                      onclick={() => setFilterFromRange('bandpass', xRange[0], xRange[1])}
+                      title="Keep only this band">Band-pass</button>
+            </span>
+          </span>
+          <button class="btn-ghost" onclick={() => xRange = null}>Clear selection</button>
+        {:else}
+          <span class="zoom-chip">drag on the plot to pick a filter band</span>
+        {/if}
+        {#if filterBand?.hp || filterBand?.lp}
+          <button class="btn-ghost" onclick={clearFilter}>Remove filter</button>
+        {/if}
       {/if}
       {#if activeTab === 'cross_correlation'}
         <span class="plot-toolbar-sep"></span>
@@ -500,7 +539,7 @@
               Select an analysis and press Run.
             </div>
           {/if}
-          <PlotCanvas spec={mainSpec} onRelayout={zoomable ? onRelayout : null} />
+          <PlotCanvas spec={mainSpec} onRelayout={(zoomable || bandPick) ? onRelayout : null} />
         </div>
       {/snippet}
     </ResizablePane>

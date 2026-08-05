@@ -92,7 +92,57 @@ and show the interval spread.
 
 ---
 
-## 3. Nice, not blocking
+## 3. Time-frequency: deepen, don't rebuild
+
+Decided 2026-08-05. **Not** separate software, and **not** more transforms first.
+
+The coverage is already decent — STFT, CWT, WVD, SPWVD, plus EMD/HHT under
+Decomposition. WVD and SPWVD are more than most vibration tools ship. What's
+weak is the *interaction*: each transform is a static heatmap with two numeric
+knobs and a fixed Viridis scale.
+
+A standalone app would have to re-implement the loading, auto-detection,
+preprocessing and channel selection that already work here. The value is being
+next to them.
+
+### 3.1 dB and colour-range control on the existing heatmaps
+**Do this first — it is small and probably accounts for most of the "feels
+weak".** A linear-magnitude spectrogram of real vibration data renders as a
+black rectangle with one bright streak. Needs: dB scaling, and a colour range
+set by percentile clipping (e.g. 5th–99th) rather than min/max.
+
+Touches `buildPlot`'s `stft`/`cwt`/`wvd`/`spwvd` branches in `plotSpec.js`,
+which all funnel through the same `heatmap()` helper.
+
+### 3.2 A linked Time-Frequency Explorer tab
+Time series on top, spectrogram below, PSD rotated on the right, all sharing
+axes. Plus:
+
+- **crosshair slices** — click a time to get the spectrum there, click a
+  frequency to get its envelope over time
+- **one transform selector** (STFT / CWT / WVD / SPWVD) with the relevant
+  params, so you can flip between them *on the same data with the same colour
+  scale*. That comparison is what tells you which one to trust — right now they
+  live in four tabs with independent scales, so they can't be compared.
+- **resolution readout** — show the resulting Δt and Δf for the chosen window
+  instead of making you infer it from `nperseg`
+
+Mostly frontend work against endpoints that already exist. `PlotCanvas` +
+`plotSpec` were built to make exactly this kind of composition cheap.
+
+⚠️ **WVD is O(N²)** — it is excluded from `AUTORUN` for that reason
+(`analyses.js`). An explorer that recomputes on every slider nudge needs a
+decimation/length-cap story first, or it will hang on a real record.
+
+### 3.3 New DSP — belongs in `dspkit`, not this app
+- **Synchrosqueezing / reassignment** — the single highest-value addition;
+  sharpens both STFT and CWT dramatically
+- Multitaper spectrogram
+- Stockwell (S) transform
+
+---
+
+## 4. Nice, not blocking
 
 - **Figure export** at publication size / SVG. Plotly's modebar already gives a
   PNG, so this is only about vector output and fixed dimensions.
@@ -104,6 +154,16 @@ and show the interval spread.
   already hold several files — nothing in the UI exposes that.
 - **Bundle size.** 4.9 MB / 1.5 MB gzipped, almost entirely Plotly. Fine over
   localhost, not fine if this is ever served remotely.
+
+---
+
+## Done since this file was written
+
+- **Filter cutoffs picked from the PSD** (`setFilterFromRange` in `App.svelte`).
+  Drag on the PSD, then High-pass / Low-pass / Band-pass. The rejected bands are
+  shaded onto the PSD so the filter is visible against the spectrum it was
+  chosen from. Band-pass is the high- and low-pass together, which is how
+  preprocessing already represents it.
 
 ---
 
