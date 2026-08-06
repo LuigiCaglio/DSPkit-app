@@ -434,6 +434,31 @@ input:focus, select:focus { outline: 2px solid var(--accent); border-color: tran
 .detect-banner .detect-title { font-weight: 600; }
 .detect-note { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
 
+/* ── rejected time column ──
+   Deliberately louder than .detect-banner: this one reports that the sample
+   rate on screen was not read from the file, which silently rescales every
+   frequency axis if it is wrong. Two levels, because one dropped sample still
+   leaves a trustworthy rate while pervasive jitter does not. */
+.reject-banner {
+  margin: 8px 12px 0;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.reject-banner.warn {
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+.reject-banner .reject-title { font-weight: 600; margin-bottom: 3px; }
+.reject-banner.warn .reject-title { color: var(--warning); }
+.reject-banner .reject-detail { color: var(--text-muted); }
+.reject-banner .reject-detail + .reject-detail { margin-top: 4px; }
+
 /* ── checkbox ── */
 .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
 .checkbox-row input[type=checkbox] { accent-color: var(--accent); }

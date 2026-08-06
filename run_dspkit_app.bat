@@ -71,7 +71,10 @@ echo   Starting DSPkit. Your browser will open automatically.
 echo   Keep this window open while using the app - close it to quit.
 echo.
 
-"venv_dspkit\Scripts\python.exe" run.py
+REM %* lets you drag a data file onto this launcher (or set it as the
+REM "Open with" program for .csv) and have the app start on that file.
+REM It stays empty when there is no argument, and keeps quoting when there is.
+"venv_dspkit\Scripts\python.exe" run.py %*
 if errorlevel 1 (
     echo.
     echo   DSPkit stopped with an error. The message above explains why.

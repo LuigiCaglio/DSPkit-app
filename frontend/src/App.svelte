@@ -7,6 +7,9 @@
   import RightSidebar      from './lib/RightSidebar.svelte'
   import ChannelSelect     from './lib/ChannelSelect.svelte'
   import { ALL_CHANNELS } from './lib/analyses.js'
+  import { exportParams, importParams, resetParams } from './lib/paramStore.svelte.js'
+  import { applyState, buildState, debounce, defaultPreproc } from './lib/sessionState.js'
+  import { describeRejection, impliedFs } from './lib/detect.js'
 
   // ── session ────────────────────────────────────────────────────────────────
   // The file is uploaded and parsed once; every analysis call then refers to it
@@ -15,6 +18,12 @@
   let session     = $state(null)   // response from /api/session/create
   let parseError  = $state(null)
   let parsing     = $state(false)
+  let sourcePath  = $state(null)   // where the file lives, when it was opened by path
+  let restored    = $state(false)  // this session came back with its settings
+
+  // Suppresses the save effect while a restore is being applied, so the blob
+  // being read isn't immediately overwritten by the defaults it replaces.
+  let restoring   = $state(false)
 
   // ── layout (auto-detected, user-overridable) ───────────────────────────────
   let orientation = $state('columns')
@@ -34,26 +43,7 @@
   let pairY        = $state(1)
 
   // ── preprocessing state ────────────────────────────────────────────────────
-  let preproc = $state({
-    windowEnabled:   false,
-    winUnit:         'samples',
-    winStart:        null,
-    winEnd:          null,
-    detrendEnabled:  false,
-    detrendOrder:    0,
-    hpEnabled:       false,
-    hpCutoff:        10,
-    hpOrder:         4,
-    lpEnabled:       false,
-    lpCutoff:        500,
-    lpOrder:         4,
-    notchEnabled:    false,
-    notchFreq:       50,      // mains hum in Europe
-    notchQ:          30,
-    zeroPhase:       true,    // offline analysis: no phase distortion
-    resampleEnabled: false,
-    targetFs:        512,
-  })
+  let preproc = $state(defaultPreproc())
 
   // ── preview expand ─────────────────────────────────────────────────────────
   let previewExpanded = $state(false)
@@ -107,7 +97,9 @@
   ]
 
   // ── derived ────────────────────────────────────────────────────────────────
-  let hasFile     = $derived(file !== null)
+  // A restored or path-opened session has no File object behind it, so "has a
+  // file" has to mean the session, not the upload that may never have happened.
+  let hasFile     = $derived(file !== null || session !== null)
   let hasParsed   = $derived(session !== null)
   let nSignals    = $derived(session ? session.n_columns : 0)
   let effectiveFs = $derived(session?.fs ?? fsManual)
@@ -268,6 +260,17 @@
     return bits.join(' · ')
   })
 
+  /**
+   * Why a time column was refused, when one nearly qualified.
+   *
+   * Only shown while no time column is in use — once one is picked by hand the
+   * explanation is spent. Suppressed for a rejection the user has overridden.
+   */
+  let detectRejection = $derived.by(() => {
+    if (!session?.detected || timeCol >= 0) return null
+    return describeRejection(session.detected.time_col_rejected, session.column_names)
+  })
+
   function selectCategory(catId) {
     activeCategory = catId
     const cat = CATEGORIES.find(c => c.id === catId)
@@ -334,6 +337,93 @@
     pairY        = nonTime[1] ?? pairX
   }
 
+  // ── restore ────────────────────────────────────────────────────────────────
+  //
+  // Everything below exists so that opening the app, or reopening a file,
+  // resumes rather than restarts. The settings are stored per session on the
+  // backend, because the channels and cutoffs that suit one record are usually
+  // wrong for the next — restoring them globally would be worse than not
+  // restoring them at all.
+
+  const saveState = debounce((sid, blob) => {
+    fetch(`/api/session/${sid}/state`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(blob),
+    }).catch(() => { /* a lost save costs a re-setup, not data */ })
+  }, 700)
+
+  $effect(() => {
+    if (!session || restoring) return
+    const blob = buildState({
+      orientation, headerRow, timeCol, fsManual,
+      signalCols, focusChannel, pairX, pairY,
+      preproc, activeCategory, activeTab,
+      params: exportParams(),
+    })
+    saveState(session.session_id, blob)
+  })
+
+  /**
+   * Take on a session response, restoring its saved settings when it has any.
+   *
+   * The one place session state is adopted, so upload, open-by-path and reopen
+   * cannot drift apart. Anything the saved blob doesn't cover — or that no
+   * longer fits the file — falls back to the same defaults a fresh load gets.
+   */
+  function adoptSession(data) {
+    restoring = true
+    session     = data
+    orientation = data.orientation
+    headerRow   = data.header_row
+    timeCol     = data.time_col
+    sourcePath  = data.source_path ?? null
+    if (data.fs) {
+      fsManual = data.fs
+    } else {
+      // Detection refused the column, but its median interval is still a far
+      // better guess than the hardcoded 1000 Hz — for the single-dropout case
+      // it is exactly right. The banner says where this number came from.
+      const implied = impliedFs(data.detected?.time_col_rejected)
+      if (implied) fsManual = Number(implied.toPrecision(9))
+    }
+
+    const saved = applyState(data.ui, {
+      nColumns: data.n_columns,
+      timeCol: data.time_col,
+    })
+    restored = saved !== null
+
+    if (saved) {
+      signalCols   = saved.signalCols
+      focusChannel = saved.focusChannel
+      pairX        = saved.pairX
+      pairY        = saved.pairY
+      preproc      = saved.preproc
+      if (saved.fsManual) fsManual = saved.fsManual
+      resetParams()
+      importParams(saved.params)
+      activeCategory = saved.activeCategory ?? 'overview'
+      activeTab      = saved.activeTab ?? 'overview'
+    } else {
+      applySessionDefaults(data.column_names, data.time_col)
+      preproc = defaultPreproc()
+      resetParams()
+      activeCategory = 'overview'
+      activeTab      = 'overview'
+    }
+    // Let the assignments settle before the save effect starts watching, or the
+    // first run would immediately write back what was just read.
+    queueMicrotask(() => { restoring = false })
+  }
+
+  /** Shared tail of every load: show the data instead of an empty canvas. */
+  async function afterLoad() {
+    plotData = null
+    plotError = null
+    if (activeTab === 'overview') await runOverview()
+  }
+
   /** Upload once; the backend detects layout and hands back a session. */
   async function createSession(f) {
     parsing = true
@@ -345,22 +435,95 @@
       const res  = await fetch('/api/session/create', { method: 'POST', body: fd })
       const data = await res.json()
       if (!res.ok) { parseError = data.detail; return }
-      session     = data
-      orientation = data.orientation
-      headerRow   = data.header_row
-      timeCol     = data.time_col
-      if (data.fs) fsManual = data.fs
-      applySessionDefaults(data.column_names, data.time_col)
+      adoptSession(data)
     } catch (e) {
       parseError = e.message
       return
     } finally {
       parsing = false
     }
-    // Show the data straight away rather than making the user hunt for a button.
-    activeCategory = 'overview'
-    activeTab = 'overview'
-    await runOverview()
+    await afterLoad()
+  }
+
+  /** Open a file already on this machine — no upload, and settings come back. */
+  async function openPath(path) {
+    parsing = true
+    parseError = null
+    const fd = new FormData()
+    fd.append('path', path)
+    try {
+      const res  = await fetch('/api/session/open', { method: 'POST', body: fd })
+      const data = await res.json()
+      if (!res.ok) { parseError = data.detail; return false }
+      file = null
+      adoptSession(data)
+    } catch (e) {
+      parseError = e.message
+      return false
+    } finally {
+      parsing = false
+    }
+    await afterLoad()
+    return true
+  }
+
+  /** Reopen a session by id, the way the recent-files list and launch do. */
+  async function openSession(sessionId) {
+    parsing = true
+    parseError = null
+    try {
+      const res  = await fetch(`/api/session/${sessionId}`)
+      const data = await res.json()
+      if (!res.ok) { parseError = data.detail; return false }
+      file = null
+      adoptSession(data)
+    } catch (e) {
+      parseError = e.message
+      return false
+    } finally {
+      parsing = false
+    }
+    await afterLoad()
+    return true
+  }
+
+  /**
+   * Decide what to show on launch.
+   *
+   * A file named on the command line wins — that is an explicit request. Failing
+   * that, the last session comes back, which is what makes reopening the app
+   * feel like it was never closed. A failure here is silent on purpose: it
+   * leaves the normal empty state, which is exactly what the user would have
+   * seen before any of this existed.
+   */
+  async function resumeOnLaunch() {
+    try {
+      const res = await fetch('/api/launch-target')
+      const { path } = await res.json()
+      if (path && await openPath(path)) return
+    } catch { /* fall through to the last session */ }
+
+    try {
+      const res = await fetch('/api/session/recent')
+      const { recent } = await res.json()
+      const last = (recent ?? []).find(r => r.available)
+      if (last) await openSession(last.session_id)
+    } catch { /* leave the empty state */ }
+  }
+
+  resumeOnLaunch()
+
+  /** Go back to the file picker without dropping the session on the backend. */
+  function closeSession() {
+    saveState.cancel()
+    file = null
+    session = null
+    sourcePath = null
+    restored = false
+    plotData = null
+    plotError = null
+    parseError = null
+    resetParams()
   }
 
   /** Re-read the cached file with a layout the user changed by hand. */
@@ -557,6 +720,15 @@
           <span class="dot"></span>fs {fsManual} Hz (manual)
         </span>
       {/if}
+      <!-- Say so when the settings on screen were restored rather than chosen
+           now — otherwise a filter left on last week silently shapes today's
+           results. -->
+      {#if restored}
+        <span class="status-chip" title="Channels, preprocessing and analysis
+settings were restored from the last time this file was open.">
+          <span class="dot"></span>settings restored
+        </span>
+      {/if}
     </div>
   {/if}
 
@@ -570,7 +742,17 @@
 <div class="layout" class:right-open={rightOpen}>
   <!-- ── sidebar (data setup only) ── -->
   <aside class="sidebar">
-    <FileUpload {hasFile} filename={file?.name} onfile={onFileChosen} />
+    <FileUpload
+      {hasFile}
+      {sourcePath}
+      sessionId={session?.session_id ?? null}
+      filename={session?.filename ?? file?.name}
+      onfile={onFileChosen}
+      onopen={(entry) => entry.source_path
+        ? openPath(entry.source_path)
+        : openSession(entry.session_id)}
+      onclose={closeSession}
+    />
 
     {#if hasParsed}
       <!-- what the loader worked out on its own -->
@@ -578,6 +760,25 @@
         <div class="detect-banner">
           <div class="detect-title">Detected automatically</div>
           <div>{detectSummary}</div>
+        </div>
+      {/if}
+
+      <!--
+        Why no time column was used. Without this a record with one dropped
+        sample is analysed at a made-up rate and looks entirely normal.
+      -->
+      {#if detectRejection}
+        <div class="reject-banner" class:warn={detectRejection.severity === 'warn'}>
+          <div class="reject-title">
+            {detectRejection.severity === 'warn' ? '⚠' : 'ℹ'}
+            {detectRejection.headline}
+          </div>
+          <div class="reject-detail">{detectRejection.detail}</div>
+          <div class="reject-detail">
+            Analysing at <strong>{fsManual} Hz</strong>{
+              detectRejection.impliedFs ? ' (this file’s median interval)' : ''
+            }. Change it under File layout.
+          </div>
         </div>
       {/if}
 
@@ -748,7 +949,8 @@
       <div class="status">Reading file…</div>
     {:else}
       <div class="empty-state">
-        Drop a CSV, TSV, or TXT file on the left to begin.<br />
+        Drop a CSV, TSV, or TXT file on the left to begin — or pick one from
+        Recent files.<br />
         Layout and sample rate are detected for you, and your signals plot straight away.
       </div>
     {/if}

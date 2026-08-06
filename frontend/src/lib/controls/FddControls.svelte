@@ -13,6 +13,9 @@
     freq_max: null,
     mac_threshold: 0.8,
     n_crossings: 10,
+    // Second gate on top of prominence: at a real mode one shape dominates, so
+    // SV1 stands clear of SV2. 0 disables it and shows every prominent peak.
+    min_dominance_db: 6,
   })
   let window_ = $state(kept.window_)
   let nperseg = $state(kept.nperseg)
@@ -23,6 +26,7 @@
   let freq_max = $state(kept.freq_max)
   let mac_threshold = $state(kept.mac_threshold)
   let n_crossings = $state(kept.n_crossings)
+  let min_dominance_db = $state(kept.min_dominance_db)
   function run() {
     runAnalysis('/api/fdd/analyze', {
       window: window_,
@@ -34,6 +38,8 @@
       freq_max: freq_max || undefined,
       mac_threshold,
       n_crossings,
+      // Sent even at 0 — that is "show everything", not "use the default".
+      min_dominance_db: min_dominance_db ?? 0,
     })
   }
 
@@ -41,7 +47,7 @@
   // re-running after a change. Guarded so an expensive tab can opt out.
   onMount(() => { if (autoRun && dualSignal) run() })
 
-  $effect(() => remember(kept, { window_, nperseg, prominence, distance_hz, max_peaks, freq_min, freq_max, mac_threshold, n_crossings }))
+  $effect(() => remember(kept, { window_, nperseg, prominence, distance_hz, max_peaks, freq_min, freq_max, mac_threshold, n_crossings, min_dominance_db }))
 </script>
 
 <div class="field">
@@ -55,8 +61,12 @@
   <input type="number" bind:value={nperseg} min="16" step="1" />
 </div>
 <div class="field">
-  <label>Prominence (dB, blank=auto)</label>
-  <input type="number" bind:value={prominence} min="0" step="0.5" placeholder="auto" style="width:80px" />
+  <label>Min prominence (dB)</label>
+  <input type="number" bind:value={prominence} min="0" step="0.5" placeholder="6 (default)" style="width:80px" />
+</div>
+<div class="field">
+  <label>Min SV1/SV2 (dB)</label>
+  <input type="number" bind:value={min_dominance_db} min="0" step="0.5" style="width:80px" />
 </div>
 <div class="field">
   <label>Min distance (Hz)</label>
@@ -94,5 +104,7 @@
 {:else}
   <div style="font-size:11px;color:var(--text-muted);margin-top:4px;max-width:190px">
     Output-only method — deselect excitation/force channels.
+    A peak must clear both thresholds to be reported; set either to 0 to see
+    everything the picker found.
   </div>
 {/if}

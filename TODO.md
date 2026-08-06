@@ -1,13 +1,18 @@
 # DSPkit-app — what's left
 
-State as of 2026-08-05. `master` is at `df2fa36` (the plug-and-play work is
-merged and pushed); current branch is `timefreq-display`, which carries §3.1 and
-is pushed but **not yet merged**.
+State as of 2026-08-06. `master` is at `df2fa36`; current branch is
+`timefreq-display`, which carries §3.1 and the session-persistence work below,
+and is **not yet merged**.
 
 The app is usable for day-to-day work now. Everything below is either
 *repeatability* or *someone-else-sized* — nothing here blocks your own use.
 
 Run the tests with `python tests/run_all.py` — no third-party packages needed.
+232 assertions (63 API, 33 persistence, 26 detection, 23 FDD, 87 frontend).
+
+**§1.1 (file formats) is deliberately closed.** Confirmed 2026-08-06 that the
+data here is CSV/TSV/TXT only, so `.mat`/`.tdms`/HDF5 support would be work for
+a hypothetical other user. Reopen it if that stops being true.
 
 ---
 
@@ -45,23 +50,33 @@ Map the common ones to plain sentences.
 
 ## 2. Research correctness
 
-### 2.1 FDD peak-picking defaults are weak
-**Evidence:** on `test_2dof.csv` with the two response channels, the true modes
-are 10.0 and 25.0 Hz. The top two picks are right; everything below is noise.
-With all four columns (including `force1`/`force2`) it returns 285/442/72 Hz —
-garbage.
+§2.1 and §2.3 are done (2026-08-06) — both were cases where the app stated
+something it hadn't earned. §2.2 (units) is the one left.
 
-The force-channel half is handled: the Overview panel names the channels it ran
-on and states that FDD is output-only. **The defaults are not.**
-`fdd_analyze` (`main.py:1470`) falls back to `max_peaks=10` with no prominence
-filter, so you get ~7 fake modes *with damping ratios attached* — exactly the
-table that ends up in a paper by accident.
+### 2.1 FDD peak-picking defaults — done 2026-08-06
+Two gates, both defaulting to 6 dB (`_FDD_MIN_PROMINENCE_DB`,
+`_FDD_MIN_DOMINANCE_DB` in `main.py`): peak prominence on the SV1 curve, and
+SV1/SV2 dominance at the candidate. On `test_2dof.csv` the response channels now
+return **exactly 10.0 and 25.0 Hz** out of 119 candidates, and the four-column
+selection including `force1`/`force2` returns **nothing** rather than
+285/442/72 Hz.
 
-Options, roughly in order of value:
-- prominence default relative to the SV1 noise floor rather than absolute
-- require SV1 dominance (SV1/SV2 ratio) at a candidate peak
-- a stabilization diagram across `nperseg`, which is the real answer
-- mode-shape (MAC) plot — currently only the numeric table exists
+The thresholds were measured, not guessed: true modes there have 19–27 dB
+prominence and 25–38 dB dominance, every noise peak sits under 5 dB on both, so
+6 dB has a wide margin from either side. Both are exposed in `FddControls`;
+setting either to 0 restores the old everything-goes behaviour.
+
+Also changed, because the table is what gets read:
+- modes come back in **frequency order** (dspkit ranks by prominence, which is
+  right for truncating to `max_peaks` and wrong for a list someone reads)
+- an **SV1/SV2 column**, and it travels into the CSV export
+- the criteria and the survival count sit under the table, and an empty result
+  says what the bar was and that an excitation channel is the usual cause —
+  an empty FDD table is now a real answer, so it must not read as a broken panel
+
+Still open, and still the real answer:
+- a **stabilization diagram** across `nperseg`
+- **mode-shape (MAC) plot** — only the numeric table exists
 
 Deliberately **not** done: guessing excitation channels from column names.
 That would silently override an explicit selection.
@@ -70,16 +85,28 @@ That would silently override an explicit selection.
 Axes say "Amplitude". No way to declare m/s², g, mm. Needed for any figure that
 leaves your machine. Would live per-channel, alongside the channel names.
 
-### 2.3 Irregular sampling falls back silently-ish
-`_detect_time_col` (`main.py:161`) rejects a time column whose interval
-coefficient of variation exceeds 1e-3, then returns `(-1, None)` — so a record
-with gaps or jitter lands on the manual default of **1000 Hz**
-(`App.svelte`, `fsManual`). The topbar does say `fs 1000 Hz (manual)`, so it
-isn't invisible, but nothing says *why* detection failed. A file with a dropout
-gets analysed at a made-up rate and looks fine.
+### 2.3 Irregular sampling — done 2026-08-06
+`_detect_time_col` now returns `(col, fs, rejection)`, where `rejection`
+describes the closest column that nearly qualified: `non_uniform` or
+`not_monotonic`, plus the interval spread, the count of intervals that stray
+from the median, and the rate that median implies. It travels through
+`autodetect` → `detected.time_col_rejected` → the session response, so a
+restored session still knows why its rate is manual.
 
-Better: report *why* the time column was rejected (non-monotonic vs non-uniform)
-and show the interval spread.
+The distinction that earns its keep is **one gap vs pervasive jitter**, and
+`n_irregular / n_intervals` is what separates them — the coefficient of
+variation cannot, because a single dropout and constant jitter produce the same
+number. One gap is reported as an note ("the rate between the gaps is steady, so
+1000 Hz is still right — but the record is not continuous"); widespread
+irregularity is a warning that says frequency-domain results are suspect.
+
+`fsManual` is now seeded from the rejected column's median interval rather than
+the hardcoded 1000 Hz, and the banner says where the number came from. Messages
+live in `frontend/src/lib/detect.js` (tested); the API side is
+`tests/api/test_detect.py`.
+
+Still open: nothing offers to **resample** an irregular record onto a uniform
+grid, which is what a jittery file actually needs before any spectrum.
 
 ---
 
@@ -146,18 +173,49 @@ annotation rather than a second data series.
 
 - **Figure export** at publication size / SVG. Plotly's modebar already gives a
   PNG, so this is only about vector output and fixed dimensions.
-- **Saved analysis config.** Theme and pane heights persist (`localStorage`);
-  channel selection, preprocessing and analysis params do not survive a reload.
-  `paramStore.svelte.js` is the natural place to hang this.
-- **Batch / multi-file comparison.** Sessions are capped at 4
-  (`_MAX_SESSIONS`, `main.py:258`) with oldest-out eviction, so the backend can
-  already hold several files — nothing in the UI exposes that.
+- ~~**Saved analysis config.**~~ Done — see "Sessions that survive" below.
+- **Batch / multi-file comparison.** The store now keeps 12 files on disk
+  (`_MAX_RECENT`) and the Recent files list can reach any of them, but only one
+  at a time. Comparing two records side by side still isn't possible.
 - **Bundle size.** 4.9 MB / 1.5 MB gzipped, almost entirely Plotly. Fine over
   localhost, not fine if this is ever served remotely.
 
 ---
 
 ## Done since this file was written
+
+- **The two silent-wrongness fixes** (2026-08-06) — §2.1 and §2.3 above, both
+  verified in a real browser. The FDD change was checked at both ends: the
+  mode table renders 10.01 / 25.01 Hz with their SV1/SV2 figures on the
+  response channels, and the four-column selection renders the empty state
+  naming the excitation channels instead of a table of noise.
+- **Sessions that survive a restart** (2026-08-06). A session is now two files
+  under `~/.dspkit-app/sessions/` — metadata plus the raw bytes, though the
+  bytes are only copied for uploads, since a file opened by path is re-read
+  from where it lives. `_SESSIONS` is a parse cache in front of that, so an
+  evicted session rehydrates on next use instead of 404ing.
+  - **Launch resumes.** `resumeOnLaunch` in `App.svelte` opens the file named on
+    the command line if there is one, else the most recent session.
+  - **Settings come back per file.** Channel selection, preprocessing, layout
+    overrides, active tab and every analysis parameter are saved against the
+    session (debounced, 700 ms) and restored on reopen. Per *file*, not
+    globally — the channels that suit one record are wrong for the next. A
+    "settings restored" chip says when this has happened, because a filter left
+    on last week would otherwise silently shape today's results.
+  - **`applyState` distrusts what it reads** (`sessionState.js`): channels past
+    the end of the file are dropped, the time column can never come back as a
+    signal, and a state whose selection no longer fits falls through to
+    defaults. This is where the sharp edges are — see `sessionstate.test.mjs`.
+  - **Open by path, and Recent files.** `POST /api/session/open` takes a path;
+    reopening a path returns the session it already had rather than a duplicate.
+    The list flags files that changed on disk since they were opened.
+  - **`run.py <file>`** opens the app on that file, and `run_dspkit_app.bat`
+    forwards its argument — so a CSV can be dragged onto the launcher or set as
+    the "Open with" program. Launching twice now opens a tab against the running
+    instance instead of failing to bind port 8000.
+  - Path access is gated on a loopback `Host` *and* a same-origin `Origin`
+    (`_require_local_origin`). The Host check is what stops DNS rebinding; the
+    origin check alone would pass it.
 
 - **Filter cutoffs picked from the PSD *and* FFT** (`setFilterFromRange` in
   `App.svelte`). "Pick from plot" switches the chart to a horizontal selection
@@ -174,15 +232,31 @@ annotation rather than a second data series.
 
 ## Known-unverified
 
-The Chrome extension was **not connected** throughout this work, so **no part of
-the UI has been visually confirmed** — only builds, API behaviour and pure-logic
-unit tests.
+The Chrome extension has never connected in this environment, so **layout and
+visual design remain unconfirmed** — nobody has looked at the app.
 
-Highest-value things to click through:
-1. Param persistence — PSD `nperseg` → FFT → back to PSD, does it hold?
-2. Drag-resize feel — is an 11 px handle a comfortable target?
-3. Auto-run eagerness — if any tab is too keen, it's one line in the `AUTORUN`
+*Behaviour*, however, is no longer unverified. The whole restore path was driven
+in a real browser on 2026-08-06 (headless Edge, recipe below) and checked by
+reading the requests the app actually sent:
+
+```
+GET  /api/launch-target                     → nothing to open
+GET  /api/session/recent → GET /api/session/<id>   → last session restored
+POST /api/spectral/psd?hp_cutoff=7&hp_order=4&zero_phase=true
+     signal_cols=[1,2]  nperseg=4096              → every layer restored
+```
+
+That covers channel selection, preprocessing, the analysis parameters and the
+active tab, and confirms the write-back doesn't clobber what it just restored.
+Two bugs surfaced this way that no unit test had caught: the origin check
+hardcoded port 8000 (so it refused the app's own request on any other port), and
+Recent files was fetched once at mount, before the restored session existed.
+
+Still needing eyes rather than assertions:
+1. Drag-resize feel — is an 11 px handle a comfortable target?
+2. Auto-run eagerness — if any tab is too keen, it's one line in the `AUTORUN`
    set in `frontend/src/lib/analyses.js`.
+3. Whether the sidebar is crowded now that Recent files sits in it.
 
 Useful trick when the extension is unavailable: **headless Edge** renders and
 reports layout, where headless Chrome produced empty output in this environment.
@@ -196,3 +270,15 @@ msedge.exe --headless=new --disable-gpu --no-sandbox --virtual-time-budget=4000 
 ```
 
 That's how the scroll/clipping fix was verified.
+
+Pointing the same command at a **running backend** renders the real app, which
+is how the restore path above was checked. Two gotchas:
+
+- `--dump-dom` serialises *attributes*, and Svelte sets input values and
+  checkboxes as DOM *properties* — so a restored `nperseg` or channel tick is
+  invisible in the dump even when it is correct. Don't read absence there as a
+  bug.
+- To see those, read the wire instead: wrap the app in a tiny ASGI shim that
+  logs each `/api/` request line and form body, and run
+  `uvicorn probe:app` against it. The request the app sends is the ground truth
+  for what got restored, and it needs no changes to the app itself.

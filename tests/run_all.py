@@ -6,9 +6,12 @@ Starts a backend on a free port for the API tests, tears it down afterwards,
 then runs the frontend unit tests with node's built-in test runner.
 Exit code is non-zero if anything failed.
 """
+import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +20,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 BACKEND = REPO / "backend"
 FRONTEND_TESTS = Path(__file__).parent / "frontend"
+API_TESTS = Path(__file__).parent / "api"
 
 
 def free_port():
@@ -43,23 +47,33 @@ def wait_until_up(base, proc, timeout=60):
 def run_api_tests():
     port = free_port()
     base = f"http://127.0.0.1:{port}"
+    # Sessions are written to disk now. Point the server at a throwaway
+    # directory so running the tests can't disturb the real recent-files list.
+    state_dir = tempfile.mkdtemp(prefix="dspkit-tests-")
+    env = {**os.environ, "DSPKIT_STATE_DIR": state_dir}
     print(f"starting backend on {base} …")
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "main:app",
          "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
         cwd=BACKEND,
+        env=env,
     )
     try:
         if not wait_until_up(base, proc):
             print("backend failed to start")
             return 1
-        return subprocess.call([sys.executable, str(Path(__file__).parent / "api" / "test_api.py"), base])
+        rc = 0
+        for suite in ("test_api.py", "test_persistence.py", "test_detect.py",
+                      "test_fdd_defaults.py"):
+            rc |= subprocess.call([sys.executable, str(API_TESTS / suite), base])
+        return rc
     finally:
         proc.terminate()
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+        shutil.rmtree(state_dir, ignore_errors=True)
 
 
 def run_frontend_tests():

@@ -7,12 +7,14 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,9 +24,16 @@ import dspkit as dsp
 
 app = FastAPI(title="DSPkit GUI API")
 
+_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:8000"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -37,6 +46,23 @@ if _DIST.exists():
     @app.get("/", include_in_schema=False)
     async def serve_index():
         return FileResponse(_DIST / "index.html")
+
+
+# ─── launch target ────────────────────────────────────────────────────────────
+#
+# A file named on the command line (`run.py data.csv`, or dropping a CSV on the
+# launcher). The UI asks for it once on mount and opens it, which is what makes
+# double-clicking the *data* rather than the app work.
+
+
+@app.get("/api/launch-target")
+async def launch_target():
+    # Consumed on first read: a later reload should restore whatever the user
+    # last had open, not jump back to the file the app happened to start on.
+    path = os.environ.pop("DSPKIT_OPEN_FILE", "") or ""
+    if path and Path(path).is_file():
+        return {"path": str(Path(path).expanduser().resolve())}
+    return {"path": None}
 
 
 # ─── example data ─────────────────────────────────────────────────────────────
@@ -158,34 +184,117 @@ def _as_floats(row: list[str]) -> Optional[list[float]]:
     return vals or None
 
 
-def _detect_time_col(data: np.ndarray, max_check: int = 5000) -> tuple[int, Optional[float]]:
+_UNIFORM_CV_MAX = 1e-3
+
+
+def _interval_stats(d: np.ndarray) -> dict:
+    """
+    Describe a column's sample intervals well enough to judge a near-miss.
+
+    The question a rejected time column raises is always the same: is this a
+    genuine gap in the record, or float noise in a written-out time vector that
+    happens to sit just over the threshold? The median-vs-extremes spread and
+    the count of intervals that stray from the median answer it directly; the
+    coefficient of variation alone does not, because one dropout and pervasive
+    jitter can produce the same number.
+    """
+    med = float(np.median(d))
+    mean = float(d.mean())
+    cv = float(d.std()) / mean if mean > 0 else float("inf")
+    irregular = int(np.count_nonzero(np.abs(d - med) > 0.01 * abs(med))) if med else 0
+    return {
+        "median_dt": med,
+        "min_dt": float(d.min()),
+        "max_dt": float(d.max()),
+        "cv": cv if np.isfinite(cv) else None,
+        "n_irregular": irregular,
+        "n_intervals": int(d.size),
+        "implied_fs": (1.0 / med) if med > 0 else None,
+    }
+
+
+def _detect_time_col(
+    data: np.ndarray, max_check: int = 5000,
+) -> "tuple[int, Optional[float], Optional[dict]]":
     """
     Find a column that looks like a time vector: strictly increasing with
-    near-uniform spacing. Returns (col_index, fs) or (-1, None).
+    near-uniform spacing. Returns (col_index, fs, rejection).
 
     Uniformity is judged by the coefficient of variation of the sample
     intervals, which tolerates float round-off in a written-out time column
     but rejects a merely monotonic data channel (e.g. a drifting sensor).
+
+    `rejection` describes the closest column that *nearly* qualified, or None if
+    nothing came close. Returning only (-1, None) — as this used to — meant a
+    record with one dropped sample was indistinguishable from a record with no
+    time column at all, and both landed silently on the manual default of
+    1000 Hz. Every frequency axis in the app is then wrong by whatever ratio
+    that happens to be, with nothing on screen saying so.
     """
     n_sig, n_samp = data.shape
     if n_samp < 3:
-        return -1, None
+        return -1, None, None
+
+    best: Optional[dict] = None
+
+    def consider(candidate: dict) -> None:
+        # Rank near-misses by how time-like they are: a strictly increasing
+        # column that merely jitters is a far better candidate than one that
+        # jumps backwards, which is usually just a data channel.
+        nonlocal best
+        rank = (candidate["positive_fraction"], -candidate.get("cv_rank", 0.0))
+        if best is None or rank > best["_rank"]:
+            best = {**candidate, "_rank": rank}
+
     for col in range(n_sig):
         t = data[col, :min(n_samp, max_check)]
         if not np.all(np.isfinite(t)):
             continue
         d = np.diff(t)
-        if d.size < 2 or np.any(d <= 0):
+        if d.size < 2:
             continue
+
+        positive = float(np.count_nonzero(d > 0)) / d.size
+        if np.any(d <= 0):
+            # Only worth reporting when it is otherwise convincingly a time
+            # vector — a handful of backwards steps in an otherwise rising
+            # column is a clock reset or a badly merged file, not a signal.
+            if positive >= 0.99:
+                forward = d[d > 0]
+                consider({
+                    "col": col,
+                    "reason": "not_monotonic",
+                    "positive_fraction": positive,
+                    "n_backwards": int(np.count_nonzero(d <= 0)),
+                    **(_interval_stats(forward) if forward.size else {}),
+                })
+            continue
+
         mean_d = float(d.mean())
         if mean_d <= 0 or not np.isfinite(mean_d):
             continue
-        if float(d.std()) / mean_d > 1e-3:
+
+        stats = _interval_stats(d)
+        cv = stats["cv"]
+        if cv is None or cv > _UNIFORM_CV_MAX:
+            consider({
+                "col": col,
+                "reason": "non_uniform",
+                "positive_fraction": positive,
+                "cv_rank": cv or 0.0,
+                "threshold_cv": _UNIFORM_CV_MAX,
+                **stats,
+            })
             continue
+
         fs = 1.0 / mean_d
         if np.isfinite(fs) and fs > 0:
-            return col, float(fs)
-    return -1, None
+            return col, float(fs), None
+
+    if best is not None:
+        best.pop("_rank", None)
+        best.pop("cv_rank", None)
+    return -1, None, best
 
 
 def autodetect(content: bytes) -> dict:
@@ -235,14 +344,19 @@ def autodetect(content: bytes) -> dict:
         "delimiter": delimiter,
         "time_col": -1,
         "fs": None,
+        # Why a time column was rejected, when one nearly qualified. Carried all
+        # the way to the UI: falling back to a typed-in sample rate is fine, but
+        # it must never be silent.
+        "time_col_rejected": None,
     }
 
     # Time column + sample rate, from an actual parse of the file.
     try:
         parsed = parse_file(content, orientation, header_row)
-        time_col, fs = _detect_time_col(parsed["data"])
+        time_col, fs, rejected = _detect_time_col(parsed["data"])
         detected["time_col"] = time_col
         detected["fs"] = round(fs, 6) if fs else None
+        detected["time_col_rejected"] = rejected
     except ValueError:
         pass  # detection is best-effort; the user can still set these by hand
 
@@ -253,12 +367,129 @@ def autodetect(content: bytes) -> dict:
 #
 # A file is uploaded and parsed once, then every analysis call refers to it by
 # id. Before this, each plot re-uploaded and re-parsed the whole file.
+#
+# Sessions are also written to disk, because the alternative — a dict that dies
+# with the process — meant every restart began by re-dropping the same file and
+# re-typing the same settings. On disk a session is two files: `<sid>.json` with
+# the metadata and the saved UI state, and `<sid>.bin` with the raw bytes. The
+# bytes are only copied for uploads; a session opened from a path re-reads the
+# original, so the store doesn't duplicate data that already exists.
+
+_STATE_DIR = Path(os.environ.get("DSPKIT_STATE_DIR") or (Path.home() / ".dspkit-app"))
+_SESSION_DIR = _STATE_DIR / "sessions"
 
 _SESSIONS: "dict[str, dict]" = {}
-_MAX_SESSIONS = 4
+_MAX_SESSIONS = 4    # parsed arrays held in RAM — these are the expensive ones
+_MAX_RECENT = 12     # session records kept on disk
 
 
-def _new_session(raw: bytes, filename: str, orientation: str, header_row: int) -> str:
+def _meta_path(sid: str) -> Path:
+    return _SESSION_DIR / f"{sid}.json"
+
+
+def _data_path(sid: str) -> Path:
+    return _SESSION_DIR / f"{sid}.bin"
+
+
+def _read_meta(sid: str) -> Optional[dict]:
+    try:
+        with open(_meta_path(sid), "r", encoding="utf-8") as fh:
+            meta = json.load(fh)
+        return meta if isinstance(meta, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _write_meta(meta: dict) -> None:
+    """Write a session record. Never fatal — a read-only home just loses recents."""
+    try:
+        _SESSION_DIR.mkdir(parents=True, exist_ok=True)
+        path = _meta_path(meta["session_id"])
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _all_meta() -> "list[dict]":
+    """Every session on disk, most recently opened first."""
+    if not _SESSION_DIR.exists():
+        return []
+    metas = []
+    for path in _SESSION_DIR.glob("*.json"):
+        meta = _read_meta(path.stem)
+        if meta and meta.get("session_id"):
+            metas.append(meta)
+    metas.sort(key=lambda m: m.get("opened_at", 0), reverse=True)
+    return metas
+
+
+def _forget_session(sid: str) -> None:
+    _SESSIONS.pop(sid, None)
+    for path in (_meta_path(sid), _data_path(sid)):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _prune_recent() -> None:
+    for meta in _all_meta()[_MAX_RECENT:]:
+        _forget_session(meta["session_id"])
+
+
+def _evict_ram() -> None:
+    """Drop the oldest parsed arrays; the disk records they came from survive."""
+    while len(_SESSIONS) > _MAX_SESSIONS:
+        _SESSIONS.pop(next(iter(_SESSIONS)))
+
+
+def _source_mtime(source_path: Optional[str]) -> Optional[float]:
+    if not source_path:
+        return None
+    try:
+        return os.path.getmtime(source_path)
+    except OSError:
+        return None
+
+
+def _load_raw(meta: dict) -> bytes:
+    """
+    The file's bytes, preferring the original on disk.
+
+    Reading the source back means a session opened from a path picks up edits to
+    that file, and that the store holds one copy of the data rather than two.
+    """
+    source_path = meta.get("source_path")
+    if source_path:
+        try:
+            with open(source_path, "rb") as fh:
+                return fh.read()
+        except OSError:
+            pass  # moved or deleted — fall through to the cached copy, if any
+    try:
+        with open(_data_path(meta["session_id"]), "rb") as fh:
+            return fh.read()
+    except OSError as e:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                f"'{meta.get('filename', 'The file')}' could not be re-read"
+                + (f" from {source_path}" if source_path else "")
+                + " — it may have been moved or deleted. Load it again."
+            ),
+        ) from e
+
+
+def _new_session(
+    raw: bytes,
+    filename: str,
+    orientation: str,
+    header_row: int,
+    source_path: Optional[str] = None,
+) -> str:
     parsed = parse_file(raw, orientation, header_row)
     sid = uuid.uuid4().hex
     _SESSIONS[sid] = {
@@ -268,20 +499,77 @@ def _new_session(raw: bytes, filename: str, orientation: str, header_row: int) -
         "header_row": header_row,
         "parsed": parsed,
     }
-    # Drop the oldest sessions so a long-lived server doesn't grow without bound.
-    while len(_SESSIONS) > _MAX_SESSIONS:
-        _SESSIONS.pop(next(iter(_SESSIONS)))
+    _evict_ram()
+
+    # Only uploads need their bytes copied; a path-backed session re-reads them.
+    if not source_path:
+        try:
+            _SESSION_DIR.mkdir(parents=True, exist_ok=True)
+            with open(_data_path(sid), "wb") as fh:
+                fh.write(raw)
+        except OSError:
+            pass
+    _write_meta({
+        "session_id": sid,
+        "filename": filename,
+        "source_path": source_path,
+        "source_mtime": _source_mtime(source_path),
+        "orientation": orientation,
+        "header_row": header_row,
+        "opened_at": time.time(),
+        "n_columns": parsed["n_columns"],
+        "n_samples": parsed["n_samples"],
+        "ui": None,
+    })
+    _prune_recent()
     return sid
 
 
 def get_session(session_id: str) -> dict:
+    """
+    A session's parsed data, re-reading from disk if it isn't in RAM.
+
+    The rehydration path is what makes a restart invisible: the id the frontend
+    remembered still resolves, so no reload is needed.
+    """
     sess = _SESSIONS.get(session_id)
-    if sess is None:
+    if sess is not None:
+        return sess
+
+    meta = _read_meta(session_id)
+    if meta is None:
         raise HTTPException(
             status_code=404,
             detail="Session expired or not found — reload the file.",
         )
+    raw = _load_raw(meta)
+    try:
+        parsed = parse_file(raw, meta["orientation"], meta["header_row"])
+    except (ValueError, TypeError, KeyError, IndexError) as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{meta.get('filename', 'file')}' could not be re-read: {e}",
+        ) from e
+    sess = {
+        "raw": raw,
+        "filename": meta.get("filename", "data.csv"),
+        "orientation": meta["orientation"],
+        "header_row": meta["header_row"],
+        "parsed": parsed,
+    }
+    _SESSIONS[session_id] = sess
+    _evict_ram()
     return sess
+
+
+def _touch_session(sid: str, **fields) -> None:
+    """Update a session's record in place, keeping it at the top of recents."""
+    meta = _read_meta(sid)
+    if meta is None:
+        return
+    meta.update(fields)
+    meta["opened_at"] = time.time()
+    _write_meta(meta)
 
 
 async def resolve_parsed(
@@ -464,6 +752,36 @@ def _session_summary(sid: str, parsed: dict, time_col: int, fs: Optional[float])
     return result
 
 
+def _session_response(
+    sid: str,
+    filename: str,
+    detected: Optional[dict],
+    orientation: str,
+    header_row: int,
+    time_col: int,
+    fs: Optional[float],
+) -> dict:
+    """The payload the UI needs to show a loaded file, shared by every entry point."""
+    parsed = get_session(sid)["parsed"]
+
+    # fs: the time column wins, then an explicit value, then detection.
+    use_fs: Optional[float] = None
+    if 0 <= time_col < parsed["n_columns"]:
+        t = extract_col(parsed, time_col)
+        use_fs = 1.0 / float(np.mean(np.diff(t)))
+    elif fs is not None and fs > 0:
+        use_fs = float(fs)
+    elif detected and detected.get("fs"):
+        use_fs = detected["fs"]
+
+    result = _session_summary(sid, parsed, time_col, use_fs)
+    result["filename"] = filename
+    result["detected"] = detected
+    result["orientation"] = orientation
+    result["header_row"] = header_row
+    return result
+
+
 @app.post("/api/session/create")
 async def session_create(
     file: UploadFile,
@@ -471,6 +789,7 @@ async def session_create(
     header_row: Optional[int] = Form(None),
     time_col: Optional[int] = Form(None),
     fs: Optional[float] = Form(None),
+    source_path: Optional[str] = Form(None),
 ):
     """
     Upload a file once and start a session.
@@ -487,33 +806,230 @@ async def session_create(
         use_header_row  = header_row if header_row is not None else detected["header_row"]
         use_time_col    = time_col   if time_col   is not None else detected["time_col"]
 
-        sid = _new_session(raw, file.filename or "data.csv", use_orientation, use_header_row)
-        parsed = _SESSIONS[sid]["parsed"]
+        sid = _new_session(
+            raw, file.filename or "data.csv", use_orientation, use_header_row,
+            source_path=source_path or None,
+        )
+        _touch_session(sid, detected=detected)
+        return _session_response(
+            sid, file.filename or "data.csv", detected,
+            use_orientation, use_header_row, use_time_col, fs,
+        )
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
-        # fs: explicit > time column > detected
-        use_fs: Optional[float] = None
-        if use_time_col >= 0 and use_time_col < parsed["n_columns"]:
-            t = extract_col(parsed, use_time_col)
-            use_fs = 1.0 / float(np.mean(np.diff(t)))
-        elif fs is not None and fs > 0:
-            use_fs = float(fs)
-        elif detected["fs"]:
-            use_fs = detected["fs"]
 
-        result = _session_summary(sid, parsed, use_time_col, use_fs)
-        result["filename"] = file.filename
-        result["detected"] = detected
-        result["orientation"] = use_orientation
-        result["header_row"] = use_header_row
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+def _require_local_origin(request: Request) -> None:
+    """
+    Refuse cross-site calls to the endpoints that touch the filesystem.
+
+    The server listens on loopback, but any page in the browser can still POST
+    to it. Reading an arbitrary path is the one operation where that matters.
+
+    Two checks, and both are needed:
+
+    * the request must have been addressed to a loopback name. Without this, an
+      attacker can point their own domain at 127.0.0.1 (DNS rebinding), at which
+      point their Origin and the Host agree and an origin comparison alone
+      passes.
+    * the Origin, when the browser sends one, must be this server's own.
+
+    Compared against the request's actual host rather than a fixed list, because
+    the port is not fixed — the tests run on a random one.
+    """
+    host = (request.headers.get("host") or "").strip()
+    hostname = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]")[0] + "]"
+    if hostname not in _LOOPBACK_HOSTS:
+        raise HTTPException(
+            status_code=403,
+            detail="Local file access is only available over loopback.",
+        )
+
+    origin = request.headers.get("origin")
+    if not origin:
+        return  # not a browser fetch (curl, the launcher) — no origin to check
+    if origin.split("//", 1)[-1] == host or origin in _ALLOWED_ORIGINS:
+        return
+    raise HTTPException(status_code=403, detail="Cross-site request refused.")
+
+
+def _find_by_path(source_path: str) -> Optional[str]:
+    """The most recent session for this file, if it has been opened before."""
+    target = os.path.normcase(os.path.abspath(source_path))
+    for meta in _all_meta():
+        existing = meta.get("source_path")
+        if existing and os.path.normcase(os.path.abspath(existing)) == target:
+            return meta["session_id"]
+    return None
+
+
+def _reopen(session_id: str, force_reread: bool = False) -> dict:
+    """
+    Rebuild the response for an existing session, with the state it was left in.
+
+    `force_reread` drops the cached parse so a file edited since it was opened
+    comes back with its new contents rather than the copy still in memory.
+    """
+    meta = _read_meta(session_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="No such session.")
+    if force_reread:
+        _SESSIONS.pop(session_id, None)
+
+    ui = meta.get("ui") or {}
+    try:
+        get_session(session_id)  # rehydrates, raising with a clear reason if it can't
+        result = _session_response(
+            session_id,
+            meta.get("filename", "data.csv"),
+            meta.get("detected"),
+            meta["orientation"],
+            meta["header_row"],
+            ui.get("timeCol", -1),
+            ui.get("fsManual"),
+        )
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, KeyError, IndexError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+
+    result["source_path"] = meta.get("source_path")
+    result["ui"] = meta.get("ui")
+    result["reopened"] = True
+    _touch_session(
+        session_id,
+        source_mtime=_source_mtime(meta.get("source_path")),
+        n_columns=result["n_columns"],
+        n_samples=result["n_samples"],
+    )
+    return result
+
+
+@app.post("/api/session/open")
+async def session_open(
+    request: Request,
+    path: str = Form(...),
+    orientation: Optional[str] = Form(None),
+    header_row: Optional[int] = Form(None),
+    time_col: Optional[int] = Form(None),
+    fs: Optional[float] = Form(None),
+):
+    """
+    Start a session from a file already on this machine.
+
+    The upload round-trip is pointless when the data sits next to the app: this
+    is what makes a recent-files list and "open DSPkit on this file" possible.
+
+    Opening a path that has been opened before returns *that* session rather
+    than a fresh one, so the channels and preprocessing chosen for that record
+    come back with it.
+    """
+    _require_local_origin(request)
+    src = Path(path).expanduser()
+    if not src.is_file():
+        raise HTTPException(status_code=404, detail=f"No file at {src}")
+
+    known = _find_by_path(str(src))
+    if known and orientation is None and header_row is None:
+        return _reopen(known, force_reread=True)
+
+    try:
+        raw = src.read_bytes()
+    except OSError as e:
+        raise HTTPException(status_code=422, detail=f"Could not read {src}: {e}") from e
+
+    try:
+        detected = autodetect(raw)
+        use_orientation = orientation or detected["orientation"]
+        use_header_row  = header_row if header_row is not None else detected["header_row"]
+        use_time_col    = time_col   if time_col   is not None else detected["time_col"]
+
+        sid = _new_session(
+            raw, src.name, use_orientation, use_header_row, source_path=str(src),
+        )
+        _touch_session(sid, detected=detected)
+        result = _session_response(
+            sid, src.name, detected, use_orientation, use_header_row, use_time_col, fs,
+        )
+        result["source_path"] = str(src)
         return result
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.get("/api/session/recent")
+async def session_recent():
+    """
+    Files opened before, newest first.
+
+    `available` is false when a path-backed file has moved and no copy was kept,
+    so the UI can show it greyed rather than failing on click. `changed` means
+    the file on disk has been written since it was opened — worth re-reading.
+    """
+    items = []
+    for meta in _all_meta():
+        sid = meta["session_id"]
+        source_path = meta.get("source_path")
+        on_disk = _source_mtime(source_path)
+        items.append({
+            "session_id": sid,
+            "filename": meta.get("filename"),
+            "source_path": source_path,
+            "opened_at": meta.get("opened_at"),
+            "n_columns": meta.get("n_columns"),
+            "n_samples": meta.get("n_samples"),
+            "available": bool(on_disk is not None or _data_path(sid).exists()),
+            "changed": bool(
+                on_disk is not None
+                and meta.get("source_mtime") is not None
+                and on_disk > meta["source_mtime"]
+            ),
+        })
+    return {"recent": items}
+
+
+@app.get("/api/session/{session_id}")
+async def session_get(session_id: str):
+    """
+    Reopen a session by id, with the UI state it was left in.
+
+    This is the restore path: the frontend remembers only the id, and everything
+    else — layout, channels, preprocessing, analysis parameters — comes back
+    from here.
+    """
+    return _reopen(session_id)
+
+
+@app.put("/api/session/{session_id}/state")
+async def session_save_state(session_id: str, request: Request):
+    """
+    Store the UI state for a session.
+
+    Kept per file rather than globally: the channels and cutoffs that suit one
+    record are usually wrong for the next, so restoring them by file is the only
+    version that is actually useful.
+    """
+    if _read_meta(session_id) is None:
+        raise HTTPException(status_code=404, detail="No such session.")
+    try:
+        ui = await request.json()
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid JSON: {e}") from e
+    if not isinstance(ui, dict):
+        raise HTTPException(status_code=422, detail="Expected a JSON object.")
+    _touch_session(session_id, ui=ui)
+    return {"ok": True}
 
 
 @app.post("/api/session/reparse")
@@ -531,6 +1047,14 @@ async def session_reparse(
         sess["parsed"] = parsed
         sess["orientation"] = orientation
         sess["header_row"] = header_row
+        # Remember the corrected layout, so reopening doesn't re-guess wrongly.
+        _touch_session(
+            session_id,
+            orientation=orientation,
+            header_row=header_row,
+            n_columns=parsed["n_columns"],
+            n_samples=parsed["n_samples"],
+        )
 
         use_fs: Optional[float] = None
         if 0 <= time_col < parsed["n_columns"]:
@@ -553,7 +1077,7 @@ async def session_reparse(
 
 @app.delete("/api/session/{session_id}")
 async def session_delete(session_id: str):
-    _SESSIONS.pop(session_id, None)
+    _forget_session(session_id)
     return {"ok": True}
 
 
@@ -1476,6 +2000,44 @@ async def multisensor_coherence_mat(
 
 
 # ─── FDD ──────────────────────────────────────────────────────────────────────
+#
+# Peak-picking defaults. These matter more than most defaults in the app,
+# because every peak FDD returns arrives with a damping ratio and a mode shape
+# attached — it *looks* like a result whether or not it is one. With no filter
+# at all, the picker returned the ten most prominent local maxima of the SV1
+# curve, which on a clean two-mode record meant the two real modes plus eight
+# pieces of noise, indistinguishable in the table.
+#
+# Both thresholds were set from `test_2dof.csv`, whose modes are known to be at
+# 10 and 25 Hz. There the true peaks have 19–27 dB prominence and 25–38 dB
+# SV1/SV2 dominance, while every noise peak sits below 5 dB on both measures —
+# so 6 dB separates them with a wide margin from either side. Running the same
+# file with its force channels included (the documented trap, where FDD is
+# meaningless) leaves nothing above either threshold, which is the right answer.
+
+_FDD_MIN_PROMINENCE_DB = 6.0
+_FDD_MIN_DOMINANCE_DB = 6.0
+_FDD_MAX_PEAKS = 10
+
+
+def _fdd_dominance_db(S: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    """
+    How far SV1 stands above SV2 at each peak, in dB.
+
+    A single dominant mode at a frequency line drives SV1 well clear of SV2;
+    broadband noise leaves them comparable. This is the measure that catches a
+    prominent-looking rise that isn't a mode at all.
+    """
+    idx = np.asarray(indices, dtype=int)
+    if idx.size == 0:
+        return np.zeros(0)
+    sv1 = np.maximum(S[idx, 0], 1e-300)
+    if S.shape[1] < 2:
+        # One channel cannot express dominance; don't let the gate reject
+        # everything on a degenerate input.
+        return np.full(idx.size, np.inf)
+    sv2 = np.maximum(S[idx, 1], 1e-300)
+    return 10.0 * np.log10(sv1 / sv2)
 
 
 @app.post("/api/fdd/analyze")
@@ -1496,6 +2058,7 @@ async def fdd_analyze(
     freq_max: Optional[float] = Form(None),
     mac_threshold: float = Form(0.8),
     n_crossings: int = Form(10),
+    min_dominance_db: float = Form(_FDD_MIN_DOMINANCE_DB),
     pp: PreprocParams = Depends(),
 ):
     try:
@@ -1510,12 +2073,44 @@ async def fdd_analyze(
         freq_range = None
         if freq_min is not None and freq_max is not None:
             freq_range = (freq_min, freq_max)
-        # Default: no prominence filter, limit to top 10 by prominence ranking
-        _max = max_peaks if max_peaks is not None or prominence is not None else 10
+
+        # Every local maximum in the SV1 curve, as the denominator for "n of m
+        # candidates survived". Cheap, and it lets the panel say what was
+        # discarded instead of silently presenting the remainder.
+        _, all_candidates = fdd_peak_picking(
+            freqs, S, distance_hz=distance_hz, freq_range=freq_range,
+        )
+
+        use_prominence = (
+            prominence if prominence is not None else _FDD_MIN_PROMINENCE_DB
+        )
+        _max = max_peaks if max_peaks is not None else _FDD_MAX_PEAKS
         peak_freqs, peak_indices = fdd_peak_picking(
-            freqs, S, prominence=prominence,
+            freqs, S, prominence=use_prominence,
             distance_hz=distance_hz, max_peaks=_max, freq_range=freq_range,
         )
+
+        # Second gate: at a real mode one shape dominates, so SV1 stands well
+        # clear of SV2. Noise gives SV1 ≈ SV2. Prominence alone doesn't catch
+        # this — a broad rise in a flat spectrum can be prominent and still be
+        # nothing — which is how force channels used to yield "modes" at
+        # 285/442/72 Hz with damping ratios attached.
+        dominance = _fdd_dominance_db(S, peak_indices)
+        if min_dominance_db > 0 and peak_indices.size:
+            keep = dominance >= min_dominance_db
+            peak_indices = peak_indices[keep]
+            peak_freqs = peak_freqs[keep]
+            dominance = dominance[keep]
+
+        # Report modes in frequency order. dspkit returns them ranked by
+        # prominence, which is right for truncating to max_peaks but wrong for
+        # a table someone reads as a mode list.
+        if peak_indices.size:
+            order = np.argsort(peak_freqs)
+            peak_indices = peak_indices[order]
+            peak_freqs = peak_freqs[order]
+            dominance = dominance[order]
+
         modes = fdd_mode_shapes(U, peak_indices)
         damping_ratios = []
         natural_freqs = []
@@ -1539,6 +2134,18 @@ async def fdd_analyze(
             "damping_ratios": damping_ratios,
             "natural_freqs": natural_freqs,
             "labels": labels,
+            # What was required, and what didn't make it. A mode table is only
+            # readable if the criteria behind it are visible — and an empty
+            # result has to be distinguishable from a failed one.
+            "peak_dominance_db": to_list(dominance),
+            "criteria": {
+                "prominence_db": float(use_prominence),
+                "min_dominance_db": float(min_dominance_db),
+                "max_peaks": int(_max),
+                "defaulted": prominence is None,
+                "n_candidates": int(np.size(all_candidates)),
+                "n_accepted": int(peak_indices.size),
+            },
         }
     except HTTPException:
         raise

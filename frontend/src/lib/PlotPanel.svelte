@@ -6,6 +6,7 @@
   import { buildPlot, buildPhasePlot, buildPairOverlay, isDownsampledFor,
            MAX_PLOT_POINTS, HEATMAP_SCALES } from './plotSpec.js'
   import { ZOOMABLE, HEATMAP } from './analyses.js'
+  import { describeCriteria, describeEmpty, dominanceLabel } from './fdd.js'
 
   let {
     activeTab, plotData, loading, plotError,
@@ -235,6 +236,20 @@
     }
   })
 
+  // The criteria a mode table was produced under, and what to say when nothing
+  // met them. Both are derived so an empty result reads as an answer.
+  let fddCriteria = $derived(describeCriteria(overviewSpecs?.fddData?.criteria))
+  let fddEmpty = $derived(describeEmpty(
+    overviewSpecs?.fddData?.criteria, overviewSpecs?.fddData?.labels ?? []))
+
+  // The same, for the standalone FDD tab — where the thresholds are actually
+  // tuned, so an empty result there most needs to say what it was measured
+  // against.
+  let singleFddCriteria = $derived(
+    activeTab === 'fdd' ? describeCriteria(single?.criteria) : null)
+  let singleFddEmpty = $derived(
+    activeTab === 'fdd' ? describeEmpty(single?.criteria, single?.labels ?? []) : null)
+
   // ── CSV export ───────────────────────────────────────────────────────────────
   /** Build [headers, rows] for one analysis payload, or null if unsupported. */
   function csvFor(tab, d) {
@@ -291,10 +306,13 @@
         rows.push([d.rms_times[i] ?? '', d.rms_values[i] ?? '', d.energy_values[i] ?? '', d.dominant_freqs[i] ?? ''])
 
     } else if (tab === 'fdd') {
-      headers = ['mode', 'frequency_Hz', 'damping_pct', ...d.labels]
+      // sv1_sv2_dB travels with the export: a mode list pasted into a report is
+      // exactly where the reader can no longer see what was required to make it.
+      headers = ['mode', 'frequency_Hz', 'damping_pct', 'sv1_sv2_dB', ...d.labels]
       for (let i = 0; i < d.peak_freqs.length; i++)
         rows.push([i + 1, d.natural_freqs?.[i] ?? d.peak_freqs[i],
           d.damping_ratios?.[i] != null ? d.damping_ratios[i] * 100 : '',
+          d.peak_dominance_db?.[i] ?? '',
           ...(d.modes[i] ?? [])])
 
     } else { return null }
@@ -539,7 +557,7 @@
             <div class="results-table-wrap">
               <table class="results-table">
                 <thead>
-                  <tr><th>Mode</th><th>Freq [Hz]</th><th>Damping [%]</th>
+                  <tr><th>Mode</th><th>Freq [Hz]</th><th>Damping [%]</th><th>SV1/SV2</th>
                     {#each overviewSpecs.fddData.labels as lbl}<th>{lbl}</th>{/each}
                   </tr>
                 </thead>
@@ -550,11 +568,28 @@
                       <td>{(overviewSpecs.fddData.natural_freqs?.[i] ?? f).toFixed(2)}</td>
                       <td>{overviewSpecs.fddData.damping_ratios?.[i] != null
                             ? (overviewSpecs.fddData.damping_ratios[i] * 100).toFixed(2) : '—'}</td>
+                      <!-- How far this peak stands clear of the second singular
+                           value: the measure that separates a mode from a
+                           prominent piece of noise. -->
+                      <td title={dominanceLabel(overviewSpecs.fddData.peak_dominance_db?.[i])}>
+                        {overviewSpecs.fddData.peak_dominance_db?.[i] != null
+                          ? `${overviewSpecs.fddData.peak_dominance_db[i].toFixed(1)} dB`
+                          : '—'}
+                      </td>
                       {#each overviewSpecs.fddData.modes[i] ?? [] as v}<td>{v.toFixed(3)}</td>{/each}
                     </tr>
                   {/each}
                 </tbody>
               </table>
+            </div>
+            {#if fddCriteria}<div class="ov-criteria">{fddCriteria}</div>{/if}
+          {:else if fddEmpty}
+            <!-- An empty table is a real answer here, not a failure. Say what
+                 the bar was and what usually causes nothing to clear it. -->
+            <div class="ov-empty">
+              <div class="ov-empty-title">{fddEmpty.headline}</div>
+              <div>{fddEmpty.detail}</div>
+              {#if fddCriteria}<div class="ov-criteria">{fddCriteria}</div>{/if}
             </div>
           {/if}
         {:else if overviewSpecs.fddSkipped}
@@ -674,7 +709,7 @@
       <div class="results-table-wrap">
         <table class="results-table">
           <thead>
-            <tr><th>Mode</th><th>Freq [Hz]</th><th>Damping [%]</th>
+            <tr><th>Mode</th><th>Freq [Hz]</th><th>Damping [%]</th><th>SV1/SV2</th>
               {#each single.labels as lbl}<th>{lbl}</th>{/each}
             </tr>
           </thead>
@@ -684,6 +719,10 @@
                 <td>{i + 1}</td>
                 <td>{(single.natural_freqs?.[i] ?? f).toFixed(2)}</td>
                 <td>{single.damping_ratios?.[i] != null ? (single.damping_ratios[i] * 100).toFixed(2) : '—'}</td>
+                <td title={dominanceLabel(single.peak_dominance_db?.[i])}>
+                  {single.peak_dominance_db?.[i] != null
+                    ? `${single.peak_dominance_db[i].toFixed(1)} dB` : '—'}
+                </td>
                 {#each single.modes[i] ?? [] as v}
                   <td>{v.toFixed(3)}</td>
                 {/each}
@@ -691,6 +730,13 @@
             {/each}
           </tbody>
         </table>
+      </div>
+      {#if singleFddCriteria}<div class="ov-criteria">{singleFddCriteria}</div>{/if}
+    {:else if activeTab === 'fdd' && singleFddEmpty}
+      <div class="ov-empty">
+        <div class="ov-empty-title">{singleFddEmpty.headline}</div>
+        <div>{singleFddEmpty.detail}</div>
+        {#if singleFddCriteria}<div class="ov-criteria">{singleFddCriteria}</div>{/if}
       </div>
     {/if}
   {/if}
@@ -722,6 +768,32 @@
     color: var(--text-muted);
   }
   .ov-fail { color: var(--danger); }
+
+  /* The bar a mode table was held to. Deliberately attached to the table
+     rather than hidden in a settings panel: a list of modes is unreadable
+     without knowing what was required to get on it. */
+  .ov-criteria {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin: 5px 2px 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Nothing qualified — an answer, not a failure, so it is styled as a note
+     rather than in the error colour. */
+  .ov-empty {
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 12px 10px;
+    background: color-mix(in srgb, var(--text-muted) 6%, transparent);
+    border-radius: var(--radius);
+    line-height: 1.55;
+  }
+  .ov-empty-title {
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 3px;
+  }
 
   .plot-grid {
     display: grid;
