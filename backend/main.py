@@ -1564,6 +1564,75 @@ async def filter_response(
 
 # ─── time-frequency ───────────────────────────────────────────────────────────
 
+def _absolute_times(times, t):
+    """
+    Put a transform's time axis on the same clock as the signal it came from.
+
+    scipy and dspkit both build a transform's time axis from zero, while
+    `get_preprocessed` returns the record's own timestamps. Those disagree
+    whenever a preprocessing window is set, or whenever the file's time column
+    simply does not start at zero — the STFT would say 0-2 s for a window the
+    time-series tab labels 9-11 s.
+
+    Nothing noticed while each lived in its own tab. The Explorer puts them on
+    one shared axis, where the disagreement makes the layout meaningless, so
+    the offset is applied here for every surface rather than patched in the one
+    caller that happened to reveal it.
+    """
+    times = np.asarray(times, dtype=float)
+    if t is None or len(t) == 0 or times.size == 0:
+        return times
+    return times + float(t[0])
+
+
+def _decimate_surface(freqs, times, Z, max_freq=None, max_time=None):
+    """
+    Thin a time-frequency surface for display, keeping the peaks.
+
+    A capped WVD is still 1025 x 2048 values, which is ~48 MB of JSON and more
+    cells than there are pixels to draw them in. Decimating is not a loss of
+    information at that point; it is declining to send information the screen
+    cannot show.
+
+    Plain striding would be wrong here, though: a ridge one bin wide is exactly
+    what you are looking for on these surfaces, and striding drops it whenever
+    it falls between samples. Each output cell is therefore the *most extreme*
+    input value in its block, sign preserved -- the same reasoning behind
+    min/max decimation of a waveform. WVD and SPWVD go negative, so taking the
+    largest magnitude rather than the largest value is what keeps a strong
+    negative interference term visible.
+
+    Returns (freqs, times, Z) unchanged when no cap applies.
+    """
+    Z = np.asarray(Z)
+    if Z.ndim != 2:
+        return freqs, times, Z
+    n_f, n_t = Z.shape
+    rs = 1 if not max_freq or max_freq <= 0 else max(1, -(-n_f // int(max_freq)))
+    cs = 1 if not max_time or max_time <= 0 else max(1, -(-n_t // int(max_time)))
+    if rs == 1 and cs == 1:
+        return freqs, times, Z
+
+    # Trim to whole blocks. The remainder is at most one block on each axis,
+    # which is below the resolution the result is being reduced to anyway.
+    n_f2, n_t2 = (n_f // rs) * rs, (n_t // cs) * cs
+    if n_f2 == 0 or n_t2 == 0:
+        return freqs, times, Z
+    blocks = (Z[:n_f2, :n_t2]
+              .reshape(n_f2 // rs, rs, n_t2 // cs, cs)
+              .transpose(0, 2, 1, 3)
+              .reshape(n_f2 // rs, n_t2 // cs, rs * cs))
+    idx = np.abs(blocks).argmax(axis=2)
+    out = np.take_along_axis(blocks, idx[:, :, None], axis=2)[:, :, 0]
+
+    # The axes must name the cells that survived, so a click still maps back to
+    # a real time and frequency. The block's first sample is that label.
+    f_out = np.asarray(freqs)[:n_f2:rs]
+    t_out = np.asarray(times)[:n_t2:cs]
+    return f_out, t_out, out
+
+
+
 
 @app.post("/api/timefreq/stft")
 async def timefreq_stft(
@@ -1577,13 +1646,17 @@ async def timefreq_stft(
     window: str = Form("hann"),
     nperseg: int = Form(256),
     noverlap: Optional[int] = Form(None),
+    max_freq: Optional[int] = Form(None),
+    max_time: Optional[int] = Form(None),
     pp: PreprocParams = Depends(),
 ):
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         freqs, times, Zxx = dsp.stft(x, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
-        return {"freqs": to_list(freqs), "times": to_list(times), "magnitude": to_list(np.abs(Zxx))}
+        times = _absolute_times(times, t)
+        freqs, times, M = _decimate_surface(freqs, times, np.abs(Zxx), max_freq, max_time)
+        return {"freqs": to_list(freqs), "times": to_list(times), "magnitude": to_list(M)}
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
@@ -1605,6 +1678,8 @@ async def timefreq_cwt(
     f_max: Optional[float] = Form(None),
     n_freqs: int = Form(50),
     w: float = Form(6.0),
+    max_freq: Optional[int] = Form(None),
+    max_time: Optional[int] = Form(None),
     pp: PreprocParams = Depends(),
 ):
     try:
@@ -1613,7 +1688,11 @@ async def timefreq_cwt(
         f_max_ = f_max if f_max is not None else fs_ / 4.0
         freqs = np.geomspace(f_min, f_max_, n_freqs)
         freqs_out, times, W = dsp.cwt_scalogram(x, fs_, freqs=freqs, w=w)
-        return {"freqs": to_list(freqs_out), "times": to_list(times), "magnitude": to_list(np.abs(W))}
+        times = _absolute_times(times, t)
+        # The frequency axis is chosen by n_freqs here, so only time is thinned
+        # -- decimating a geometric axis would make its spacing meaningless.
+        freqs_out, times, M = _decimate_surface(freqs_out, times, np.abs(W), None, max_time)
+        return {"freqs": to_list(freqs_out), "times": to_list(times), "magnitude": to_list(M)}
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
@@ -1631,6 +1710,8 @@ async def timefreq_wvd(
     time_col: int = Form(-1),
     signal_col: int = Form(...),
     fs: Optional[float] = Form(None),
+    max_freq: Optional[int] = Form(None),
+    max_time: Optional[int] = Form(None),
     pp: PreprocParams = Depends(),
 ):
     try:
@@ -1639,7 +1720,9 @@ async def timefreq_wvd(
         if len(x) > 2048:
             raise HTTPException(status_code=422, detail=f"Signal too long for WVD ({len(x)} samples). Maximum is 2048.")
         freqs, times, WVD = dsp.wigner_ville(x, fs_)
-        return {"freqs": to_list(freqs), "times": to_list(times), "wvd": to_list(WVD.T)}
+        times = _absolute_times(times, t)
+        freqs, times, W = _decimate_surface(freqs, times, WVD.T, max_freq, max_time)
+        return {"freqs": to_list(freqs), "times": to_list(times), "wvd": to_list(W)}
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
@@ -1659,6 +1742,8 @@ async def timefreq_spwvd(
     fs: Optional[float] = Form(None),
     lag_samples: Optional[int] = Form(None),
     time_samples: Optional[int] = Form(None),
+    max_freq: Optional[int] = Form(None),
+    max_time: Optional[int] = Form(None),
     pp: PreprocParams = Depends(),
 ):
     try:
@@ -1667,7 +1752,9 @@ async def timefreq_spwvd(
         if len(x) > 2048:
             raise HTTPException(status_code=422, detail=f"Signal too long for SPWVD ({len(x)} samples). Maximum is 2048.")
         freqs, times, SPWVD = dsp.smoothed_pseudo_wv(x, fs_, lag_samples=lag_samples, time_samples=time_samples)
-        return {"freqs": to_list(freqs), "times": to_list(times), "spwvd": to_list(SPWVD.T)}
+        times = _absolute_times(times, t)
+        freqs, times, S = _decimate_surface(freqs, times, SPWVD.T, max_freq, max_time)
+        return {"freqs": to_list(freqs), "times": to_list(times), "spwvd": to_list(S)}
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:

@@ -3,8 +3,9 @@
   import PlotCanvas from './PlotCanvas.svelte'
   import ResizablePane from './ResizablePane.svelte'
   import { plotTheme, themeState } from './theme.svelte.js'
-  import { buildPlot, buildPhasePlot, buildPairOverlay, isDownsampledFor,
-           MAX_PLOT_POINTS, HEATMAP_SCALES } from './plotSpec.js'
+  import { buildPlot, buildPhasePlot, buildPairOverlay, buildExplorer,
+           isDownsampledFor, MAX_PLOT_POINTS, HEATMAP_SCALES } from './plotSpec.js'
+  import { nearestIndex, spectrumAt, envelopeAt, describeResolution } from './explorer.js'
   import { ZOOMABLE, HEATMAP } from './analyses.js'
   import { describeCriteria, describeEmpty, dominanceLabel } from './fdd.js'
   import { withUnit, psdUnit, csdUnit, squared, product } from './units.js'
@@ -22,8 +23,48 @@
   //   anything else      one analysis, one chart
   let grid     = $derived(plotData?.grid ?? null)
   let overview = $derived(plotData?.overview ?? null)
+  let explorer = $derived(plotData?.explorer ?? null)
   let overlay  = $derived(plotData?.overlay ?? null)
-  let single   = $derived(plotData && !grid && !overview && !overlay ? plotData : null)
+  let single   = $derived(
+    plotData && !grid && !overview && !overlay && !explorer ? plotData : null)
+
+  // ── explorer: the picked time and frequency ────────────────────────────────
+  // Slices are taken from the surface already in memory, so picking costs a
+  // redraw rather than a request — which is what makes it feel like reading the
+  // chart instead of querying it.
+  let pickTime = $state(null)
+  let pickFreq = $state(null)
+  $effect(() => { const _ = plotData; pickTime = null; pickFreq = null })
+
+  let explorerPick = $derived.by(() => {
+    if (!explorer?.tf) return {}
+    const { times, freqs, z } = explorer.tf
+    const ti = pickTime != null ? nearestIndex(times, pickTime) : -1
+    const fi = pickFreq != null ? nearestIndex(freqs, pickFreq) : -1
+    return {
+      time:      ti >= 0 ? times[ti] : null,
+      timeIndex: ti >= 0 ? ti : null,
+      spectrum:  ti >= 0 ? spectrumAt(z, ti) : null,
+      freq:      fi >= 0 ? freqs[fi] : null,
+      freqIndex: fi >= 0 ? fi : null,
+      envelope:  fi >= 0 ? envelopeAt(z, fi) : null,
+    }
+  })
+
+  let explorerSpec = $derived(
+    explorer ? buildExplorer({ ...explorer, pick: explorerPick }, baseOpts) : null)
+
+  let explorerRes = $derived(
+    explorer?.tf ? describeResolution(explorer.tf.times, explorer.tf.freqs) : '')
+
+  /** A click on the surface sets both slices; a click elsewhere is ignored. */
+  function onExplorerClick(e) {
+    const pt = e?.points?.[0]
+    if (!pt || pt.data?.type !== 'heatmap') return
+    pickTime = pt.x
+    pickFreq = pt.y
+  }
+  const clearPick = () => { pickTime = null; pickFreq = null }
 
   // ── display options (local state) ───────────────────────────────────────────
   let showPhase        = $state(false)
@@ -517,8 +558,51 @@
     </div>
   {/if}
 
+  <!-- ── explorer: one surface, and everything that reads it ── -->
+  {#if explorer}
+    <div class="xp-wrap">
+      {#if loading}
+        <div class="plot-overlay"><div class="spinner"></div><div class="plot-overlay-text">Computing…</div></div>
+      {/if}
+
+      <div class="xp-bar">
+        <span class="xp-chip">{explorer.transform.toUpperCase()}</span>
+        <span class="xp-chan">{explorer.channel}</span>
+        {#if explorerRes}
+          <!-- What the chosen window actually bought, rather than making you
+               infer it from nperseg. -->
+          <span class="xp-res">{explorerRes}</span>
+        {/if}
+        <span class="xp-spacer"></span>
+        {#if explorerPick.time != null || explorerPick.freq != null}
+          <span class="xp-pick">
+            {#if explorerPick.time != null}t = {explorerPick.time.toPrecision(4)} s{/if}
+            {#if explorerPick.freq != null}
+              {#if explorerPick.time != null} · {/if}f = {explorerPick.freq.toPrecision(4)} Hz
+            {/if}
+          </span>
+          <button class="btn-ghost xp-clear" onclick={clearPick}>Clear slice</button>
+        {:else}
+          <span class="xp-hint">Click the surface for the spectrum at that moment
+            and the envelope at that frequency.</span>
+        {/if}
+      </div>
+
+      {#if explorer.notice}
+        <div class="xp-notice">{explorer.notice}</div>
+      {/if}
+
+      {#if explorerSpec}
+        <div class="xp-plot">
+          <PlotCanvas spec={explorerSpec} height="100%" onClick={onExplorerClick} />
+        </div>
+      {:else}
+        <div class="ov-fail">This transform returned nothing to draw.</div>
+      {/if}
+    </div>
+
   <!-- ── overview: the composed first look ── -->
-  {#if overview}
+  {:else if overview}
     <div class="stack-scroll">
       {#if loading}
         <div class="plot-overlay"><div class="spinner"></div><div class="plot-overlay-text">Computing…</div></div>
@@ -758,6 +842,30 @@
 </div>
 
 <style>
+  /* ── explorer ─────────────────────────────────────────────────────────── */
+  /* One tall figure rather than a stack of panes: the panels only mean
+     anything next to each other, so they resize together. */
+  .xp-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; position: relative; }
+  .xp-plot { flex: 1 1 auto; min-height: 0; }
+  .xp-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 4px 8px; font-size: 11px; color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+  }
+  .xp-spacer { flex: 1 1 auto; }
+  .xp-chip {
+    font-weight: 600; color: var(--accent);
+    letter-spacing: .06em;
+  }
+  .xp-chan { color: var(--text-secondary); }
+  .xp-res { font-variant-numeric: tabular-nums; }
+  .xp-pick { color: var(--danger); font-variant-numeric: tabular-nums; }
+  .xp-hint { font-style: italic; opacity: .8; }
+  .xp-clear { font-size: 11px; padding: 1px 8px; }
+  .xp-notice {
+    padding: 5px 8px; font-size: 11px;
+    color: var(--warning); border-bottom: 1px solid var(--border);
+  }
   /* Overview and the grid size to their content and let .plot-wrap do the
      scrolling — a nested scroller here would give the page two scrollbars and
      trap the wheel inside the inner one. */

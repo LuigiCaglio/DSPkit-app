@@ -361,6 +361,55 @@ def test_correlation_echoes_normalization(base, sess, r):
             "a normalized ACF really does peak at 1.0", f"{peak!r}")
 
 
+def test_surface_decimation_and_clock(base, sess, r):
+    """What the Explorer needs from the timefreq endpoints."""
+    r.section("time-frequency surfaces: size and time origin")
+    f = base_fields(sess, [1])
+    tf = {**f, "signal_col": 1}
+
+    st, full = post(base, "/api/timefreq/stft", {**tf, "window": "hann", "nperseg": 256})
+    r.check(st == 200, "STFT without limits still works", str(st))
+
+    st, small = post(base, "/api/timefreq/stft",
+                     {**tf, "window": "hann", "nperseg": 256,
+                      "max_freq": 40, "max_time": 50})
+    r.check(st == 200, "STFT accepts decimation limits", str(st))
+    if st == 200:
+        r.check(len(small["freqs"]) <= 40 and len(small["times"]) <= 50,
+                "the surface is capped to the requested grid",
+                f"{len(small['freqs'])} x {len(small['times'])}")
+        r.check(len(small["magnitude"]) == len(small["freqs"]),
+                "rows still match the frequency axis")
+        r.check(len(small["magnitude"][0]) == len(small["times"]),
+                "columns still match the time axis")
+        r.check(len(small["freqs"]) < len(full["freqs"]),
+                "and it really is smaller than the undecimated one")
+
+        # Peak-preserving, not striding: the loudest bin must survive being
+        # thinned, or a one-bin ridge would vanish from the display.
+        peak_full = max(max(row) for row in full["magnitude"])
+        peak_small = max(max(row) for row in small["magnitude"])
+        r.check(abs(peak_small - peak_full) < peak_full * 1e-9,
+                "the peak magnitude survives decimation",
+                f"{peak_small:.6g} vs {peak_full:.6g}")
+
+    # Every panel of the Explorer shares one x-axis, so a windowed transform
+    # must report the record's own clock rather than restarting at zero.
+    r.section("a windowed surface stays on the record's clock")
+    win = "?win_start=9216&win_end=11264&win_unit=samples"
+    st, w_ts = post(base, "/api/signal/timeseries" + win, f)
+    st2, w_tf = post(base, "/api/timefreq/stft" + win,
+                     {**tf, "window": "hann", "nperseg": 256})
+    if st == 200 and st2 == 200:
+        t_ts = w_ts["times_proc"] if w_ts.get("preprocessed") else w_ts["times_raw"]
+        r.check(abs(t_ts[0] - w_tf["times"][0]) < 0.01,
+                "the surface and the time series start at the same instant",
+                f"ts {t_ts[0]:.3f} vs stft {w_tf['times'][0]:.3f}")
+        r.check(w_tf["times"][0] > 1.0,
+                "and that instant is the window's, not zero",
+                f"{w_tf['times'][0]:.3f} s")
+
+
 def main(base):
     r = Results()
     print(f"API tests against {base}")
@@ -373,6 +422,7 @@ def main(base):
     test_filter_options(base, sess, r)
     test_filter_response(base, sess, r)
     test_correlation_echoes_normalization(base, sess, r)
+    test_surface_decimation_and_clock(base, sess, r)
     test_session_errors(base, sess, r)
     return r.report()
 

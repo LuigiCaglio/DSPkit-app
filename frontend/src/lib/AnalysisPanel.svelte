@@ -9,6 +9,7 @@
   import CsdControls         from './controls/CsdControls.svelte'
   import CoherenceControls   from './controls/CoherenceControls.svelte'
   import FilterControls      from './controls/FilterControls.svelte'
+  import ExplorerControls    from './controls/ExplorerControls.svelte'
   import StftControls        from './controls/StftControls.svelte'
   import CwtControls         from './controls/CwtControls.svelte'
   import WvdControls         from './controls/WvdControls.svelte'
@@ -26,7 +27,7 @@
   let {
     activeTab, dualSignal, columnNames = [], selected = [],
     focusChannel = $bindable(null), pairX = $bindable(null), pairY = $bindable(null),
-    loading, plotError, runAnalysis, runOverview, runPairOverlay,
+    loading, plotError, runAnalysis, runOverview, runPairOverlay, runExplorer,
   } = $props()
 
   let scope   = $derived(scopeOf(activeTab))
@@ -74,6 +75,8 @@
       {runPairOverlay} {autoRun} {loading} {runAnalysis} {dualSignal} />
   {:else if activeTab === 'filter'}
     <FilterControls signalCol={focusChannel} {autoRun} {loading} {runAnalysis} />
+  {:else if activeTab === 'explorer'}
+    <ExplorerControls signalCol={focusChannel} {autoRun} {loading} {runExplorer} />
   {:else if activeTab === 'stft'}
     <StftControls signalCol={focusChannel} {autoRun} {loading} {runAnalysis} />
   {:else if activeTab === 'cwt'}

@@ -20,6 +20,7 @@ export const SCOPE = {
   csd:               'dynamic',
   coherence:         'dynamic',
   filter:            'single',
+  explorer:          'single',
   stft:              'single',
   cwt:               'single',
   wvd:               'single',
@@ -50,10 +51,13 @@ export const AUTORUN = new Set([
   'timeseries', 'fft', 'psd', 'autocorrelation', 'peaks',
   'cross_correlation', 'csd', 'coherence', 'filter', 'stft',
   'instantaneous', 'indicators', 'multisensor', 'fdd', 'statistics',
+  // The Explorer opens on STFT, which is cheap. Its own control refuses to
+  // auto-run when the selected transform is one of the O(N^2) pair.
+  'explorer',
 ])
 
 /** Tabs whose x-axis is time and whose traces are decimated for display. */
 export const ZOOMABLE = new Set(['timeseries', 'filter', 'instantaneous'])
 
 /** Tabs drawn as a time-frequency surface, sharing one set of scaling controls. */
-export const HEATMAP = new Set(['stft', 'cwt', 'wvd', 'spwvd'])
+export const HEATMAP = new Set(['stft', 'cwt', 'wvd', 'spwvd', 'explorer'])

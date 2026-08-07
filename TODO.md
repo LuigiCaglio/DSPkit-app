@@ -7,7 +7,7 @@ The app is usable for day-to-day work now. Everything below is either
 *repeatability* or *someone-else-sized* — nothing here blocks your own use.
 
 Run the tests with `python tests/run_all.py` — no third-party packages needed.
-297 assertions (68 API, 39 persistence, 26 detection, 23 FDD, 141 frontend).
+336 assertions (77 API, 39 persistence, 26 detection, 23 FDD, 171 frontend).
 
 **§1.1 (file formats) is deliberately closed.** Confirmed 2026-08-06 that the
 data here is CSV/TSV/TXT only, so `.mat`/`.tdms`/HDF5 support would be work for
@@ -156,25 +156,49 @@ next to them.
 ### 3.1 dB and colour-range control — done
 See "Done since this file was written" below.
 
-### 3.2 A linked Time-Frequency Explorer tab
-Time series on top, spectrogram below, PSD rotated on the right, all sharing
-axes. Plus:
+### 3.2 A linked Time-Frequency Explorer tab — done 2026-08-07
+First tab under **Time-Freq**. Time series on top, the surface below, the PSD
+rotated on the right, all sharing the axes that make them comparable — a ridge
+traces *up* to when it happened and *across* to the frequency it happened at.
 
-- **crosshair slices** — click a time to get the spectrum there, click a
-  frequency to get its envelope over time
-- **one transform selector** (STFT / CWT / WVD / SPWVD) with the relevant
-  params, so you can flip between them *on the same data with the same colour
-  scale*. That comparison is what tells you which one to trust — right now they
-  live in four tabs with independent scales, so they can't be compared.
-- **resolution readout** — show the resulting Δt and Δf for the chosen window
-  instead of making you infer it from `nperseg`
+- **One transform selector** (STFT / CWT / WVD / SPWVD) on the same data with
+  the same colour scale. That comparison is the point: four tabs with
+  independent scales could not be compared at all.
+- **Crosshair slices.** Click the surface: the spectrum at that instant is drawn
+  *against* the average PSD on the same panel, and the picked frequency's
+  energy-over-time gets a panel of its own. Both are taken from the matrix
+  already in memory, so picking costs a redraw, not a request.
+- **Resolution readout** — the Δt and Δf the window actually bought, measured
+  off the returned axes rather than re-derived from `nperseg`. A CWT says
+  "Δf varies (geometric axis)" instead of quoting a number that doesn't exist.
 
-Mostly frontend work against endpoints that already exist. `PlotCanvas` +
-`plotSpec` were built to make exactly this kind of composition cheap.
+The envelope slice gets a fourth panel rather than a second y-axis on the time
+series, for the reason §3.4 gives: they are different quantities, and overlaying
+them would make where the curves cross look meaningful.
 
-⚠️ **WVD is O(N²)** — it is excluded from `AUTORUN` for that reason
-(`analyses.js`). An explorer that recomputes on every slider nudge needs a
-decimation/length-cap story first, or it will hang on a real record.
+**The O(N²) story, which had to come first.** It turned out to be two problems:
+
+1. *Compute.* WVD and SPWVD are capped at 2048 input samples — not a new
+   number, it is the limit the WVD tab has always warned about, now enforced
+   rather than left to you. The window is taken from the **middle** of the
+   record, since the start is usually settling, and it is intersected with any
+   preprocessing window rather than replacing it. Neither auto-runs.
+2. *Payload.* The cap alone was not enough: a capped WVD is still 1025 × 2048
+   values — **48 MB of JSON** for a panel a few hundred pixels tall. The
+   timefreq endpoints now take optional `max_freq`/`max_time` and thin the
+   surface server-side, keeping the **largest-magnitude value in each block**
+   rather than striding, so a one-bin ridge survives. 48 MB → 4 MB. The
+   parameters are opt-in, so the standalone tabs are untouched.
+
+Also fixed on the way, because the Explorer is what exposed it: every transform
+built its time axis from zero while the time series used the record's own
+timestamps, so a windowed STFT said 0–2 s for what the time-series tab called
+9–11 s. Invisible while they lived in separate tabs; fatal on a shared axis.
+`_absolute_times` puts every surface on the record's clock.
+
+Still open: the transform selector re-fetches rather than caching the surfaces,
+so flipping STFT → CWT → STFT recomputes the first one. Cheap for STFT, less so
+for CWT.
 
 ### 3.3 New DSP — belongs in `dspkit`, not this app
 - **Synchrosqueezing / reassignment** — the single highest-value addition;
@@ -214,6 +238,8 @@ annotation rather than a second data series.
 
 ## Done since this file was written
 
+- **The Time-Frequency Explorer** (2026-08-07) — §3.2 above, including the
+  surface-decimation and shared-clock fixes it forced.
 - **Per-channel units** (2026-08-07) — §2.2 above.
 - **Reopening a session lost its time column** (2026-08-07). Found by driving
   the app headlessly while checking units, not by any test: `_reopen` read the
@@ -308,6 +334,13 @@ Still needing eyes rather than assertions:
    asserted (`plotunits.test.mjs`), and the units reaching the *page* is
    confirmed — a session restored with units auto-opened the unit inputs on the
    right four channels. But see the Plotly caveat below.
+5. **The Explorer's proportions.** It renders correctly — three linked subplots
+   (`xy` surface, `xy2` time series, `x2y` PSD), the resolution readout live,
+   the colourbar in dB. Whether the surface gets enough of the height, and
+   whether the fourth panel appearing on a click is jarring, needs eyes.
+6. **The Explorer on WVD.** The data path is verified by request (capped,
+   decimated, on the right clock), but the *render* has only been seen for
+   STFT — switching transform needs a click, which `--dump-dom` cannot do.
 
 Useful trick when the extension is unavailable: **headless Edge** renders and
 reports layout, where headless Chrome produced empty output in this environment.

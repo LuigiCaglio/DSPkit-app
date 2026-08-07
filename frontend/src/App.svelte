@@ -11,6 +11,7 @@
   import { applyState, buildState, debounce, defaultPreproc } from './lib/sessionState.js'
   import { describeRejection, impliedFs } from './lib/detect.js'
   import { resolveUnits, sanitizeUnits } from './lib/units.js'
+  import { costPlan, surfaceOf, transformById, surfaceLimits } from './lib/explorer.js'
 
   // ── session ────────────────────────────────────────────────────────────────
   // The file is uploaded and parsed once; every analysis call then refers to it
@@ -84,6 +85,7 @@
     ]},
     { id: 'filtering',     label: 'Filtering',     tabs: [{ id: 'filter', label: 'Filter' }] },
     { id: 'timeFreq',      label: 'Time-Freq',     tabs: [
+      { id: 'explorer', label: 'Explorer' },
       { id: 'stft', label: 'STFT' }, { id: 'cwt', label: 'CWT' },
       { id: 'wvd', label: 'WVD' }, { id: 'spwvd', label: 'SPWVD' },
     ]},
@@ -599,9 +601,21 @@
   }
 
   /** One POST. Returns {data} or {error} rather than throwing. */
-  async function post(endpoint, extraFields = {}) {
+  /**
+   * @param queryOverride  replaces the matching preprocessing query params for
+   *   this one call. Only the Explorer uses it, to narrow the sample window for
+   *   an O(N²) transform without touching the preprocessing panel the user set.
+   */
+  async function post(endpoint, extraFields = {}, queryOverride = null) {
     try {
-      const res  = await fetch(buildPreprocUrl(endpoint), {
+      let url = buildPreprocUrl(endpoint)
+      if (queryOverride) {
+        const [path, qs] = url.split('?')
+        const p = new URLSearchParams(qs ?? '')
+        for (const [k, v] of Object.entries(queryOverride)) p.set(k, v)
+        url = `${path}?${p.toString()}`
+      }
+      const res  = await fetch(url, {
         method: 'POST', body: buildFormData(extraFields),
       })
       const data = await res.json()
@@ -683,6 +697,95 @@
     if (items.every(r => r.error)) plotError = items[0].error
     else plotData = { overlay: { ref: channelName(refCol), items } }
     loading = false
+  }
+
+  /**
+   * The Time-Frequency Explorer: one surface plus everything that reads it.
+   *
+   * Composed from the endpoints that already exist — the transform, the time
+   * series and the PSD for the same channel under the same preprocessing — so
+   * the three panels are guaranteed to be showing the same data. That is the
+   * property the whole tab depends on; fetching them independently at different
+   * times would quietly break it.
+   */
+  async function runExplorer(transform, params = {}) {
+    if (!session || signalCols.length === 0) return
+    lastRun = { kind: 'explorer', transform, extra: params }
+    const seq = ++runSeq
+    loading = true
+    plotData = null
+    plotError = null
+
+    const col = focusChannel === ALL_CHANNELS ? signalCols[0] : focusChannel
+    const spec = transformById(transform)
+
+    // An O(N^2) transform gets a capped window. It is intersected with whatever
+    // preprocessing window is already set rather than replacing it — the user's
+    // window is a statement about which part of the record is interesting, and
+    // the cap is only about how much of it we can afford.
+    const userWin = preprocWindowSamples()
+    const plan = costPlan(transform, userWin.count, effectiveFs)
+    const capFields = plan.capped
+      ? { win_start: userWin.start + plan.start,
+          win_end:   userWin.start + plan.start + plan.count,
+          win_unit:  'samples' }
+      : null
+
+    const [tf, ts, psd] = await Promise.all([
+      post(spec.endpoint, { signal_col: col, ...surfaceLimits(), ...params }, capFields),
+      post('/api/signal/timeseries', { signal_cols: JSON.stringify([col]) }, capFields),
+      post('/api/spectral/psd',
+           { signal_cols: JSON.stringify([col]), window: 'hann', nperseg: 1024 }, capFields),
+    ])
+    if (seq !== runSeq) return
+
+    if (tf.error) { plotError = tf.error; loading = false; return }
+
+    const z = surfaceOf(transform, tf.data)
+    if (!z) {
+      plotError = `${spec.label} returned no surface.`
+      loading = false
+      return
+    }
+
+    // The side panels are a convenience, not a requirement: a surface with a
+    // failed PSD is still worth looking at, so their errors do not sink the tab.
+    const tsSig = ts.data?.signals?.[0]
+    plotData = {
+      explorer: {
+        transform,
+        tf: { times: tf.data.times, freqs: tf.data.freqs, z },
+        ts: tsSig
+          ? { times: ts.data.preprocessed ? ts.data.times_proc : ts.data.times_raw,
+              values: ts.data.preprocessed ? tsSig.signal_proc : tsSig.signal_raw,
+              name: tsSig.name }
+          : null,
+        psd: psd.data?.signals?.[0]
+          ? { freqs: psd.data.freqs, values: psd.data.signals[0].Pxx }
+          : null,
+        notice: plan.notice,
+        channel: channelName(col),
+      },
+    }
+    loading = false
+  }
+
+  /**
+   * The preprocessing window as absolute sample indices, so the Explorer's cap
+   * can be expressed in the same terms and composed with it.
+   */
+  function preprocWindowSamples() {
+    const n = session?.n_samples ?? 0
+    if (!preproc.windowEnabled) return { start: 0, count: n }
+    const fs = effectiveFs || 1
+    const toSamples = (v) => preproc.winUnit === 'time' ? Math.round(v * fs) : Math.round(v)
+    const rawStart = (preproc.winStart !== null && preproc.winStart !== '')
+      ? toSamples(Number(preproc.winStart)) : 0
+    const rawEnd = (preproc.winEnd !== null && preproc.winEnd !== '')
+      ? toSamples(Number(preproc.winEnd)) : n
+    const start = Math.max(0, Math.min(rawStart, n))
+    const end   = Math.max(start, Math.min(rawEnd, n))
+    return { start, count: end - start }
   }
 
   /**
@@ -916,6 +1019,7 @@ settings were restored from the last time this file was open.">
         {runAnalysis}
         {runOverview}
         {runPairOverlay}
+        {runExplorer}
       />
 
       <!-- Plot area -->

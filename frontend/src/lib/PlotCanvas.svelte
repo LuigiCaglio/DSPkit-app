@@ -4,7 +4,8 @@
 
   // One Plotly div. Takes a finished spec from plotSpec.js so the same chart
   // definition can be mounted in the main area, a grid cell, or an Overview row.
-  let { spec = null, height = null, onRelayout = null, onSelected = null } = $props()
+  let { spec = null, height = null, onRelayout = null, onSelected = null,
+        onClick = null } = $props()
 
   let el = $state(null)
   let observer = null
@@ -20,11 +21,12 @@
     // just done. Bind once; purge() tears the handler down with the plot.
     if (!bound && typeof el.on === 'function') {
       if (onRelayout) el.on('plotly_relayout', onRelayout)
+      if (onClick) el.on('plotly_click', onClick)
       if (onSelected) {
         el.on('plotly_selected', onSelected)
         el.on('plotly_deselect', () => onSelected(null))
       }
-      bound = onRelayout != null || onSelected != null
+      bound = onRelayout != null || onSelected != null || onClick != null
     }
   })
 

@@ -744,3 +744,162 @@ export function buildPhasePlot(tab, d, opts) {
 
   return null
 }
+
+/**
+ * The Time-Frequency Explorer: one surface, with everything that reads it.
+ *
+ * Time series on top sharing the time axis, the spectrogram in the middle, the
+ * PSD rotated on the right sharing the frequency axis. The point of the layout
+ * is that a ridge on the surface can be traced *up* to the moment it happened
+ * and *across* to the frequency it happened at, without reading numbers off two
+ * separate charts.
+ *
+ * Every panel keeps one scale. When a frequency is picked, its energy-over-time
+ * gets a fourth panel of its own rather than a second y-axis on the time
+ * series: those are different quantities, and overlaying them would make where
+ * the curves cross look meaningful when it is an artefact of the scaling — the
+ * same mistake §3.4 of the TODO describes for the filter response.
+ *
+ * @param d    {tf, ts, psd, transform, pick} — pick is {time, freq} or nulls
+ * @param opts as buildPlot, plus `units`
+ */
+export function buildExplorer(d, opts) {
+  const { T, colors = T.series, tf = {}, units = {}, cell = false } = opts
+  if (!d?.tf) return null
+
+  const { times, freqs, z } = d.tf
+  if (!times?.length || !freqs?.length || !z?.length) return null
+
+  const L = baseLayout(T, cell)
+  const sigUnit = units.focus ?? ''
+  const pick = d.pick ?? {}
+  const hasSlice = pick.freqIndex != null && pick.freqIndex >= 0
+
+  // Rows are laid out top-down; the surface keeps the largest share because it
+  // is the thing being read, and the others are there to read it with.
+  const XD = [0, 0.80]
+  const rows = hasSlice
+    ? { ts: [0.80, 1.0], surf: [0.30, 0.74], slice: [0, 0.24] }
+    : { ts: [0.78, 1.0], surf: [0, 0.72] }
+
+  const { db = true, rangeDb = 60, clipPct = 99, colorscale = 'Viridis' } = tf
+  let zz = z, zmin, zmax, zUnit
+  if (db) {
+    ({ z: zz, zmin, zmax } = toDecibels(z, rangeDb))
+    zUnit = 'dB re peak'
+  } else {
+    const hi = percentileOf(z, clipPct), lo = percentileOf(z, 0)
+    if (hi != null && lo != null && hi > lo) { zmin = lo; zmax = hi }
+    // Same rule as the standalone tabs: only STFT and CWT magnitudes carry the
+    // signal's unit; WVD and SPWVD are energy densities and stay bare.
+    zUnit = (d.transform === 'stft' || d.transform === 'cwt')
+      ? withUnit('magnitude', sigUnit) : 'magnitude'
+  }
+
+  const traces = [{
+    x: times, y: freqs, z: zz, type: 'heatmap', colorscale,
+    ...(zmin != null ? { zmin, zmax, zauto: false } : {}),
+    xaxis: 'x', yaxis: 'y',
+    colorbar: {
+      thickness: 12, outlinewidth: 0, len: (rows.surf[1] - rows.surf[0]),
+      y: rows.surf[0], yanchor: 'bottom', x: 1.02,
+      title: { text: zUnit, side: 'right', font: { size: 10 } },
+    },
+    hovertemplate: `%{x:.4g} s, %{y:.4g} Hz — %{z:.3g} ${db ? 'dB' : ''}<extra></extra>`,
+  }]
+
+  // Top: the signal itself, on the surface's own time axis.
+  if (d.ts?.times?.length) {
+    traces.push({
+      x: d.ts.times, y: d.ts.values, type: 'scatter', mode: 'lines',
+      name: d.ts.name ?? 'signal', xaxis: 'x', yaxis: 'y2',
+      line: { color: colors[0], width: 1 }, showlegend: false,
+    })
+  }
+
+  // Right: the average spectrum, rotated so frequency stays vertical.
+  if (d.psd?.freqs?.length) {
+    traces.push({
+      x: d.psd.values, y: d.psd.freqs, type: 'scatter', mode: 'lines',
+      name: 'PSD', xaxis: 'x2', yaxis: 'y', showlegend: false,
+      line: { color: colors[1], width: 1 },
+      hovertemplate: '%{y:.4g} Hz — %{x:.3g}<extra>PSD</extra>',
+    })
+  }
+
+  // The spectrum at the picked instant, drawn against the average so the
+  // comparison is the chart rather than something you hold in your head.
+  if (pick.spectrum?.length) {
+    traces.push({
+      x: pick.spectrum, y: freqs, type: 'scatter', mode: 'lines',
+      name: 'at cursor', xaxis: 'x2', yaxis: 'y', showlegend: false,
+      line: { color: T.danger, width: 1.5 },
+      hovertemplate: `%{y:.4g} Hz — %{x:.3g}<extra>t = ${pick.time?.toPrecision?.(4)} s</extra>`,
+    })
+  }
+
+  if (hasSlice && pick.envelope?.length) {
+    traces.push({
+      x: times, y: pick.envelope, type: 'scatter', mode: 'lines',
+      name: 'envelope', xaxis: 'x', yaxis: 'y3', showlegend: false,
+      line: { color: T.danger, width: 1.5 },
+    })
+  }
+
+  // Crosshairs: which time and which frequency the slices were taken at.
+  const shapes = []
+  if (pick.time != null) {
+    shapes.push({
+      type: 'line', xref: 'x', yref: 'y', x0: pick.time, x1: pick.time,
+      y0: freqs[0], y1: freqs[freqs.length - 1],
+      line: { color: T.danger, width: 1, dash: 'dot' },
+    })
+  }
+  if (pick.freq != null) {
+    shapes.push({
+      type: 'line', xref: 'x', yref: 'y', x0: times[0], x1: times[times.length - 1],
+      y0: pick.freq, y1: pick.freq,
+      line: { color: T.danger, width: 1, dash: 'dot' },
+    })
+  }
+
+  const layout = merge(L, {
+    margin: { l: 58, r: 78, t: 24, b: 42 },
+    showlegend: false,
+    shapes,
+    hovermode: 'closest',
+    // The surface's axes. Only the bottom-most panel carries the time label, so
+    // the shared axis reads as one axis rather than three.
+    xaxis: {
+      ...L.xaxis, domain: XD, anchor: hasSlice ? 'y3' : 'y',
+      title: hasSlice ? '' : 'Time [s]',
+      ...(hasSlice ? { matches: 'x3' } : {}),
+    },
+    yaxis: { ...L.yaxis, domain: rows.surf, anchor: 'x', title: 'Frequency [Hz]' },
+    yaxis2: {
+      ...L.yaxis, domain: rows.ts, anchor: 'x',
+      title: { text: withUnit('Signal', sigUnit), font: { size: 10 } },
+      showticklabels: true,
+    },
+    xaxis2: {
+      ...L.xaxis, domain: [0.83, 1.0], anchor: 'y',
+      title: { text: withUnit('PSD', psdUnit(sigUnit)), font: { size: 10 } },
+      type: 'log', showticklabels: false,
+    },
+  })
+
+  if (hasSlice) {
+    // A fourth row, sharing the time axis, for the picked frequency's energy.
+    layout.xaxis3 = { ...L.xaxis, domain: XD, anchor: 'y3', title: 'Time [s]' }
+    layout.yaxis3 = {
+      ...L.yaxis, domain: rows.slice, anchor: 'x3',
+      title: { text: `@ ${pick.freq?.toPrecision?.(4)} Hz`, font: { size: 10 } },
+    }
+    // The envelope trace and the shared axis have to agree on which x they use.
+    for (const t of traces) if (t.yaxis === 'y3') t.xaxis = 'x3'
+    layout.xaxis.matches = undefined
+    layout.xaxis3.matches = 'x'
+  }
+
+  return { traces, layout }
+}
