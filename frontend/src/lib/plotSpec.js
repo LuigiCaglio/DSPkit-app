@@ -792,7 +792,7 @@ export function buildExplorer(d, opts) {
     if (hi != null && lo != null && hi > lo) { zmin = lo; zmax = hi }
     // Same rule as the standalone tabs: only STFT and CWT magnitudes carry the
     // signal's unit; WVD and SPWVD are energy densities and stay bare.
-    zUnit = (d.transform === 'stft' || d.transform === 'cwt')
+    zUnit = (d.transform === 'stft' || d.transform === 'cwt' || d.transform === 'fsst')
       ? withUnit('magnitude', sigUnit) : 'magnitude'
   }
 

@@ -17,6 +17,7 @@
     w:         6.0,
     lagSamples:  null,
     timeSamples: null,
+    threshold:   0.001,
   })
 
   let transform   = $state(kept.transform)
@@ -29,12 +30,15 @@
   let w           = $state(kept.w)
   let lagSamples  = $state(kept.lagSamples)
   let timeSamples = $state(kept.timeSamples)
+  let threshold   = $state(kept.threshold)
 
   let expensive = $derived(EXPENSIVE.has(transform))
 
   /** The fields for whichever transform is selected. */
   function paramsOf(t) {
     if (t === 'stft')  return { window: window_, nperseg, noverlap: noverlap || undefined }
+    if (t === 'fsst')  return { window: window_, nperseg,
+                                noverlap: noverlap || undefined, threshold }
     if (t === 'cwt')   return { f_min: fMin, f_max: fMax || undefined, n_freqs: nFreqs, w }
     if (t === 'spwvd') return { lag_samples: lagSamples || undefined,
                                 time_samples: timeSamples || undefined }
@@ -62,7 +66,7 @@
 
   $effect(() => remember(kept, {
     transform, window_, nperseg, noverlap, fMin, fMax, nFreqs, w,
-    lagSamples, timeSamples,
+    lagSamples, timeSamples, threshold,
   }))
 </script>
 
@@ -76,7 +80,7 @@
   </div>
 </div>
 
-{#if transform === 'stft'}
+{#if transform === 'stft' || transform === 'fsst'}
   <div class="field">
     <label>Window</label>
     <select bind:value={window_}>
@@ -91,9 +95,22 @@
     <input type="number" bind:value={nperseg} min="16" step="16" style="width:90px" />
   </div>
   <div class="field">
-    <label>noverlap (blank = ½)</label>
+    <label>noverlap (blank = ¾)</label>
     <input type="number" bind:value={noverlap} min="0" placeholder="auto" style="width:90px" />
   </div>
+
+  {#if transform === 'fsst'}
+    <div class="field">
+      <label>Noise gate (× peak)</label>
+      <input type="number" bind:value={threshold} min="0" max="1" step="0.001"
+             style="width:90px" />
+    </div>
+    <div class="status" style="font-size:11px;color:var(--text-muted)">
+      Same window as STFT, with the smear removed. Bins below the gate are
+      discarded rather than reassigned — where the magnitude is near zero the
+      phase carries no frequency, only noise.
+    </div>
+  {/if}
 
 {:else if transform === 'cwt'}
   <div class="field">

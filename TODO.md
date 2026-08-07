@@ -7,7 +7,8 @@ The app is usable for day-to-day work now. Everything below is either
 *repeatability* or *someone-else-sized* — nothing here blocks your own use.
 
 Run the tests with `python tests/run_all.py` — no third-party packages needed.
-336 assertions (77 API, 39 persistence, 26 detection, 23 FDD, 171 frontend).
+342 assertions (83 API, 39 persistence, 26 detection, 23 FDD, 171 frontend).
+dspkit has its own suite: `pytest tests/` in the DSPkit repo, 189 passing.
 
 **§1.1 (file formats) is deliberately closed.** Confirmed 2026-08-06 that the
 data here is CSV/TSV/TXT only, so `.mat`/`.tdms`/HDF5 support would be work for
@@ -200,11 +201,50 @@ Still open: the transform selector re-fetches rather than caching the surfaces,
 so flipping STFT → CWT → STFT recomputes the first one. Cheap for STFT, less so
 for CWT.
 
-### 3.3 New DSP — belongs in `dspkit`, not this app
-- **Synchrosqueezing / reassignment** — the single highest-value addition;
-  sharpens both STFT and CWT dramatically
+### 3.3 New DSP — in `dspkit`, not this app
+- ~~**Synchrosqueezing / reassignment**~~ — **done 2026-08-07**, see below.
 - Multitaper spectrogram
 - Stockwell (S) transform
+- **Second-order synchrosqueezing.** First-order is biased for strongly
+  chirping components: the IF estimate lags a fast chirp. Second-order fixes
+  it and is the natural follow-up now the machinery exists.
+- **The FSST inverse.** Coefficients are summed as complex numbers precisely so
+  an inverse stays possible, but it is not written. That is what mode
+  extraction needs — integrate one ridge back into a time-domain signal, and
+  you can take damping off a single isolated mode or follow one that drifts.
+  This is the highest-value item left in `dspkit`.
+
+**Synchrosqueezing (FSST) — done 2026-08-07.** `dspkit.synchrosqueeze_stft`,
+pushed to `LuigiCaglio/DSPkit@e6a037d`. Fifth transform in the Explorer, sitting
+next to STFT so flipping between them on one colour scale shows exactly what
+reassignment buys.
+
+A spectrogram smears a pure tone to the window's bandwidth; no `nperseg`
+escapes that. But the phase still knows the true instantaneous frequency, so
+the energy can be moved where it belongs. On a synthetic 100 Hz tone, 90 % of
+the energy lands in **1 bin against the STFT's 14**. On `test_2dof.csv` the
+10 Hz ridge goes from **4 Hz wide to a single bin** — the 25 Hz mode is already
+at the bin spacing for `nperseg=512`, so there is nothing left to sharpen there.
+
+Three things had to be right, each found by measuring rather than by reading:
+- scipy's `scaling='spectrum'` divides by `window.sum()`, and a symmetric
+  window's *derivative* sums to zero — that normalisation divides `S_dg` by
+  ~1e-16 and destroys the ratio the method rests on. The framing is done by
+  hand instead.
+- No boundary zero-padding. Padding invents a step discontinuity, which is
+  broadband, so the phase derivative across it is meaningless: the padded edge
+  frames came out **64× larger** than the real ridge. Frames now lie wholly
+  inside the signal, so FSST's `times` starts half a window in, not at zero.
+- The FFT is referenced to the window **centre**, a factor `(-1)**j`. It leaves
+  the IF untouched (the factor cancels in `S_dg/S_g`) but squeezing sums
+  *complex* coefficients, and bins straddling a ridge only reinforce when
+  referenced to a common instant. Referenced to the frame start they cancelled,
+  and `|Tx|` swung **30×** with the tone's phase against the hop. A test written
+  about boundaries is what caught it.
+
+It sharpens; it does not create resolution. Components closer than the window
+bandwidth merge into one confident-looking ridge, which is arguably worse than
+a blurry one. Both caveats are in the docstring.
 
 ### 3.4 Move the filter response off a second y-axis
 The response overlay on the FFT and PSD (`plotSpec.js`, `responseTrace`) draws
@@ -238,6 +278,11 @@ annotation rather than a second data series.
 
 ## Done since this file was written
 
+- **Synchrosqueezing in `dspkit`, wired in as the Explorer's fifth transform**
+  (2026-08-07) — §3.3 above.
+- **`dspkit` is now an editable install** in `venv_dspkit` (2026-08-07). It was
+  a *copy* under `site-packages`, so edits to the source repo silently did not
+  reach the app. `pip install -e ../DSPkit`; `pytest` added to the venv too.
 - **The Time-Frequency Explorer** (2026-08-07) — §3.2 above, including the
   surface-decimation and shared-clock fixes it forced.
 - **Per-channel units** (2026-08-07) — §2.2 above.

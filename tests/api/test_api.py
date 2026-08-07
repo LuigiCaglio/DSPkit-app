@@ -410,6 +410,57 @@ def test_surface_decimation_and_clock(base, sess, r):
                 f"{w_tf['times'][0]:.3f} s")
 
 
+def test_fsst_sharpens_the_stft(base, sess, r):
+    """FSST must be reachable, aligned with the STFT, and actually sharper."""
+    r.section("synchrosqueezing")
+    f = base_fields(sess, [1])
+    common = {**f, "signal_col": 1, "window": "hann", "nperseg": 512}
+
+    st, a = post(base, "/api/timefreq/stft", common)
+    st2, b = post(base, "/api/timefreq/fsst", common)
+    r.check(st2 == 200, "the FSST endpoint answers", str(st2))
+    if st != 200 or st2 != 200:
+        return
+
+    r.check(a["freqs"] == b["freqs"],
+            "FSST squeezes onto the STFT's own frequency grid",
+            f"{len(a['freqs'])} vs {len(b['freqs'])}")
+
+    # Frames lie wholly inside the signal, so the axis starts half a window in
+    # rather than at zero -- the documented difference from stft().
+    half = 512 / 2 / sess["fs"]
+    r.check(abs(b["times"][0] - half) < 0.01,
+            "and starts half a window in, since it does not pad",
+            f"{b['times'][0]:.3f} s, expected {half:.3f}")
+
+    def ridge_width(payload, f0, span=6.0):
+        freqs = payload["freqs"]
+        prof = [sum(row) for row in payload["magnitude"]]
+        band = [(fq, pv) for fq, pv in zip(freqs, prof) if abs(fq - f0) <= span]
+        peak = max(pv for _, pv in band)
+        hit = [fq for fq, pv in band if pv >= peak / 2]
+        return max(hit) - min(hit)
+
+    # 10 Hz is the mode with room to sharpen; the 25 Hz one already sits at the
+    # bin spacing for this nperseg, so there is nothing left to concentrate.
+    wa, wb = ridge_width(a, 10.0), ridge_width(b, 10.0)
+    r.check(wb < wa, "the 10 Hz ridge is narrower than the STFT's",
+            f"STFT {wa:.2f} Hz -> FSST {wb:.2f} Hz")
+
+    # The point of squeezing: more of the plane ends up empty.
+    def empty_fraction(payload):
+        rows = payload["magnitude"]
+        peak = max(max(row) for row in rows)
+        n = sum(len(row) for row in rows)
+        return sum(1 for row in rows for v in row if v < 0.01 * peak) / n
+    r.check(empty_fraction(b) > empty_fraction(a),
+            "and more of the surface is empty than before",
+            f"{empty_fraction(a):.1%} -> {empty_fraction(b):.1%}")
+
+    st, _ = post(base, "/api/timefreq/fsst", {**common, "nperseg": 999999})
+    r.check(st == 422, "a segment longer than the record is refused", str(st))
+
+
 def main(base):
     r = Results()
     print(f"API tests against {base}")
@@ -423,6 +474,7 @@ def main(base):
     test_filter_response(base, sess, r)
     test_correlation_echoes_normalization(base, sess, r)
     test_surface_decimation_and_clock(base, sess, r)
+    test_fsst_sharpens_the_stft(base, sess, r)
     test_session_errors(base, sess, r)
     return r.report()
 

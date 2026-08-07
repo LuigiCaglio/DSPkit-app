@@ -1665,6 +1665,42 @@ async def timefreq_stft(
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
+@app.post("/api/timefreq/fsst")
+async def timefreq_fsst(
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_col: int = Form(...),
+    fs: Optional[float] = Form(None),
+    window: str = Form("hann"),
+    nperseg: int = Form(256),
+    noverlap: Optional[int] = Form(None),
+    threshold: float = Form(1e-3),
+    max_freq: Optional[int] = Form(None),
+    max_time: Optional[int] = Form(None),
+    pp: PreprocParams = Depends(),
+):
+    """Synchrosqueezed STFT — the same window, with the smear removed."""
+    try:
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
+        freqs, times, Tx = dsp.synchrosqueeze_stft(
+            x, fs_, window=window, nperseg=nperseg,
+            noverlap=noverlap, threshold=threshold,
+        )
+        times = _absolute_times(times, t)
+        freqs, times, M = _decimate_surface(freqs, times, np.abs(Tx), max_freq, max_time)
+        return {"freqs": to_list(freqs), "times": to_list(times), "magnitude": to_list(M)}
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
 @app.post("/api/timefreq/cwt")
 async def timefreq_cwt(
     file: Optional[UploadFile] = None,

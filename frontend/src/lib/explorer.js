@@ -170,6 +170,10 @@ export function surfaceLimits() {
 /** The transforms the Explorer can switch between, in increasing cost order. */
 export const TRANSFORMS = [
   { id: 'stft',  label: 'STFT',  endpoint: '/api/timefreq/stft',  field: 'magnitude' },
+  // Synchrosqueezed STFT: the same window as STFT, with the smear removed, so
+  // it sits next to it — flipping between the two on one colour scale is the
+  // clearest demonstration of what reassignment actually buys.
+  { id: 'fsst',  label: 'FSST',  endpoint: '/api/timefreq/fsst',  field: 'magnitude' },
   { id: 'cwt',   label: 'CWT',   endpoint: '/api/timefreq/cwt',   field: 'magnitude' },
   { id: 'wvd',   label: 'WVD',   endpoint: '/api/timefreq/wvd',   field: 'wvd' },
   { id: 'spwvd', label: 'SPWVD', endpoint: '/api/timefreq/spwvd', field: 'spwvd' },
