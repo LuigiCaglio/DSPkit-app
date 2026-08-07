@@ -4,6 +4,9 @@
 // renderable into the main canvas, a small-multiples grid cell, or an Overview
 // panel. Nothing here touches the DOM or component state.
 
+import { withUnit, psdUnit, csdUnit, densityUnit, squared, product,
+         commonUnitByName } from './units.js'
+
 export const MAX_PLOT_POINTS = 50_000
 
 /** First index with x[i] >= v, assuming x ascending. */
@@ -147,10 +150,28 @@ export function buildPlot(tab, d, opts) {
     dragmode = null,         // 'select' puts the plot in band-picking mode
     response = null,         // {freqs, magnitude} — the filter's own response
     tf = {},                 // heatmap scaling: {db, rangeDb, clipPct, colorscale}
+    units = {},              // resolved by units.js: {signal, x, y, byName}
   } = opts
 
   const L = baseLayout(T, cell)
   const yType = yLog ? 'log' : 'linear'
+
+  // The channel unit this chart may label its amplitude axis with.
+  //
+  // Two things suppress it. Normalising divides by RMS, which leaves a
+  // dimensionless ratio — the axis already says "(norm.)" and a unit next to it
+  // would be false. And in a small-multiples cell the shared unit may be empty
+  // because the selection is mixed, while this one cell shows a single channel
+  // whose unit is known; `byName` recovers it.
+  const cellUnit = cell && title ? units.byName?.[title] : undefined
+  const sigUnit  = normalize ? '' : (cellUnit ?? units.signal ?? '')
+  // The one-channel analyses (filter, EMD, envelopes, distributions) run on the
+  // focus channel, so a mixed selection does not make their unit unknown.
+  const oneUnit  = cellUnit ?? units.focus ?? ''
+
+  /** 'Amplitude' → 'Amplitude [g]', or unchanged when the unit is unknown. */
+  const ampTitle = (label = 'Amplitude') =>
+    withUnit(normalize ? `${label} (norm.)` : label, sigUnit)
 
   // Re-drawing at a finer resolution must not throw away the zoom that asked
   // for it, so the axis range is pinned whenever a window is active.
@@ -179,7 +200,7 @@ export function buildPlot(tab, d, opts) {
    * a streak. dB relative to the peak, with an explicit dynamic range, is what
    * makes the structure visible.
    */
-  const heatmap = (x, y, z) => {
+  const heatmap = (x, y, z, { carriesSignalUnit = false } = {}) => {
     const { db = true, rangeDb = 60, clipPct = 99, colorscale = 'Viridis' } = tf
     let zz = z, zmin, zmax, unit
 
@@ -191,7 +212,10 @@ export function buildPlot(tab, d, opts) {
       const hi = percentileOf(z, clipPct)
       const lo = percentileOf(z, 0)
       if (hi != null && lo != null && hi > lo) { zmin = lo; zmax = hi }
-      unit = 'magnitude'
+      // STFT and CWT magnitudes carry the signal's own unit. WVD and SPWVD are
+      // energy densities whose scaling makes the unit ambiguous, so they stay
+      // bare rather than claim one.
+      unit = carriesSignalUnit ? withUnit('magnitude', oneUnit) : 'magnitude'
     }
 
     return [{
@@ -278,7 +302,7 @@ export function buildPlot(tab, d, opts) {
     const heading = title ?? `${d.n_proc.toLocaleString()} samples  ·  fs = ${d.fs_proc.toFixed(2)} Hz${dsLabel}`
     return { traces, layout: merge(L, {
       xaxis: { ...L.xaxis, title: 'Time [s]', ...xAxisRange },
-      yaxis: { ...L.yaxis, title: normalize ? 'Amplitude (norm.)' : 'Amplitude', type: yType },
+      yaxis: { ...L.yaxis, title: ampTitle(), type: yType },
       title: { text: heading, font: { color: T.text, size: 11 } },
     })}
   }
@@ -293,7 +317,7 @@ export function buildPlot(tab, d, opts) {
       ...dragOpts,
       ...(rf ? rf.axis : {}),
       xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
-      yaxis: { ...L.yaxis, title: normalize ? 'Amplitude (norm.)' : 'Amplitude', type: yType },
+      yaxis: { ...L.yaxis, title: ampTitle(), type: yType },
     }))}
   }
 
@@ -313,7 +337,7 @@ export function buildPlot(tab, d, opts) {
       ...(rp ? rp.axis : {}),
       xaxis: { ...L.xaxis, title: 'Frequency [Hz]',
                ...(xr ? { range: xr, autorange: false } : { autorange: true }) },
-      yaxis: { ...L.yaxis, title: 'PSD', type: (psd.yLog ?? true) ? 'log' : 'linear',
+      yaxis: { ...L.yaxis, title: withUnit('PSD', psdUnit(sigUnit)), type: (psd.yLog ?? true) ? 'log' : 'linear',
                ...(yr ? { range: yr, autorange: false } : { autorange: true }) },
     }))}
   }
@@ -323,7 +347,9 @@ export function buildPlot(tab, d, opts) {
       line(d.lags, sig.acf, sig.name, 'solid', 'y', colors[i % colors.length]))
     return { traces, layout: merge(L, titled({
       xaxis: { ...L.xaxis, title: 'Lag [s]' },
-      yaxis: { ...L.yaxis, title: 'ACF' },
+      // A normalized ACF is a dimensionless ratio; a raw one is in the signal's
+      // unit squared. The payload says which, so the axis does not have to guess.
+      yaxis: { ...L.yaxis, title: withUnit('ACF', d.normalized === false ? squared(sigUnit) : '') },
     }))}
   }
 
@@ -363,7 +389,8 @@ export function buildPlot(tab, d, opts) {
     return { traces, layout: merge(L, {
       xaxis: { ...L.xaxis, title: 'Lag [s]',
                ...(lagRange ? { range: lagRange, autorange: false } : { autorange: true }) },
-      yaxis: { ...L.yaxis, title: 'CCF' },
+      yaxis: { ...L.yaxis,
+               title: withUnit('CCF', d.normalized === false ? product(units.x, units.y) : '') },
       ...(head ? { title: { text: head, font: { color: T.title, size: cell ? 11 : 12 } } } : {}),
     })}
   }
@@ -374,7 +401,7 @@ export function buildPlot(tab, d, opts) {
       line(d.freqs, d.phase_deg, 'Phase [°]', 'solid', 'y2', colors[1]),
     ], layout: merge(L, titled({
       xaxis:  { ...L.xaxis, title: 'Frequency [Hz]' },
-      yaxis:  { ...L.yaxis, title: '|CSD|' },
+      yaxis:  { ...L.yaxis, title: withUnit('|CSD|', csdUnit(units.x, units.y)) },
       yaxis2: { ...L.yaxis, title: 'Phase [°]', overlaying: 'y', side: 'right' },
     }))}
   }
@@ -394,12 +421,12 @@ export function buildPlot(tab, d, opts) {
       line(df.x, df.y, 'Filtered', 'solid', 'y', colors[1]),
     ], layout: merge(L, titled({
       xaxis: { ...L.xaxis, title: 'Time [s]', ...xAxisRange },
-      yaxis: { ...L.yaxis, title: 'Amplitude' },
+      yaxis: { ...L.yaxis, title: withUnit('Amplitude', oneUnit) },
     }))}
   }
 
   if (tab === 'stft' || tab === 'cwt') {
-    return { traces: heatmap(d.times, d.freqs, d.magnitude), layout: merge(L, titled({
+    return { traces: heatmap(d.times, d.freqs, d.magnitude, { carriesSignalUnit: true }), layout: merge(L, titled({
       xaxis: { ...L.xaxis, title: 'Time [s]' },
       yaxis: { ...L.yaxis, title: 'Frequency [Hz]' },
     }))}
@@ -429,7 +456,7 @@ export function buildPlot(tab, d, opts) {
       line(f.x, f.y, 'Inst. Freq [Hz]', 'solid', 'y2', colors[2]),
     ], layout: merge(L, titled({
       xaxis:  { ...L.xaxis, title: 'Time [s]', ...xAxisRange },
-      yaxis:  { ...L.yaxis, title: 'Amplitude' },
+      yaxis:  { ...L.yaxis, title: withUnit('Amplitude', oneUnit) },
       yaxis2: { ...L.yaxis, title: 'Inst. Freq [Hz]', overlaying: 'y', side: 'right' },
     }))}
   }
@@ -443,7 +470,7 @@ export function buildPlot(tab, d, opts) {
                   name: 'Residue', line: { dash: 'dot' } })
     return { traces, layout: merge(L, titled({
       xaxis: { ...L.xaxis, title: 'Time [s]' },
-      yaxis: { ...L.yaxis, title: 'Amplitude' },
+      yaxis: { ...L.yaxis, title: withUnit('Amplitude', oneUnit) },
     }))}
   }
 
@@ -470,7 +497,7 @@ export function buildPlot(tab, d, opts) {
     ]
     return { traces, layout: merge(L, titled({
       xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
-      yaxis: { ...L.yaxis, title: 'Amplitude', type: yType },
+      yaxis: { ...L.yaxis, title: withUnit('Amplitude', oneUnit), type: yType },
     }))}
   }
 
@@ -551,8 +578,8 @@ export function buildPlot(tab, d, opts) {
           marker: { color: colors[0], opacity: 0.4 } },
         line(d.xi, d.density, 'KDE', 'solid', 'y', T.danger),
       ], layout: merge(L, {
-        xaxis: { ...L.xaxis, title: 'Value' },
-        yaxis: { ...L.yaxis, title: 'Density' },
+        xaxis: { ...L.xaxis, title: withUnit('Value', oneUnit) },
+        yaxis: { ...L.yaxis, title: withUnit('Density', densityUnit(oneUnit)) },
         barmode: 'overlay',
         title: { text: title ?? 'Probability Density', font: { color: T.title } },
       })}
@@ -562,8 +589,8 @@ export function buildPlot(tab, d, opts) {
         x: d.x_centres, y: d.y_centres, z: d.H, type: 'heatmap', colorscale: 'Viridis',
         colorbar: { thickness: 14, outlinewidth: 0 },
       }], layout: merge(L, {
-        xaxis: { ...L.xaxis, title: d.xlabel },
-        yaxis: { ...L.yaxis, title: d.ylabel },
+        xaxis: { ...L.xaxis, title: withUnit(d.xlabel, units.x) },
+        yaxis: { ...L.yaxis, title: withUnit(d.ylabel, units.y) },
         title: { text: title ?? 'Joint Distribution', font: { color: T.title } },
       })}
     }
@@ -607,10 +634,21 @@ export function buildPlot(tab, d, opts) {
  * @param opts   as buildPlot, plus `ref` (the reference channel's name)
  */
 export function buildPairOverlay(tab, items, opts) {
-  const { T, colors = T.series, lagSide = 'both', cell = false, ref = null } = opts
+  const { T, colors = T.series, lagSide = 'both', cell = false, ref = null, units = {} } = opts
   const L = baseLayout(T, cell)
   const usable = items.filter(it => it.data)
   if (!usable.length) return null
+
+  // Every curve here is `ref` against one other channel, all on one axis. That
+  // axis can only carry a unit if the reference *and* every compared channel
+  // agree — one channel in mm among accelerometers makes the whole axis
+  // unlabellable, which is the honest outcome.
+  const overlayUnit = commonUnitByName(
+    units.byName, [ref, ...usable.map(it => it.name)].filter(Boolean))
+  // Normalization is per-payload and uniform across an overlay, so the first
+  // one speaks for all of them.
+  const rawCorr = usable[0].data.normalized === false
+  const corrUnit = rawCorr ? squared(overlayUnit) : ''
 
   const line = (x, y, name, color) => ({
     x, y, type: 'scatter', mode: 'lines', name, line: { color },
@@ -651,7 +689,7 @@ export function buildPairOverlay(tab, items, opts) {
     return { traces, layout: merge(L, {
       xaxis: { ...L.xaxis, title: 'Lag [s]',
                ...(lagRange ? { range: lagRange, autorange: false } : { autorange: true }) },
-      yaxis: { ...L.yaxis, title: 'CCF' },
+      yaxis: { ...L.yaxis, title: withUnit('CCF', corrUnit) },
       title: { text: heading('Cross-correlation'), font: { color: T.title, size: cell ? 11 : 13 } },
     })}
   }
@@ -660,7 +698,7 @@ export function buildPairOverlay(tab, items, opts) {
     return { traces: usable.map((it, i) => line(it.data.freqs, it.data.magnitude, it.name, colorAt(i))),
       layout: merge(L, {
         xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
-        yaxis: { ...L.yaxis, title: '|CSD|' },
+        yaxis: { ...L.yaxis, title: withUnit('|CSD|', csdUnit(overlayUnit, overlayUnit)) },
         title: { text: heading('Cross-spectral density'), font: { color: T.title, size: cell ? 11 : 13 } },
       })}
   }

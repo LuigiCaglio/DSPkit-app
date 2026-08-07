@@ -10,6 +10,7 @@
   import { exportParams, importParams, resetParams } from './lib/paramStore.svelte.js'
   import { applyState, buildState, debounce, defaultPreproc } from './lib/sessionState.js'
   import { describeRejection, impliedFs } from './lib/detect.js'
+  import { resolveUnits, sanitizeUnits } from './lib/units.js'
 
   // ── session ────────────────────────────────────────────────────────────────
   // The file is uploaded and parsed once; every analysis call then refers to it
@@ -41,6 +42,10 @@
   let focusChannel = $state(0)             // index, or ALL_CHANNELS for a grid
   let pairX        = $state(0)
   let pairY        = $state(1)
+  // Declared physical unit per column index. Display only — nothing is
+  // converted, because the numbers in the file are already in whatever the
+  // user says they are in.
+  let channelUnits = $state({})
 
   // ── preprocessing state ────────────────────────────────────────────────────
   let preproc = $state(defaultPreproc())
@@ -110,6 +115,12 @@
   let dualSignal  = $derived(signalCols.length >= 2)
 
   const channelName = (i) => columnNames[i] ?? `Ch ${i}`
+
+  // Resolved once here rather than in the charts, so plotSpec never has to know
+  // what a column index is. Recomputes when the selection, the focus channel or
+  // any declared unit changes.
+  let plotUnits = $derived(resolveUnits(
+    channelUnits, signalCols, { x: pairX, y: pairY }, columnNames, focusChannel))
 
   /**
    * What preprocessing every result on screen has been through. A high-pass
@@ -331,6 +342,9 @@
   /** Default the signal selection to every non-time column. */
   function applySessionDefaults(names, tCol) {
     const nonTime = names.map((_, i) => i).filter(i => i !== tCol)
+    // A different record's units are not this record's; start blank rather than
+    // carry the last file's over.
+    channelUnits = {}
     signalCols   = nonTime
     focusChannel = nonTime[0] ?? 0
     pairX        = nonTime[0] ?? 0
@@ -358,6 +372,7 @@
     const blob = buildState({
       orientation, headerRow, timeCol, fsManual,
       signalCols, focusChannel, pairX, pairY,
+      units: channelUnits,
       preproc, activeCategory, activeTab,
       params: exportParams(),
     })
@@ -396,6 +411,7 @@
 
     if (saved) {
       signalCols   = saved.signalCols
+      channelUnits = saved.units ?? {}
       focusChannel = saved.focusChannel
       pairX        = saved.pairX
       pairY        = saved.pairY
@@ -809,6 +825,7 @@ settings were restored from the last time this file was open.">
         columnNames={session.column_names}
         {timeCol}
         bind:selected={signalCols}
+        bind:units={channelUnits}
       />
 
       <!-- Layout overrides — only needed when detection guessed wrong -->
@@ -940,6 +957,7 @@ settings were restored from the last time this file was open.">
           <PlotPanel
             {activeTab} {plotData} {loading} {plotError}
             {preprocSummary} {filterBand} {filterResponse} {setFilterFromRange} {clearFilter}
+            units={plotUnits}
           />
         {/if}
       </div>

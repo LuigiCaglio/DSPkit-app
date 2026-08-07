@@ -884,6 +884,7 @@ def _reopen(session_id: str, force_reread: bool = False) -> dict:
         _SESSIONS.pop(session_id, None)
 
     ui = meta.get("ui") or {}
+    use_time_col = ui.get("timeCol", -1)
     try:
         get_session(session_id)  # rehydrates, raising with a clear reason if it can't
         result = _session_response(
@@ -892,7 +893,7 @@ def _reopen(session_id: str, force_reread: bool = False) -> dict:
             meta.get("detected"),
             meta["orientation"],
             meta["header_row"],
-            ui.get("timeCol", -1),
+            use_time_col,
             ui.get("fsManual"),
         )
     except HTTPException:
@@ -1321,7 +1322,9 @@ async def spectral_autocorrelation(
             x, _, _ = get_preprocessed(parsed, time_col, col, fs, pp)
             _, acf = dsp.autocorrelation(x, fs=fs_, normalize=normalize, max_lag=max_lag)
             signals.append({"name": parsed["column_names"][col], "acf": to_list(acf)})
-        return {"lags": to_list(lags), "signals": signals}
+        # Echoed because it decides the y-axis units: a normalized ACF is a
+        # dimensionless ratio, an unnormalized one is in the signal's unit squared.
+        return {"lags": to_list(lags), "signals": signals, "normalized": normalize}
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
@@ -1349,7 +1352,8 @@ async def spectral_cross_correlation(
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
         lags, ccf = dsp.cross_correlation(x, y, fs=fs_, normalize=normalize, max_lag=max_lag)
-        return {"lags": to_list(lags), "ccf": to_list(ccf)}
+        # See the ACF endpoint: this decides whether the axis carries a unit.
+        return {"lags": to_list(lags), "ccf": to_list(ccf), "normalized": normalize}
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:

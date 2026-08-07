@@ -338,6 +338,29 @@ def test_session_errors(base, sess, r):
     r.check(st == 422, "an empty channel selection is rejected", str(st))
 
 
+def test_correlation_echoes_normalization(base, sess, r):
+    """The y-axis units depend on it, so the payload has to state it."""
+    r.section("ACF and CCF say whether they were normalized")
+    f = base_fields(sess, [1, 2])
+
+    for norm in (True, False):
+        st, d = post(base, "/api/spectral/autocorrelation", {**f, "normalize": norm})
+        r.check(st == 200 and d.get("normalized") is norm,
+                f"autocorrelation echoes normalized={norm}", f"{st} {d.get('normalized')!r}")
+
+        st, d = post(base, "/api/spectral/cross_correlation",
+                     {**f, "signal_col_x": 1, "signal_col_y": 2, "normalize": norm})
+        r.check(st == 200 and d.get("normalized") is norm,
+                f"cross_correlation echoes normalized={norm}", f"{st} {d.get('normalized')!r}")
+
+    # A normalized ACF peaks at 1.0 at zero lag; an unnormalized one does not.
+    # This is what makes the flag worth trusting rather than merely echoing.
+    st, d = post(base, "/api/spectral/autocorrelation", {**f, "normalize": True})
+    peak = max(d["signals"][0]["acf"]) if st == 200 else None
+    r.check(peak is not None and abs(peak - 1.0) < 1e-6,
+            "a normalized ACF really does peak at 1.0", f"{peak!r}")
+
+
 def main(base):
     r = Results()
     print(f"API tests against {base}")
@@ -349,6 +372,7 @@ def main(base):
     test_preprocessing_reaches_analyses(base, sess, r)
     test_filter_options(base, sess, r)
     test_filter_response(base, sess, r)
+    test_correlation_echoes_normalization(base, sess, r)
     test_session_errors(base, sess, r)
     return r.report()
 

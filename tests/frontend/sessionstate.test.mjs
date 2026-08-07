@@ -185,3 +185,44 @@ test('a short path is left exactly as it is', () => {
   assert.equal(shortPath('C:\\data\\a.csv'), 'C:\\data\\a.csv')
   assert.equal(shortPath(null), '')
 })
+
+// ── declared units ───────────────────────────────────────────────────────────
+// Units ride in the same blob and are clamped the same way, but they were added
+// without bumping STATE_VERSION -- so a blob written before they existed has to
+// keep restoring everything else.
+
+test('declared units survive a round trip', () => {
+  const blob = buildState({ signalCols: [1, 2], units: { 1: 'g', 2: 'g' } })
+  const back = applyState({ ...saved(), units: blob.units }, { nColumns: 4 })
+  assert.deepEqual(back.units, { 1: 'g', 2: 'g' })
+})
+
+test('a blob from before units existed still restores', () => {
+  // The compatibility this buys is why STATE_VERSION was not bumped: an old
+  // saved session keeps its channels, filter and parameters, and simply has no
+  // units yet.
+  const old = saved()
+  delete old.units
+  const back = applyState(old, { nColumns: 4 })
+  assert.ok(back, 'an old blob must still restore')
+  assert.deepEqual(back.units, {})
+  assert.deepEqual(back.signalCols, [1, 2])
+  assert.equal(back.preproc.hpCutoff, 7)
+})
+
+test('a unit on a column the file no longer has is dropped', () => {
+  const back = applyState({ ...saved(), units: { 1: 'g', 9: 'mm' } }, { nColumns: 4 })
+  assert.deepEqual(back.units, { 1: 'g' })
+})
+
+test('a junk units blob does not become the units object', () => {
+  assert.deepEqual(applyState({ ...saved(), units: 'g' }, { nColumns: 4 }).units, {})
+  assert.deepEqual(applyState({ ...saved(), units: ['g'] }, { nColumns: 4 }).units, {})
+})
+
+test('buildState copies the units rather than aliasing them', () => {
+  const live = { 1: 'g' }
+  const blob = buildState({ signalCols: [1], units: live })
+  live[1] = 'mm'
+  assert.equal(blob.units[1], 'g', 'the saved blob must not follow later edits')
+})

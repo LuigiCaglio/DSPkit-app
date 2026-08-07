@@ -7,11 +7,13 @@
            MAX_PLOT_POINTS, HEATMAP_SCALES } from './plotSpec.js'
   import { ZOOMABLE, HEATMAP } from './analyses.js'
   import { describeCriteria, describeEmpty, dominanceLabel } from './fdd.js'
+  import { withUnit, psdUnit, csdUnit, squared, product } from './units.js'
 
   let {
     activeTab, plotData, loading, plotError,
     preprocSummary = [], filterBand = null, filterResponse = null,
     setFilterFromRange = null, clearFilter = null,
+    units = {},
   } = $props()
 
   // Three shapes arrive here:
@@ -183,6 +185,7 @@
     downsample: !showAllPoints,
     lagSide,
     tf: { db: tfDb, rangeDb: tfRangeDb, clipPct: tfClipPct, colorscale: tfColorscale },
+    units,
   })
 
   let mainSpec = $derived(
@@ -251,37 +254,47 @@
     activeTab === 'fdd' ? describeEmpty(single?.criteria, single?.labels ?? []) : null)
 
   // ── CSV export ───────────────────────────────────────────────────────────────
+  //
+  // The headers already say `time_s` and `frequency_Hz`, so the amplitude
+  // columns being bare was the odd one out — and a table pasted into a report
+  // is exactly where nobody can ask what the numbers were in. Channel units go
+  // into the header for the same reason they go onto the axis.
+  const uName = (name) => withUnit(name, units.byName?.[name] ?? '')
+
   /** Build [headers, rows] for one analysis payload, or null if unsupported. */
   function csvFor(tab, d) {
     let headers = [], rows = []
 
     if (tab === 'timeseries') {
       const times = d.preprocessed ? d.times_proc : d.times_raw
-      headers = ['time_s', ...d.signals.map(s => s.name)]
+      headers = ['time_s', ...d.signals.map(s => uName(s.name))]
       const arr = d.preprocessed ? d.signals.map(s => s.signal_proc) : d.signals.map(s => s.signal_raw)
       for (let i = 0; i < times.length; i++) rows.push([times[i], ...arr.map(a => a[i])])
 
     } else if (tab === 'fft') {
-      headers = ['frequency_Hz', ...d.signals.flatMap(s => [s.name, `${s.name}_phase_deg`])]
+      headers = ['frequency_Hz', ...d.signals.flatMap(s => [uName(s.name), `${s.name}_phase_deg`])]
       for (let i = 0; i < d.freqs.length; i++)
         rows.push([d.freqs[i], ...d.signals.flatMap(s => [s.amplitude[i], s.phase?.[i] ?? ''])])
 
     } else if (tab === 'psd') {
-      headers = ['frequency_Hz', ...d.signals.map(s => s.name)]
+      headers = ['frequency_Hz',
+                 ...d.signals.map(s => withUnit(s.name, psdUnit(units.byName?.[s.name] ?? '')))]
       for (let i = 0; i < d.freqs.length; i++)
         rows.push([d.freqs[i], ...d.signals.map(s => s.Pxx[i])])
 
     } else if (tab === 'autocorrelation') {
-      headers = ['lag_s', ...d.signals.map(s => s.name)]
+      headers = ['lag_s', ...d.signals.map(s => d.normalized === false
+        ? withUnit(s.name, squared(units.byName?.[s.name] ?? '')) : s.name)]
       for (let i = 0; i < d.lags.length; i++)
         rows.push([d.lags[i], ...d.signals.map(s => s.acf[i])])
 
     } else if (tab === 'cross_correlation') {
-      headers = ['lag_s', 'CCF']
+      headers = ['lag_s', withUnit('CCF',
+        d.normalized === false ? product(units.x ?? '', units.y ?? '') : '')]
       for (let i = 0; i < d.lags.length; i++) rows.push([d.lags[i], d.ccf[i]])
 
     } else if (tab === 'csd') {
-      headers = ['frequency_Hz', 'magnitude', 'phase_deg']
+      headers = ['frequency_Hz', withUnit('magnitude', csdUnit(units.x ?? '', units.y ?? '')), 'phase_deg']
       for (let i = 0; i < d.freqs.length; i++) rows.push([d.freqs[i], d.magnitude[i], d.phase_deg[i]])
 
     } else if (tab === 'coherence') {
@@ -290,12 +303,13 @@
         rows.push([d.freqs[i], d.Cxy[i], d.phase_deg?.[i] ?? ''])
 
     } else if (tab === 'filter') {
-      headers = ['time_s', 'raw', 'filtered']
+      headers = ['time_s', withUnit('raw', units.focus ?? ''), withUnit('filtered', units.focus ?? '')]
       for (let i = 0; i < d.times.length; i++)
         rows.push([d.times[i], d.signal_raw[i], d.signal_filtered[i]])
 
     } else if (tab === 'peaks') {
-      headers = ['frequency_Hz', 'amplitude', 'prominence', 'bandwidth_Hz', 'Q_factor']
+      headers = ['frequency_Hz', withUnit('amplitude', units.focus ?? ''),
+                 'prominence', 'bandwidth_Hz', 'Q_factor']
       for (let i = 0; i < d.peak_freqs.length; i++)
         rows.push([d.peak_freqs[i], d.peak_values[i], d.prominences[i], d.bandwidths[i], d.q_factors[i]])
 

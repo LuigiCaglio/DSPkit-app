@@ -9,8 +9,15 @@
 // the same arrangement plotSpec.js uses.
 
 import { ALL_CHANNELS } from './analyses.js'
+import { sanitizeUnits } from './units.js'
 
-/** Bumped when a change would make an old blob mean something different. */
+/**
+ * Bumped when a change would make an old blob mean something different.
+ *
+ * Adding `units` did *not* bump it: an old blob simply has no units, which is
+ * exactly the "not declared yet" state. Bumping would have discarded every
+ * saved channel selection and filter to add an optional field.
+ */
 export const STATE_VERSION = 1
 
 /** The preprocessing chain in its off position — one definition, shared. */
@@ -46,6 +53,7 @@ export function buildState(ui) {
     timeCol:        ui.timeCol,
     fsManual:       ui.fsManual,
     signalCols:     [...(ui.signalCols ?? [])],
+    units:          { ...(ui.units ?? {}) },
     focusChannel:   ui.focusChannel,
     pairX:          ui.pairX,
     pairY:          ui.pairY,
@@ -90,6 +98,12 @@ export function applyState(raw, { nColumns, timeCol = -1 } = {}) {
 
   const state = {
     signalCols,
+    // Keyed by column index like everything else here, and clamped the same way
+    // — a unit stranded on column 7 of a 3-column file is dropped rather than
+    // kept forever. Note this rides along with the rest: if the selection no
+    // longer fits and this function returns null, the units go too, because a
+    // half-restored state is harder to reason about than a fresh one.
+    units: sanitizeUnits(raw.units, nColumns),
     focusChannel: focus,
     pairX: pick(raw.pairX, signalCols[0]),
     pairY: pick(raw.pairY, signalCols[1] ?? signalCols[0]),
