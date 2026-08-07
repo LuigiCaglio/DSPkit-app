@@ -159,6 +159,43 @@ def test_launch_target(base, r):
     r.check("path" in body, "the response always has a path field")
 
 
+def test_reopen_keeps_detected_time_col(base, r):
+    """A session closed before its first state save must not lose its time axis.
+
+    Found by driving the app in a browser: `create` detected time_col=0 while
+    `GET /api/session/<id>` returned -1, so a resumed session showed the time
+    column as a selectable signal and fell back to a manual sample rate.
+    """
+    r.section("reopening a session with no saved state")
+    raw = CSV.read_bytes()
+    st, sess = post(base, "/api/session/create", {}, {"file": (CSV.name, raw)})
+    if st != 200:
+        r.check(False, "session/create for the reopen check", str(st))
+        return
+    sid = sess["session_id"]
+    r.check(sess["time_col"] == 0, "create detects the time column", str(sess["time_col"]))
+
+    # No state has ever been PUT for this session.
+    st, back = get(base, f"/api/session/{sid}")
+    r.check(st == 200, "the fresh session reopens", str(st))
+    r.check(back.get("time_col") == 0,
+            "reopening without saved state keeps the detected time column",
+            str(back.get("time_col")))
+    r.check(back.get("fs") is not None and abs(back["fs"] - 1024) < 1,
+            "and the rate still comes from that column",
+            str(back.get("fs")))
+
+    # An explicit -1 is a real choice — "this file has no time column" — and
+    # must survive, or the fallback above would override the user.
+    st, _ = request_json(base, f"/api/session/{sid}/state", "PUT",
+                         {"timeCol": -1, "fsManual": 500, "signalCols": [0, 1]})
+    r.check(st == 200, "a deliberate no-time-column state saves", str(st))
+    st, back = get(base, f"/api/session/{sid}")
+    r.check(back.get("time_col") == -1,
+            "an explicit -1 is honoured rather than re-detected",
+            str(back.get("time_col")))
+
+
 def main(base):
     r = Results()
     print(f"persistence tests against {base}")
@@ -167,6 +204,7 @@ def main(base):
     test_cross_site_refused(base, r)
     if sess:
         test_ui_state_roundtrip(base, sess, r)
+    test_reopen_keeps_detected_time_col(base, r)
     test_survives_ram_eviction(base, r)
     test_recent_list(base, r)
     test_launch_target(base, r)

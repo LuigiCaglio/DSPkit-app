@@ -1,14 +1,13 @@
 # DSPkit-app — what's left
 
-State as of 2026-08-06. `master` is at `df2fa36`; current branch is
-`timefreq-display`, which carries §3.1 and the session-persistence work below,
-and is **not yet merged**.
+State as of 2026-08-07. `timefreq-display` is **merged**; `master` carries
+§3.1, the session-persistence work and per-channel units.
 
 The app is usable for day-to-day work now. Everything below is either
 *repeatability* or *someone-else-sized* — nothing here blocks your own use.
 
 Run the tests with `python tests/run_all.py` — no third-party packages needed.
-232 assertions (63 API, 33 persistence, 26 detection, 23 FDD, 87 frontend).
+297 assertions (68 API, 39 persistence, 26 detection, 23 FDD, 141 frontend).
 
 **§1.1 (file formats) is deliberately closed.** Confirmed 2026-08-06 that the
 data here is CSV/TSV/TXT only, so `.mat`/`.tdms`/HDF5 support would be work for
@@ -34,7 +33,7 @@ they can skip the `_detect_time_col` guesswork entirely — the session response
 already has fields for both.
 
 ### 1.2 Widen test coverage
-`tests/` now holds 108 assertions (63 API, 45 frontend) — run with
+Counts live in the header above, so there is one number to keep current. Run with
 `python tests/run_all.py`, no third-party packages needed. See `tests/README.md`.
 
 Still uncovered, because it needs a rendered DOM: drag-resizing, the plot area's
@@ -50,8 +49,9 @@ Map the common ones to plain sentences.
 
 ## 2. Research correctness
 
-§2.1 and §2.3 are done (2026-08-06) — both were cases where the app stated
-something it hadn't earned. §2.2 (units) is the one left.
+All three are done. §2.1 and §2.3 (2026-08-06) and §2.2 (2026-08-07) were the
+same kind of problem: the app stating something it hadn't earned, or refusing to
+state something it knew.
 
 ### 2.1 FDD peak-picking defaults — done 2026-08-06
 Two gates, both defaulting to 6 dB (`_FDD_MIN_PROMINENCE_DB`,
@@ -81,9 +81,39 @@ Still open, and still the real answer:
 Deliberately **not** done: guessing excitation channels from column names.
 That would silently override an explicit selection.
 
-### 2.2 No units
-Axes say "Amplitude". No way to declare m/s², g, mm. Needed for any figure that
-leaves your machine. Would live per-channel, alongside the channel names.
+### 2.2 Units — done 2026-08-07
+Declared per channel, in the channel list behind a "Units" toggle (off until one
+is set, then it stays open — 20 extra boxes in that sidebar is a bad default).
+They persist per session and are clamped on the way back in like everything else.
+
+Display only: **nothing is converted or rescaled**, because the numbers in the
+file are already in whatever you say they are in.
+
+The algebra is the part worth having (`frontend/src/lib/units.js`): an
+acceleration PSD is `(m/s²)²/Hz`, not `m/s²/Hz`, and a probability density is
+`1/(m/s²)`. Compound units get bracketed before taking an exponent; simple ones
+don't, so `g` gives the `g²/Hz` everyone actually writes.
+
+The rule that decides every case: **a unit is shown only when it is known and
+unambiguous.** Concretely —
+- channels that disagree silence the shared axis rather than letting the first
+  channel's unit stand for all of them; the small-multiples cells still label
+  individually, since each shows one channel
+- normalising strips the unit — dividing by RMS leaves a dimensionless ratio
+- an unnormalized ACF is in the unit *squared*, a normalized one is
+  dimensionless, so `/api/spectral/{autocorrelation,cross_correlation}` now echo
+  `normalized` rather than making the frontend guess
+- STFT and CWT linear colourbars carry the signal unit; **WVD and SPWVD stay
+  bare**, because their energy-density scaling makes the unit ambiguous and a
+  wrong unit is worse than none
+- dB colourbars are relative to peak, so no unit applies
+
+Units travel into the **CSV headers** too (`acc1 [m/s²]`, `PSD [g²/Hz]`) — a
+table pasted into a report is exactly where nobody can ask what the numbers were
+in. Commas and quotes are stripped from a unit on entry so a header cannot split.
+
+Not done: unit-aware *conversion* (g ↔ m/s²), and no unit appears on the
+covariance matrix, whose entries have pairwise-different units.
 
 ### 2.3 Irregular sampling — done 2026-08-06
 `_detect_time_col` now returns `(col, fs, rejection)`, where `rejection`
@@ -184,6 +214,21 @@ annotation rather than a second data series.
 
 ## Done since this file was written
 
+- **Per-channel units** (2026-08-07) — §2.2 above.
+- **Reopening a session lost its time column** (2026-08-07). Found by driving
+  the app headlessly while checking units, not by any test: `_reopen` read the
+  time column as `ui.get("timeCol", -1)`, so a session whose state blob had
+  never been written — closed inside the 700 ms save debounce — came back with
+  **no time column at all**. The time axis reappeared as a selectable signal and
+  the sample rate silently went manual. It now falls back to what detection
+  found, exactly as `create` does, while an explicit `-1` ("this file has no
+  time column") is still honoured. `test_persistence.py` covers both directions.
+
+  This is the third bug in a row that only browser driving caught, after the
+  hardcoded port 8000 and the mount-order Recent files fetch. The pattern is
+  consistent: they all live in the seam between two code paths that unit tests
+  exercise separately.
+
 - **The two silent-wrongness fixes** (2026-08-06) — §2.1 and §2.3 above, both
   verified in a real browser. The FDD change was checked at both ends: the
   mode table renders 10.01 / 25.01 Hz with their SV1/SV2 figures on the
@@ -256,7 +301,13 @@ Still needing eyes rather than assertions:
 1. Drag-resize feel — is an 11 px handle a comfortable target?
 2. Auto-run eagerness — if any tab is too keen, it's one line in the `AUTORUN`
    set in `frontend/src/lib/analyses.js`.
-3. Whether the sidebar is crowded now that Recent files sits in it.
+3. Whether the sidebar is crowded now that Recent files sits in it — and now
+   that each channel row can carry a unit box. The box is deliberately
+   borderless until hovered, but nobody has looked at the result.
+4. **Whether a unit actually reads well on a rendered axis.** The strings are
+   asserted (`plotunits.test.mjs`), and the units reaching the *page* is
+   confirmed — a session restored with units auto-opened the unit inputs on the
+   right four channels. But see the Plotly caveat below.
 
 Useful trick when the extension is unavailable: **headless Edge** renders and
 reports layout, where headless Chrome produced empty output in this environment.
@@ -278,6 +329,11 @@ is how the restore path above was checked. Two gotchas:
   checkboxes as DOM *properties* — so a restored `nperseg` or channel tick is
   invisible in the dump even when it is correct. Don't read absence there as a
   bug.
+- **Plotly axis titles never appear in the dump**, even with a 30 s virtual-time
+  budget and a real window size. Tick labels, legends and trace paths all
+  serialise fine; `<text class="xtitle">` simply is not there. Checked against
+  `Frequency [Hz]`, which predates any of this work — so absence proves nothing
+  about a label, and axis text has to be verified another way.
 - To see those, read the wire instead: wrap the app in a tiny ASGI shim that
   logs each `/api/` request line and form body, and run
   `uvicorn probe:app` against it. The request the app sends is the ground truth

@@ -884,7 +884,18 @@ def _reopen(session_id: str, force_reread: bool = False) -> dict:
         _SESSIONS.pop(session_id, None)
 
     ui = meta.get("ui") or {}
-    use_time_col = ui.get("timeCol", -1)
+    # Absent is not the same as -1. A blob that never got written — the session
+    # was closed inside the 700 ms save debounce — used to reopen with *no* time
+    # column, so the time axis came back as a selectable signal and the rate
+    # went manual. Fall back to what detection found, exactly as create does.
+    # An explicit -1 is a real choice ("this file has no time column") and is
+    # still honoured, which is why this tests for None rather than falsiness.
+    saved_time_col = ui.get("timeCol")
+    detected_meta = meta.get("detected") or {}
+    use_time_col = (
+        saved_time_col if saved_time_col is not None
+        else detected_meta.get("time_col", -1)
+    )
     try:
         get_session(session_id)  # rehydrates, raising with a clear reason if it can't
         result = _session_response(
