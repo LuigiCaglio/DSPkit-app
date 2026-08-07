@@ -276,6 +276,53 @@ annotation rather than a second data series.
 
 ---
 
+## 5. Response spectrum
+
+Not started. Decided 2026-08-07 that it **does** belong in `dspkit`: the
+"is this signal processing?" objection was already moot — `fdd.py`,
+`indicators.py` and `multisensor.py` are structural dynamics, and FDD's own
+docstrings talk about fitting the SDOF bell. A response spectrum is closer to
+the core of that than FDD is.
+
+### 5.1 The transform, in `dspkit`
+For a base-excitation record, the peak response of a family of SDOF oscillators
+against period T, at one or more damping ratios.
+
+**Use Nigam–Jennings, not Newmark.** The exact piecewise-linear recurrence is a
+2x2 state transition that is *exact* when the input is linearly interpolated
+between samples, which is the standard assumption anyway. It drops into
+`scipy.signal.lfilter` as an IIR filter, so 200 periods over a 20 000-sample
+record is milliseconds rather than a loop worth optimising later.
+
+Sensible home: a new `response.py` holding SDOF simulation generally, since the
+same machinery gives the shock response spectrum (SRS) used in mechanical and
+aerospace testing — same solver, different conventions (maximax / primary /
+residual).
+
+**The correctness trap, and it is the same one this file keeps hitting.**
+Pseudo-velocity and pseudo-acceleration are *defined* as `Sv = w*Sd` and
+`Sa = w^2*Sd`. They are **not** the oscillator's peak velocity and peak
+acceleration. They are close for light damping and diverge as damping rises, so
+labelling a pseudo-spectrum "acceleration" is exactly the class of error §2.1
+and §2.3 were about: stating something that has not been earned. Either name
+them pseudo, or return both and let the difference be visible.
+
+Second, smaller: the recurrence is exact for the *interpolated* input, but the
+interpolation itself is the approximation. It breaks down at short periods on a
+coarsely sampled record — the usual guidance is `dt < T/10`. Refuse or warn
+below that rather than draw a confident wrong curve, the way `_detect_time_col`
+already refuses a rate it cannot justify.
+
+### 5.2 The tab, in this app
+A good fit for the by-eye argument: damping ratio and period range are exactly
+the parameters you cannot pick from a formula, and the standard plot is several
+damping curves overlaid — which is a comparison, so it belongs on one axis with
+one scale for the same reason the Explorer exists.
+
+Worth having: log-log axes, the classic tripartite (four-coordinate) grid, and
+per-channel units flowing in as they now do everywhere else — `Sd` is in the
+channel's unit integrated twice, which the unit algebra does not yet express.
+
 ## Done since this file was written
 
 - **Synchrosqueezing in `dspkit`, wired in as the Explorer's fifth transform**
