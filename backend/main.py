@@ -1555,7 +1555,14 @@ async def spectral_cross_correlation(
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
         lags, ccf = dsp.cross_correlation(x, y, fs=fs_, normalize=normalize, max_lag=max_lag)
         # See the ACF endpoint: this decides whether the axis carries a unit.
-        return {"lags": to_list(lags), "ccf": to_list(ccf), "normalized": normalize}
+        # The channel names travel with the result so the chart can say which one
+        # leads. CCF[k] = sum x[n]*y[n+k], so a peak at k > 0 means y is the
+        # delayed copy and x leads. That convention is easy to state backwards --
+        # dspkit's own docstring had it inverted until 2026-09-02 -- so the app
+        # spells the direction out rather than leaving it to be inferred.
+        return {"lags": to_list(lags), "ccf": to_list(ccf), "normalized": normalize,
+                "x_label": parsed["column_names"][signal_col_x],
+                "y_label": parsed["column_names"][signal_col_y]}
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:

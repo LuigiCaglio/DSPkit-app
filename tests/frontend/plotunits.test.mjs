@@ -188,3 +188,34 @@ test('charts called with no units at all still build', () => {
     assert.ok(spec && spec.layout, `${tab} should still build without units`)
   }
 })
+
+// ── cross-correlation lead direction ─────────────────────────────────────────
+// dspkit's own docstring stated this backwards until 2026-09-02, so the claim
+// the chart makes is pinned here rather than left to be re-derived.
+
+test('a positive peak lag says the X channel leads', () => {
+  const d = {
+    lags: [-1, 0, 1], ccf: [0.1, 0.2, 0.9],
+    x_label: 'acc1', y_label: 'acc2', normalized: true,
+  }
+  const spec = buildPlot('cross_correlation', d, { T, units: { byName: {} } })
+  assert.match(spec.layout.title.text, /acc1 leads acc2/)
+})
+
+test('a negative peak lag says the Y channel leads', () => {
+  const d = {
+    lags: [-1, 0, 1], ccf: [0.9, 0.2, 0.1],
+    x_label: 'acc1', y_label: 'acc2', normalized: true,
+  }
+  const spec = buildPlot('cross_correlation', d, { T, units: { byName: {} } })
+  assert.match(spec.layout.title.text, /acc2 leads acc1/)
+})
+
+test('a peak at zero lag claims no lead in either direction', () => {
+  const d = {
+    lags: [-1, 0, 1], ccf: [0.1, 0.9, 0.1],
+    x_label: 'acc1', y_label: 'acc2', normalized: true,
+  }
+  const spec = buildPlot('cross_correlation', d, { T, units: { byName: {} } })
+  assert.match(spec.layout.title.text, /in phase, no lead/)
+})

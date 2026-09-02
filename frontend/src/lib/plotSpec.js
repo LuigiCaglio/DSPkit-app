@@ -449,8 +449,18 @@ export function buildPlot(tab, d, opts) {
       })
     }
 
+    // Say which channel leads, rather than leaving the sign convention to be
+    // recalled. CCF[k] = sum x[n]*y[n+k], so a peak at positive lag means y is
+    // the delayed copy and x arrives first.
+    const lead = (() => {
+      if (peakLag === null || !d.x_label || !d.y_label) return ''
+      if (Math.abs(peakLag) < 1e-12) return '  ·  in phase, no lead'
+      return peakLag > 0
+        ? `  ·  ${d.x_label} leads ${d.y_label}`
+        : `  ·  ${d.y_label} leads ${d.x_label}`
+    })()
     const head = title ?? (peakLag !== null
-      ? `Peak |CCF| ${peakVal.toPrecision(3)} at lag ${peakLag.toPrecision(4)} s`
+      ? `Peak |CCF| ${peakVal.toPrecision(3)} at lag ${peakLag.toPrecision(4)} s${lead}`
       : null)
 
     return { traces, layout: merge(L, {
