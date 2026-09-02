@@ -133,8 +133,7 @@ The library has its own suite — `pytest tests/` in the
 FastAPI · Svelte 5 · Plotly · NumPy/SciPy, through
 [DSPkit](https://github.com/LuigiCaglio/DSPkit).
 
-Development notes live in [`docs/dev/`](docs/dev/); open work is tracked in
-[`TODO.md`](TODO.md).
+Open work is tracked in [`TODO.md`](TODO.md).
 
 ## Licence
 

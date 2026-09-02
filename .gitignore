@@ -33,3 +33,10 @@ Thumbs.db
 .idea/
 
 GUI_NEW_FEATURES.md
+
+# Development notes — kept locally, not published. These are working documents
+# for whoever is building the app, not documentation for people using it.
+docs/dev/
+
+# Stock Vite/Svelte template readme; the repo has its own README.
+frontend/README.md
