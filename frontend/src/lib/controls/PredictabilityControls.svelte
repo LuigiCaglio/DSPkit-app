@@ -19,6 +19,18 @@
   onMount(() => { if (autoRun && enough) run() })
   $effect(() => remember(kept, { mode, nperseg }))
 
+  // Click, not hover. A native title tooltip waits about a second, targets a
+  // 13px circle, and renders four sentences badly or truncates them — none of
+  // which suits an explanation someone actually needs to read.
+  let helpOpen = $state(null)          // 'measure' | 'nperseg' | null
+  const toggleHelp = (k) => { helpOpen = helpOpen === k ? null : k }
+
+  const NPERSEG_HELP =
+    'Welch window length, in samples. It sets the frequency resolution ' +
+    '(fs / nperseg) and how many segments get averaged, and those pull against ' +
+    'each other: a longer window resolves a sharp resonance but leaves fewer ' +
+    'segments, which lifts the whole curve.'
+
   const HELP = {
     multiple:
       'Multiple coherence. For each channel, the share of it that all the other ' +
@@ -36,7 +48,9 @@
 <div class="field">
   <label for="pred-mode">
     Measure
-    <span class="help-dot" title={HELP[mode]}>?</span>
+    <button type="button" class="help-dot" aria-expanded={helpOpen === 'measure'}
+            aria-label="What does this measure?"
+            onclick={() => toggleHelp('measure')}>?</button>
   </label>
   <select id="pred-mode" bind:value={mode}>
     <option value="multiple">Multiple coherence</option>
@@ -47,11 +61,19 @@
 <div class="field">
   <label for="pred-nperseg">
     nperseg
-    <span class="help-dot"
-          title="Welch window length, in samples. It sets the frequency resolution (fs / nperseg) and how many segments are averaged. Both matter here and they pull against each other — see the note beside this control.">?</span>
+    <button type="button" class="help-dot" aria-expanded={helpOpen === 'nperseg'}
+            aria-label="What is nperseg?"
+            onclick={() => toggleHelp('nperseg')}>?</button>
   </label>
   <input id="pred-nperseg" type="number" bind:value={nperseg} min="64" step="64" style="width:90px" />
 </div>
+
+{#if helpOpen}
+  <div class="help-panel">
+    {helpOpen === 'measure' ? HELP[mode] : NPERSEG_HELP}
+    <button class="help-close" onclick={() => helpOpen = null} aria-label="Close">×</button>
+  </div>
+{/if}
 
 <div class="status" style="max-width:340px">
   {#if !enough}
