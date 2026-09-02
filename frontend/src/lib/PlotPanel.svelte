@@ -4,7 +4,8 @@
   import ResizablePane from './ResizablePane.svelte'
   import { plotTheme, themeState } from './theme.svelte.js'
   import { buildPlot, buildPhasePlot, buildPairOverlay, buildExplorer,
-           isDownsampledFor, MAX_PLOT_POINTS, HEATMAP_SCALES, LOG_Y_TABS } from './plotSpec.js'
+           isDownsampledFor, MAX_PLOT_POINTS, HEATMAP_SCALES, LOG_Y_TABS,
+           buildBlackmanTukey } from './plotSpec.js'
   import { nearestIndex, spectrumAt, envelopeAt, describeResolution } from './explorer.js'
   import { ZOOMABLE, HEATMAP } from './analyses.js'
   import { describeCriteria, describeEmpty, dominanceLabel } from './fdd.js'
@@ -463,6 +464,11 @@
         })
       : null
   )
+  // The autocorrelation tab can carry a second, linked panel: the spectrum
+  // estimated from that autocorrelation.
+  let btSpec = $derived(
+    single?.blackman_tukey ? buildBlackmanTukey(single.blackman_tukey, baseOpts) : null)
+
   let phaseSpec = $derived(
     showPhase && hasPhaseData ? buildPhasePlot(activeTab, single, baseOpts) : null
   )
@@ -1038,6 +1044,15 @@
         </div>
       {/snippet}
     </ResizablePane>
+
+    <!-- spectrum from the autocorrelation, sharing the frequency axis -->
+    {#if btSpec}
+      <ResizablePane id="bt-pane" initial={260} label="Resize spectrum panel">
+        {#snippet children()}
+          <PlotCanvas spec={btSpec} height="100%" />
+        {/snippet}
+      </ResizablePane>
+    {/if}
 
     <!-- phase panel -->
     {#if phaseSpec}

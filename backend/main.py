@@ -1540,6 +1540,9 @@ async def spectral_autocorrelation(
     fs: Optional[float] = Form(None),
     normalize: bool = Form(True),
     max_lag: Optional[float] = Form(None),
+    lag_windows: str = Form("[]"),        # JSON list of lag-window names
+    bt_max_lag: Optional[int] = Form(None),
+    bt_decay: float = Form(3.0),
     pp: PreprocParams = Depends(),
 ):
     try:
@@ -1554,9 +1557,44 @@ async def spectral_autocorrelation(
             x, _, _ = get_preprocessed(parsed, time_col, col, fs, pp)
             _, acf = dsp.autocorrelation(x, fs=fs_, normalize=normalize, max_lag=max_lag)
             signals.append({"name": parsed["column_names"][col], "acf": to_list(acf)})
+
+        # Blackman-Tukey: the spectrum as the transform of the autocorrelation,
+        # one curve per lag window, against Welch on the same channel as the
+        # reference. The comparison is the point -- a lag window trades
+        # resolution for variance, and you can see which you bought.
+        bt = None
+        wins = [str(w) for w in json.loads(lag_windows)]
+        if wins:
+            x, _, _ = get_preprocessed(parsed, time_col, cols[0], fs, pp)
+            f_ref, p_ref = dsp.psd(x, fs=fs_)
+            curves = []
+            for w in wins:
+                try:
+                    f, p, neg = dsp.blackman_tukey_psd(
+                        x, fs_, lag_window_name=w,
+                        max_lag=int(bt_max_lag) if bt_max_lag else None,
+                        decay=float(bt_decay))
+                except ValueError as e:
+                    curves.append({"window": w, "error": str(e)})
+                    continue
+                curves.append({
+                    "window": w,
+                    "freqs": to_list(f),
+                    "psd": to_list(p),
+                    "negative_fraction": neg,
+                    "safe": w in dsp.NONNEGATIVE_LAG_WINDOWS,
+                })
+            bt = {
+                "name": parsed["column_names"][cols[0]],
+                "reference": {"freqs": to_list(f_ref), "psd": to_list(p_ref)},
+                "curves": curves,
+                "max_lag": int(bt_max_lag) if bt_max_lag else None,
+            }
+
         # Echoed because it decides the y-axis units: a normalized ACF is a
         # dimensionless ratio, an unnormalized one is in the signal's unit squared.
-        return {"lags": to_list(lags), "signals": signals, "normalized": normalize}
+        return {"lags": to_list(lags), "signals": signals, "normalized": normalize,
+                "blackman_tukey": bt}
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:

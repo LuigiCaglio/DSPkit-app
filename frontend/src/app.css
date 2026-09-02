@@ -846,3 +846,4 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
   cursor: pointer;
 }
 .frf-chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+.frf-chip.unsafe { background: var(--warning); border-color: var(--warning); color: #1a1a1a; }

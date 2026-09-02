@@ -1016,6 +1016,49 @@ export function buildPairOverlay(tab, items, opts) {
 }
 
 /** The optional second pane under FFT and Coherence. */
+/**
+ * The spectrum estimated from the autocorrelation, one curve per lag window,
+ * with Welch faded behind as the reference.
+ */
+export function buildBlackmanTukey(bt, opts) {
+  const { T, colors = T.series, cell = false } = opts
+  const L = baseLayout(T, cell)
+  const traces = []
+
+  // Welch first and faded: here it is the thing being compared against, not a
+  // result in its own right.
+  traces.push({
+    x: bt.reference.freqs, y: bt.reference.psd,
+    type: 'scatter', mode: 'lines', name: 'Welch (reference)',
+    line: { color: T.text, width: 1 }, opacity: 0.45,
+  })
+  bt.curves.forEach((c, i) => {
+    if (!c.freqs) return
+    traces.push({
+      x: c.freqs, y: c.psd,
+      type: 'scatter', mode: 'lines',
+      name: c.window + (c.negative_fraction > 0
+        ? ` (${(c.negative_fraction * 100).toFixed(0)}% negative)` : ''),
+      line: { color: colors[i % colors.length], width: 2,
+              dash: c.safe ? 'solid' : 'dot' },
+    })
+  })
+
+  const bad = bt.curves.filter(c => c.negative_fraction > 0)
+  const note = bad.length
+    ? `  ·  ${bad.map(c => c.window).join(', ')} produced negative power`
+    : ''
+  return { traces, layout: merge(L, {
+    xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
+    // A log axis silently drops the negative bins, which is exactly the thing
+    // worth seeing, so it stays linear whenever a window misbehaved.
+    yaxis: { ...L.yaxis, title: 'PSD', type: bad.length ? 'linear' : 'log' },
+    title: { text: `Spectrum from the autocorrelation — ${bt.name}${note}`,
+             font: { color: T.title, size: cell ? 11 : 12 } },
+  })}
+}
+
+
 export function buildPhasePlot(tab, d, opts) {
   const { T, colors = T.series } = opts
   const L = merge(baseLayout(T), { margin: { l: 60, r: 20, t: 10, b: 50 } })
