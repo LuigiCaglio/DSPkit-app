@@ -657,9 +657,24 @@
         method: 'POST', body: buildFormData(extraFields),
       })
       const data = await res.json()
-      return res.ok ? { data } : { error: data.detail }
+      if (res.ok) return { data }
+
+      // A 404 here means the route does not exist, not that anything is wrong
+      // with the request. That happens when the page has been updated but the
+      // Python process behind it is still the one started before the update —
+      // it loads its code once, at startup. "Not Found" gives no hint of that.
+      if (res.status === 404 && /not found/i.test(String(data.detail ?? ''))) {
+        return { error:
+          'This analysis needs a newer version of the backend than the one running. ' +
+          'Close the DSPkit window and start it again — the browser picks up changes ' +
+          'on reload, but the Python process only at startup.' }
+      }
+      return { error: data.detail }
     } catch (e) {
-      return { error: e.message }
+      // fetch itself failed: the server is not answering at all.
+      return { error:
+        `Could not reach DSPkit (${e.message}). If the DSPkit window has been ` +
+        'closed, start it again.' }
     }
   }
 
