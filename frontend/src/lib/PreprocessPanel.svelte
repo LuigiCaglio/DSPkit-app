@@ -32,7 +32,7 @@
     <div>
       <div class="checkbox-row" style="margin-bottom:5px">
         <input type="checkbox" id="win-en" bind:checked={preproc.windowEnabled} onchange={touched} />
-        <label for="win-en" style="margin:0;font-size:12px;color:var(--text-secondary)">Window</label>
+        <label for="win-en" style="margin:0;font-size:12px;color:var(--text-secondary)">Trim to range</label>
         {#if preproc.windowEnabled}
           <select bind:value={preproc.winUnit} onchange={touched} style="margin-left:auto;min-width:80px;font-size:11px;padding:3px 5px">
             <option value="samples">samples</option>
@@ -171,6 +171,12 @@
                  min="0" step="1" placeholder="off" style="width:70px;font-size:12px" />
           <span style="color:var(--text-muted);font-size:11px">Hz</span>
         </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+          <span style="color:var(--text-muted);font-size:11px;width:26px">taper</span>
+          <input type="number" bind:value={preproc.calculusTaper} onchange={touched}
+                 min="0" max="0.2" step="0.005" style="width:70px;font-size:12px" />
+          <span style="color:var(--text-muted);font-size:11px">of each end</span>
+        </div>
         <div class="detect-note" style="margin-top:4px">
           {#if preproc.calculusOrder < 0}
             Dividing by ω grows without bound towards DC, so drift just above
@@ -180,8 +186,18 @@
             Multiplying by ω amplifies the high end, so flat measurement noise
             comes out tilted upward. Set lp below where noise takes over.
           {/if}
-          Done in the frequency domain; the first and last few samples are the
-          least reliable.
+          Done in the frequency domain, which assumes the record repeats. It does
+          not, so the join between last sample and first lands at the edges — they
+          are the least trustworthy part of the result whatever you do.
+          {#if Math.abs(preproc.calculusOrder) > 1 && preproc.calculusOrder < 0}
+            A taper makes double integration <em>worse</em>: its own ramp is a slow,
+            low-frequency shape and 1/ω² amplifies exactly that. Measured 1.4% → 4.2%
+            in the interior. Leave it at 0 and trim the ends instead.
+          {:else}
+            A taper (try 0.01) cleans the interior — measured 0.2% → 0.0% — by
+            flattening the tapered samples outright. Worth it if you will discard
+            the ends anyway.
+          {/if}
         </div>
       {/if}
     </div>

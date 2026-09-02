@@ -43,6 +43,7 @@ export function defaultPreproc() {
     calculusOrder:   -1,        // -1/-2 integrate, +1/+2 differentiate
     calculusHp:      0.5,
     calculusLp:      null,
+    calculusTaper:   0,        // fraction of the record tapered at each end
     resampleEnabled: false,
     targetFs:        512,
   }

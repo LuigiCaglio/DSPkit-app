@@ -838,6 +838,7 @@ class PreprocParams:
         calculus_order: int = Query(0),
         calculus_hp: Optional[float] = Query(None),
         calculus_lp: Optional[float] = Query(None),
+        calculus_taper: float = Query(0.0),   # fraction tapered at each end
         target_fs: Optional[float] = Query(None),
     ):
         self.win_start = win_start
@@ -854,6 +855,7 @@ class PreprocParams:
         self.calculus_order = calculus_order
         self.calculus_hp = calculus_hp
         self.calculus_lp = calculus_lp
+        self.calculus_taper = calculus_taper
         self.target_fs = target_fs
 
 
@@ -881,7 +883,8 @@ def apply_preprocessing(
     if times is None:
         times = np.arange(N) / fs
 
-    # 1. Windowing
+    # 1. Trim to a time range. Named 'window' in the API for compatibility, but
+    #    it is a crop -- it selects samples, it does not multiply by a taper.
     if pp.win_start is not None or pp.win_end is not None:
         if pp.win_unit == "time":
             i0 = int((pp.win_start or 0.0) * fs) if pp.win_start is not None else 0
@@ -920,10 +923,12 @@ def apply_preprocessing(
     if pp.calculus_order:
         if pp.calculus_order < 0:
             x = dsp.integrate_fft(x, fs, order=-pp.calculus_order,
-                                  hp_cutoff=pp.calculus_hp, lp_cutoff=pp.calculus_lp)
+                                  hp_cutoff=pp.calculus_hp, lp_cutoff=pp.calculus_lp,
+                                  taper_fraction=pp.calculus_taper)
         else:
             x = dsp.differentiate_fft(x, fs, order=pp.calculus_order,
-                                      hp_cutoff=pp.calculus_hp, lp_cutoff=pp.calculus_lp)
+                                      hp_cutoff=pp.calculus_hp, lp_cutoff=pp.calculus_lp,
+                                      taper_fraction=pp.calculus_taper)
 
     # 7. Resample — use linear interpolation to avoid group-delay time shift
     if pp.target_fs is not None and abs(pp.target_fs - fs) > 0.01:

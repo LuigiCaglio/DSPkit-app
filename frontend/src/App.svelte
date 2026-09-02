@@ -203,7 +203,9 @@
         preproc.calculusHp ? `hp ${preproc.calculusHp} Hz` : null,
         preproc.calculusLp ? `lp ${preproc.calculusLp} Hz` : null,
       ].filter(Boolean).join(', ')
-      bits.push(band ? `${verb} (${band})` : verb)
+      const extras = [band, preproc.calculusTaper
+        ? `${(preproc.calculusTaper * 100).toFixed(1)}% edge taper` : null].filter(Boolean).join(', ')
+      bits.push(extras ? `${verb} (${extras})` : verb)
     }
     if (preproc.resampleEnabled && preproc.targetFs) bits.push(`resampled to ${preproc.targetFs} Hz`)
     return bits
@@ -389,6 +391,7 @@
       p.set('calculus_order', preproc.calculusOrder)
       if (preproc.calculusHp) p.set('calculus_hp', preproc.calculusHp)
       if (preproc.calculusLp) p.set('calculus_lp', preproc.calculusLp)
+      if (preproc.calculusTaper) p.set('calculus_taper', preproc.calculusTaper)
     }
     if (preproc.resampleEnabled && preproc.targetFs) p.set('target_fs', preproc.targetFs)
     const qs = p.toString()
