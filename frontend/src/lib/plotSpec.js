@@ -117,8 +117,11 @@ function baseLayout(T, cell = false) {
     plot_bgcolor:  T.bg,
     font:          { color: T.text, size: cell ? 10 : 12 },
     margin:        cell ? { l: 46, r: 12, t: 26, b: 36 } : { l: 60, r: 20, t: 30, b: 50 },
-    xaxis:         { gridcolor: T.grid, zerolinecolor: T.grid },
-    yaxis:         { gridcolor: T.grid, zerolinecolor: T.grid },
+    // automargin lets Plotly grow the margin to fit tick labels and the axis
+    // title. Without it the fixed bottom margin clips the title on a short
+    // plot -- "Lag [s]" simply vanished, leaving bare numbers.
+    xaxis:         { gridcolor: T.grid, zerolinecolor: T.grid, automargin: true },
+    yaxis:         { gridcolor: T.grid, zerolinecolor: T.grid, automargin: true },
     // A legend is always shown for >= 2 series so identity is never colour-alone.
     legend:        { bgcolor: T.legend, bordercolor: T.border, borderwidth: 1 },
   }

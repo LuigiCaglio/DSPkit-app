@@ -17,6 +17,9 @@ frontend/.svelte-kit/
 
 # Data files (generated test data)
 *.csv
+# ...but the shipped example must be in the repo, or a fresh clone has
+# nothing to open and the "load an example" button never appears.
+!example_data/2dof_vibration.csv
 # Exclude .txt data files but keep specific project text files
 notes_*.txt
 notes_*.md

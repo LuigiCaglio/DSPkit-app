@@ -3,4 +3,9 @@ uvicorn[standard]
 python-multipart
 numpy
 scipy
-dspkit @ git+https://github.com/LuigiCaglio/DSPkit.git
+
+# dspkit is vendored as a wheel so this installs with no git on the machine —
+# someone who downloads the ZIP can launch without installing anything but
+# Python. Refresh it with: python -m build --wheel  (in the DSPkit repo), then
+# copy the wheel into vendor/ and bump the filename here.
+./vendor/dspkit-0.1.0-py3-none-any.whl

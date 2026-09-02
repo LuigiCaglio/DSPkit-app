@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "DSPkit-app"
+abstract: "A desktop application for exploratory signal analysis of vibration and structural health monitoring data."
+authors:
+  - family-names: Caglio
+    given-names: Luigi
+repository-code: "https://github.com/LuigiCaglio/DSPkit-app"
+license: MIT

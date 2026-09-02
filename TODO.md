@@ -266,6 +266,31 @@ annotation rather than a second data series.
 
 ---
 
+## 3.5 Zoom is lost on a small-multiples grid
+
+Reported 2026-09-02 on Decomposition > Instantaneous: zooming snaps back to the
+default view.
+
+`PlotCanvas` re-`react()`s whenever its `spec` prop changes identity, and the
+spec is `$derived`, so any recompute reapplies the layout — which autoranges the
+x-axis unless a range is pinned. In the single-chart path that is handled:
+`zoomable` wires `onRelayout`, which stores `xRange`, and `plotSpec` pins it.
+
+The grid path renders `<PlotCanvas spec={cell.spec} height="100%" />` with **no
+`onRelayout`**, and `zoomable` is false there anyway (`ZOOMABLE.has(tab) &&
+!!single`, and `single` is null for a grid). So a zoom in any cell is never
+captured and dies on the next recompute. `instantaneous` reaches this whenever
+the channel scope is All rather than one channel.
+
+Fix needs a decision first: per-cell zoom state, or one shared x-range across
+the grid. Shared is probably right — the cells are the same signal on a common
+time axis, and independent zooms would break the comparison the grid exists for.
+
+Not attempted yet: verifying this needs a rendered DOM, and a reactivity change
+in the plotting core is not something to ship unverified.
+
+---
+
 ## 4. Nice, not blocking
 
 - **Figure export** at publication size / SVG. Plotly's modebar already gives a
