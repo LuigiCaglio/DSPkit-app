@@ -65,6 +65,20 @@ async def launch_target():
     return {"path": None}
 
 
+# ─── health ───────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/health")
+async def health():
+    """
+    Identity marker, so the launcher can tell a running DSPkit from some other
+    process holding the same port. Checking a normal endpoint is not enough:
+    any HTTP server answers *something*, and a 404 was being read as "DSPkit is
+    already running".
+    """
+    return {"app": "dspkit-app", "ok": True}
+
+
 # ─── example data ─────────────────────────────────────────────────────────────
 _EXAMPLE_FILE = Path(__file__).parent.parent / "example_data" / "2dof_vibration.csv"
 

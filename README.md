@@ -7,7 +7,9 @@ to write, no parameters to guess before you see anything.
 Built on [DSPkit](https://github.com/LuigiCaglio/DSPkit), the signal-processing
 library that does the maths.
 
-![The Time-Frequency Explorer](docs/images/explorer.png)
+![Overview: time series, PSD and FDD singular values, computed automatically on load](docs/images/overview.png)
+
+*Load a file and this is what you get, without pressing anything.*
 
 ---
 
@@ -39,6 +41,12 @@ override any of it. Then it plots straight away.
 | **Decomposition** | Hilbert instantaneous frequency, EMD, Hilbert-Huang |
 | **Multi-channel** | Correlation and coherence matrices, Frequency Domain Decomposition (FDD/EFDD) for natural frequencies, mode shapes and damping |
 | **Statistics** | Distributions, joint densities, covariance, Mahalanobis outliers, SHM indicators |
+
+
+![The linked Time-Frequency Explorer](docs/images/explorer.png)
+
+*The Explorer: click the surface to slice a spectrum at that instant, or an
+envelope at that frequency.*
 
 Per-channel physical units carry onto every axis. Sessions resume where you left
 them. Any result exports to CSV.
@@ -73,6 +81,22 @@ python3 -m venv venv_dspkit
 venv_dspkit/bin/pip install -r backend/requirements.txt
 venv_dspkit/bin/python run.py
 ```
+
+### If the port is busy
+
+DSPkit serves on `http://127.0.0.1:8000`. That port is popular — Django,
+`python -m http.server` and Jupyter all want it — so if something else has it,
+the app quietly moves to the next free port and tells you which. Nothing to
+configure.
+
+To pin a port yourself:
+
+```bash
+python run.py --port 8123        # or set DSPKIT_PORT=8123
+```
+
+An explicitly requested port is never silently swapped: if it is taken, you get
+an error rather than a surprise.
 
 ### Your own data
 

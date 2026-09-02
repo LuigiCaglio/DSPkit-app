@@ -4,7 +4,7 @@
   import ResizablePane from './ResizablePane.svelte'
   import { plotTheme, themeState } from './theme.svelte.js'
   import { buildPlot, buildPhasePlot, buildPairOverlay, buildExplorer,
-           isDownsampledFor, MAX_PLOT_POINTS, HEATMAP_SCALES } from './plotSpec.js'
+           isDownsampledFor, MAX_PLOT_POINTS, HEATMAP_SCALES, LOG_Y_TABS } from './plotSpec.js'
   import { nearestIndex, spectrumAt, envelopeAt, describeResolution } from './explorer.js'
   import { ZOOMABLE, HEATMAP } from './analyses.js'
   import { describeCriteria, describeEmpty, dominanceLabel } from './fdd.js'
@@ -119,6 +119,10 @@
 
   // Reset phase panel when switching tabs
   $effect(() => { const _ = activeTab; showPhase = false })
+
+  // ...and the log-Y flag with it. It used to persist across tabs, so ticking it
+  // on FFT left it set on Time series, where it silently truncated the waveform.
+  $effect(() => { const _ = activeTab; yLogScale = false })
 
   // Reset PSD axis controls when switching away from psd tab
   $effect(() => {
@@ -450,7 +454,7 @@
         <label><input type="checkbox" bind:checked={showPhase} /> Phase</label>
       {/if}
       <label><input type="checkbox" bind:checked={normalizeSignals} /> Normalize</label>
-      {#if activeTab !== 'psd' && !overview}
+      {#if LOG_Y_TABS.has(activeTab) && activeTab !== 'psd' && !overview}
         <label><input type="checkbox" bind:checked={yLogScale} /> Log Y</label>
       {/if}
       {#if isDownsampled || showAllPoints}

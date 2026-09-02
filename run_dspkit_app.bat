@@ -3,10 +3,12 @@ setlocal
 cd /d "%~dp0"
 
 echo.
-echo   ===========================================
-echo             D S P k i t
-echo      Digital Signal Processing Toolkit
-echo   ===========================================
+echo    .-.   .-.   .-.                    _
+echo __/   \_/   \_/   \__    ---:      _ [ ] _
+echo                                  [ ] [ ] [ ]
+echo.
+echo    D S P k i t
+echo    Exploratory signal analysis for vibration data
 echo.
 
 REM ---- locate Python ---------------------------------------------------------

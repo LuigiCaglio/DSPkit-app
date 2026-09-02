@@ -66,6 +66,14 @@ export function isDownsampledFor(tab, d) {
  * unreadable with colour-vision deficiency. All four below are monotonic and
  * CVD-safe; Cividis is additionally optimised for it.
  */
+/**
+ * Tabs whose y quantity is strictly positive, and may therefore be log-scaled.
+ * PSD is here too, though it carries its own `psdYLog` flag with its own default.
+ * Everything absent is signed (waveforms, ACF/CCF, IMFs, covariance, dB values)
+ * or bounded (coherence), and must never get a log axis.
+ */
+export const LOG_Y_TABS = new Set(['fft', 'psd', 'peaks'])
+
 export const HEATMAP_SCALES = ['Viridis', 'Cividis', 'Magma', 'Inferno']
 
 /** Largest |value| in a 2-D array, ignoring non-finite entries. */
@@ -157,7 +165,12 @@ export function buildPlot(tab, d, opts) {
   } = opts
 
   const L = baseLayout(T, cell)
-  const yType = yLog ? 'log' : 'linear'
+  // A log axis is only meaningful for a strictly positive quantity. Plotly
+  // silently DROPS every non-positive sample on a log axis, so applying it to a
+  // waveform -- which oscillates about zero -- deletes half the data and says
+  // nothing. Gating here rather than at the toggle closes the single-chart,
+  // grid and Overview paths at once, since all three come through this function.
+  const yType = (yLog && LOG_Y_TABS.has(tab)) ? 'log' : 'linear'
 
   // The channel unit this chart may label its amplitude axis with.
   //
@@ -887,7 +900,10 @@ export function buildExplorer(d, opts) {
     xaxis2: {
       ...L.xaxis, domain: [0.83, 1.0], anchor: 'y',
       title: { text: withUnit('PSD', psdUnit(sigUnit)), font: { size: 10 } },
-      type: 'log', showticklabels: false,
+      // WVD and SPWVD surfaces go negative, so a cursor slice off them is
+      // signed and would be truncated by a log axis.
+      type: (d.transform === 'wvd' || d.transform === 'spwvd') ? 'linear' : 'log',
+      showticklabels: false,
     },
   })
 
