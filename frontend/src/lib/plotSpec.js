@@ -616,13 +616,37 @@ export function buildPlot(tab, d, opts) {
       })}
     }
     if (d.H) {
-      return { traces: [{
-        x: d.x_centres, y: d.y_centres, z: d.H, type: 'heatmap', colorscale: 'Viridis',
-        colorbar: { thickness: 14, outlinewidth: 0 },
-      }], layout: merge(L, {
+      const traces = []
+      if (showHist) {
+        traces.push({
+          x: d.x_centres, y: d.y_centres, z: d.H, type: 'heatmap', colorscale: 'Viridis',
+          colorbar: { thickness: 14, outlinewidth: 0 },
+        })
+      }
+      // Iso-probability contours from the 2-D KDE. Plotly's `contours` only
+      // takes an evenly spaced start/end/size, so each level is its own trace —
+      // the levels are chosen by enclosed mass and are not evenly spaced.
+      if (showKde && d.kde?.levels?.length) {
+        d.kde.levels.forEach((lv, i) => {
+          traces.push({
+            x: d.kde.x, y: d.kde.y, z: d.kde.z,
+            type: 'contour',
+            contours: { start: lv.level, end: lv.level, size: 0, coloring: 'none' },
+            line: { color: colors[i % colors.length], width: 2 },
+            name: `${Math.round(lv.mass * 100)}%`,
+            showlegend: true, showscale: false, hoverinfo: 'name',
+          })
+        })
+      }
+      const note = d.kde_note ? `  ·  ${d.kde_note}`
+        : d.kde?.n_fitted && d.kde.n_fitted < d.kde.n_total
+        ? `  ·  KDE on ${d.kde.n_fitted.toLocaleString()} of ${d.kde.n_total.toLocaleString()} samples`
+        : ''
+      return { traces, layout: merge(L, {
         xaxis: { ...L.xaxis, title: withUnit(d.xlabel, units.x) },
         yaxis: { ...L.yaxis, title: withUnit(d.ylabel, units.y) },
-        title: { text: title ?? 'Joint Distribution', font: { color: T.title } },
+        title: { text: (title ?? 'Joint distribution — contours enclose 50 / 90 / 99% of samples') + note,
+                 font: { color: T.title, size: cell ? 11 : 12 } },
       })}
     }
     if (d.C) {

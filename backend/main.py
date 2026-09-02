@@ -65,6 +65,83 @@ async def launch_target():
     return {"path": None}
 
 
+# ─── joint KDE ────────────────────────────────────────────────────────────────
+
+_KDE_MAX_POINTS = 5000
+_KDE_GRID = 80
+
+
+def _joint_kde(x: np.ndarray, y: np.ndarray, masses: list[float]) -> dict:
+    """
+    Smooth 2-D density plus iso-probability contour levels.
+
+    The levels enclose a stated share of the data rather than sitting at round
+    density values, because "90% of the samples fall inside this ring" is the
+    thing you actually want to read off a joint distribution. A density of
+    0.0037 is not.
+
+    Note for anyone reading these as sigma contours: in 2-D the ellipse at one
+    standard deviation encloses about 39% of the mass, not 68%. That is why the
+    defaults are stated as masses.
+
+    The KDE is fitted on at most _KDE_MAX_POINTS samples. gaussian_kde costs
+    O(n_fit * n_grid) per evaluation, and a full vibration record against an
+    80x80 grid is hundreds of millions of operations for a picture that a
+    thinned sample renders identically.
+    """
+    from scipy.stats import gaussian_kde
+
+    xy = np.vstack([np.asarray(x, float), np.asarray(y, float)])
+    xy = xy[:, np.all(np.isfinite(xy), axis=0)]
+    n = xy.shape[1]
+    if n < 10:
+        raise ValueError("Need at least 10 finite samples for a 2-D KDE.")
+
+    fitted = xy
+    if n > _KDE_MAX_POINTS:
+        idx = np.linspace(0, n - 1, _KDE_MAX_POINTS).astype(int)
+        fitted = xy[:, idx]
+
+    # X against itself, or two channels in exact proportion, puts every point on
+    # a line: the covariance is singular and there is no 2-D density to estimate.
+    # That is a legitimate thing to ask for here (the UI allows X = Y), so the
+    # histogram is still worth returning -- the caller treats a None as "no
+    # contours" rather than as a failed request.
+    try:
+        kde = gaussian_kde(fitted)
+    except np.linalg.LinAlgError:
+        return None
+    gx = np.linspace(xy[0].min(), xy[0].max(), _KDE_GRID)
+    gy = np.linspace(xy[1].min(), xy[1].max(), _KDE_GRID)
+    GX, GY = np.meshgrid(gx, gy)
+    Z = kde(np.vstack([GX.ravel(), GY.ravel()])).reshape(GX.shape)
+
+    # A density level enclosing mass m: sort the grid densities high to low and
+    # walk down until the cumulative (density * cell area) reaches m.
+    cell = (gx[1] - gx[0]) * (gy[1] - gy[0])
+    flat = np.sort(Z.ravel())[::-1]
+    cumulative = np.cumsum(flat) * cell
+    total = cumulative[-1] if cumulative[-1] > 0 else 1.0
+
+    levels = []
+    for m in masses:
+        m = float(m)
+        if not 0 < m < 1:
+            continue
+        i = int(np.searchsorted(cumulative, m * total))
+        i = min(i, len(flat) - 1)
+        levels.append({"mass": m, "level": float(flat[i])})
+
+    return {
+        "x": to_list(gx),
+        "y": to_list(gy),
+        "z": to_list(Z),
+        "levels": levels,
+        "n_fitted": int(fitted.shape[1]),
+        "n_total": int(n),
+    }
+
+
 # ─── health ───────────────────────────────────────────────────────────────────
 
 
@@ -127,8 +204,12 @@ def parse_file(content: bytes, orientation: str = "columns", header_row: int = -
     """
     Parse CSV / TSV / TXT content.
 
-    orientation : "columns" each column is a signal (default)
-                  "rows"    each row is a signal
+    orientation : "columns"      each column is a signal (default)
+                  "rows"         each row is a signal
+                  "rows_labeled" each row is a signal, and its first field is
+                                 that signal's name -- the row-orientation
+                                 equivalent of a header row, and common in
+                                 exported data
     header_row  : -1 = no header; >=0 = row index of column names
                   (all rows before it are skipped as metadata/comments)
     Returns dict with column_names, data (n_signals, n_samples), n_samples, n_columns.
@@ -152,19 +233,38 @@ def parse_file(content: bytes, orientation: str = "columns", header_row: int = -
     else:
         data_rows = all_rows
 
+    labelled = orientation == "rows_labeled"
     numeric_rows: list[list[float]] = []
+    row_names: list[str] = []
     for row in data_rows:
         if not row or row[0].strip().startswith("#"):
             continue
+        # In a labelled file the first field names the row rather than holding
+        # data, so it is set aside before the rest is parsed as numbers.
+        name, values = (row[0].strip(), row[1:]) if labelled else (None, row)
         try:
-            numeric_rows.append([float(v.strip()) for v in row if v.strip()])
+            numeric_rows.append([float(v.strip()) for v in values if v.strip()])
         except ValueError:
             continue
+        if labelled:
+            row_names.append(name)
 
     if not numeric_rows:
         raise ValueError("No numeric data found in file")
 
+    # Ragged rows would make an object array rather than a 2-D one, and every
+    # downstream index would then fail somewhere far from the cause.
+    widths = {len(r) for r in numeric_rows}
+    if len(widths) > 1:
+        raise ValueError(
+            f"Rows have differing lengths ({min(widths)}-{max(widths)} values). "
+            "Check the delimiter and whether some rows carry a label."
+        )
+
     data = np.array(numeric_rows)  # (n_file_rows, n_file_cols)
+
+    if labelled and row_names and not column_names:
+        column_names = row_names
 
     if orientation == "columns":
         data = data.T  # → (n_signals, n_samples)
@@ -333,24 +433,40 @@ def autodetect(content: bytes) -> dict:
         if row and not row[0].strip().startswith("#") and _as_floats(row) is not None:
             first_numeric = i
             break
+
+    # No fully numeric row. Before giving up, try again ignoring each row's
+    # first field: a row-oriented export usually names each row, so every row
+    # starts with a label and none of them parses as pure numbers.
+    row_labelled = False
+    if first_numeric == -1:
+        for i, row in enumerate(rows):
+            if len(row) > 2 and not row[0].strip().startswith("#")                     and _as_floats(row[1:]) is not None:
+                first_numeric = i
+                row_labelled = True
+                break
     if first_numeric == -1:
         raise ValueError("No numeric data found in file")
 
     # The line directly above the data is a header only if it is non-numeric
     # and has one field per data column.
     header_row = -1
-    if first_numeric > 0:
+    if first_numeric > 0 and not row_labelled:
         cand = rows[first_numeric - 1]
         n_data_fields = len([t for t in rows[first_numeric] if t.strip()])
         if _as_floats(cand) is None and len([t for t in cand if t.strip()]) == n_data_fields:
             header_row = first_numeric - 1
 
-    # Signals are the short axis: real records have far more samples than channels.
-    n_data_rows = sum(1 for r in rows[first_numeric:] if _as_floats(r) is not None)
-    n_data_cols = len([t for t in rows[first_numeric] if t.strip()])
-    # Only trust this when we've seen enough rows to tell the axes apart;
-    # `rows` is capped at 200 lines, so a long file always reads as "columns".
-    orientation = "rows" if n_data_cols > max(n_data_rows, 8) else "columns"
+    # A labelled file is row-oriented by construction -- the label names the row,
+    # so the row is the signal. No shape heuristic is needed or wanted.
+    if row_labelled:
+        orientation = "rows_labeled"
+    else:
+        # Signals are the short axis: real records have far more samples than channels.
+        n_data_rows = sum(1 for r in rows[first_numeric:] if _as_floats(r) is not None)
+        n_data_cols = len([t for t in rows[first_numeric] if t.strip()])
+        # Only trust this when we've seen enough rows to tell the axes apart;
+        # `rows` is capped at 200 lines, so a long file always reads as "columns".
+        orientation = "rows" if n_data_cols > max(n_data_rows, 8) else "columns"
 
     detected = {
         "orientation": orientation,
@@ -2375,6 +2491,8 @@ async def statistics_joint(
     signal_col_y: int = Form(...),
     fs: Optional[float] = Form(None),
     bins: int = Form(50),
+    kde: bool = Form(True),
+    kde_masses: str = Form("[0.5, 0.9, 0.99]"),
     pp: PreprocParams = Depends(),
 ):
     try:
@@ -2383,13 +2501,24 @@ async def statistics_joint(
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
         from dspkit.statistics import joint_histogram as _joint
         x_centres, y_centres, H = _joint(x, y, bins=bins, density=True)
-        return {
+        out = {
             "x_centres": to_list(x_centres),
             "y_centres": to_list(y_centres),
             "H": to_list(H),
             "xlabel": parsed["column_names"][signal_col_x],
             "ylabel": parsed["column_names"][signal_col_y],
         }
+        if kde:
+            k = _joint_kde(x, y, json.loads(kde_masses))
+            if k is None:
+                out["kde_note"] = (
+                    "No density contours: these two channels are perfectly "
+                    "related, so the samples lie on a line rather than "
+                    "spreading over a plane."
+                )
+            else:
+                out["kde"] = k
+        return out
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:

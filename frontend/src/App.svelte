@@ -949,6 +949,7 @@ settings were restored from the last time this file was open.">
             <select id="orient" bind:value={orientation} onchange={reparse}>
               <option value="columns">Columns = signals</option>
               <option value="rows">Rows = signals</option>
+              <option value="rows_labeled">Rows = signals, first cell is the name</option>
             </select>
           </div>
           <div class="field">

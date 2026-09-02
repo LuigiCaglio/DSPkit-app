@@ -119,6 +119,10 @@
   // joint, covariance and Mahalanobis return other shapes entirely.
   let isDistribution = $derived(activeTab === 'statistics' && !!single?.signals?.[0]?.xi)
 
+  // The joint view uses the same two toggles: the histogram is the heatmap,
+  // the KDE is the iso-probability contour set.
+  let isJoint = $derived(activeTab === 'statistics' && !!single?.H)
+
   // ── PSD-specific axis controls ───────────────────────────────────────────────
   let psdYLog = $state(true)   // default: log scale
   let psdXMin = $state('')
@@ -468,7 +472,7 @@
       {#if LOG_Y_TABS.has(activeTab) && activeTab !== 'psd' && !overview}
         <label><input type="checkbox" bind:checked={yLogScale} /> Log Y</label>
       {/if}
-      {#if isDistribution}
+      {#if isDistribution || isJoint}
         <label><input type="checkbox" bind:checked={showHist} /> Histogram</label>
         <label><input type="checkbox" bind:checked={showKde} /> KDE</label>
       {/if}
