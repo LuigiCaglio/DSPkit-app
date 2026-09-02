@@ -95,7 +95,7 @@
     ]},
     { id: 'multiChannel',  label: 'Multi-Ch',      tabs: [
       { id: 'multisensor', label: 'Multi-Sensor' },
-      { id: 'predictability', label: 'Predictability' },
+      { id: 'predictability', label: 'Coherence (conditioned)' },
       { id: 'fdd', label: 'FDD' },
     ]},
     { id: 'statistics',    label: 'Statistics',     tabs: [

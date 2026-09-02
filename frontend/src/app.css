@@ -708,3 +708,22 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 .norm-key { color: var(--text-muted); text-transform: capitalize; }
 .norm-val { color: var(--text-primary); font-variant-numeric: tabular-nums; }
 .norm-note { color: var(--text-secondary); line-height: 1.45; }
+
+/* ── inline help marker ── */
+.help-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin-left: 4px;
+  border-radius: 50%;
+  border: 1px solid var(--border-light);
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  cursor: help;
+  vertical-align: middle;
+  transition: color var(--transition), border-color var(--transition);
+}
+.help-dot:hover { color: var(--accent-text); border-color: var(--accent); }
