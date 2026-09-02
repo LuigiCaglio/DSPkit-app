@@ -834,3 +834,15 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 }
 .mi-facts b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
 .mi-toomany { color: var(--warning); margin-top: 3px; line-height: 1.45; }
+.mi-warn { color: var(--warning); }
+.frf-inputs { display: flex; flex-wrap: wrap; gap: 4px; max-width: 260px; }
+.frf-chip {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.frf-chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }

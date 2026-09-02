@@ -10,6 +10,7 @@ import json
 import os
 import time
 import uuid
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -2991,3 +2992,277 @@ async def crosssignal_mutual_information(
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
+
+
+# ─── frequency response function ──────────────────────────────────────────────
+
+
+@app.post("/api/frf/estimate")
+async def frf_estimate(
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_cols: str = Form(...),
+    fs: Optional[float] = Form(None),
+    input_cols: str = Form(...),          # JSON list: one for SISO, several for MIMO
+    output_col: int = Form(...),
+    estimator: str = Form("H1"),
+    window: str = Form("hann"),
+    nperseg: Optional[int] = Form(None),
+    pp: PreprocParams = Depends(),
+):
+    """
+    Frequency response from measured excitation to measured response.
+
+    One input gives the classic H1/H2/H3 estimators with coherence. Several
+    gives the multi-input solution, where the individual curves are only
+    meaningful if the inputs can be told apart -- which is what the returned
+    condition number is for, since coherence stays high either way.
+    """
+    try:
+        ins = [int(c) for c in json.loads(input_cols)]
+        if not ins:
+            raise ValueError("Pick at least one input channel.")
+        if int(output_col) in ins:
+            raise ValueError(
+                "The output channel is also selected as an input. A channel "
+                "cannot excite itself; pick a different output."
+            )
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        y, fs_, _ = get_preprocessed(parsed, time_col, int(output_col), fs, pp)
+        xs = [get_preprocessed(parsed, time_col, c, fs, pp)[0] for c in ins]
+        names = [parsed["column_names"][c] for c in ins]
+
+        if len(ins) == 1:
+            r = dsp.frf(xs[0], y, fs_, estimator=estimator,
+                        window=window, nperseg=nperseg)
+            return {
+                "mode": "siso",
+                "freqs": to_list(r["freqs"]),
+                "estimator": r["estimator"],
+                "output": parsed["column_names"][int(output_col)],
+                "inputs": [{
+                    "name": names[0],
+                    "magnitude": to_list(r["magnitude"]),
+                    "phase_deg": to_list(r["phase_deg"]),
+                }],
+                "coherence": to_list(r["coherence"]),
+            }
+
+        r = dsp.frf_mimo(np.vstack(xs), y, fs_, window=window, nperseg=nperseg)
+        return {
+            "mode": "mimo",
+            "freqs": to_list(r["freqs"]),
+            "estimator": "H1 (multi-input)",
+            "output": parsed["column_names"][int(output_col)],
+            "inputs": [{
+                "name": names[i],
+                "magnitude": to_list(r["magnitude"][i]),
+                "phase_deg": to_list(r["phase_deg"][i]),
+                "ordinary_coherence": to_list(r["ordinary_coherence"][i]),
+            } for i in range(len(ins))],
+            "multiple_coherence": to_list(r["multiple_coherence"]),
+            "input_condition": to_list(r["input_condition"]),
+            "n_segments": r["n_segments"],
+        }
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=friendly_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
+
+
+# ─── response spectrum ────────────────────────────────────────────────────────
+
+
+@app.post("/api/response/spectrum")
+async def response_spectrum_endpoint(
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_cols: str = Form(...),
+    signal_col: int = Form(...),
+    fs: Optional[float] = Form(None),
+    t_min: float = Form(0.05),
+    t_max: float = Form(5.0),
+    n_periods: int = Form(80),
+    damping: str = Form("[0.02, 0.05, 0.10]"),   # JSON list of ratios
+    pp: PreprocParams = Depends(),
+):
+    """Peak SDOF response against period, at one or more damping ratios."""
+    try:
+        zetas = [float(z) for z in json.loads(damping)]
+        if not zetas:
+            raise ValueError("Pick at least one damping ratio.")
+        if any(not 0 <= z < 1 for z in zetas):
+            raise ValueError("Damping ratios must be at least 0 and below 1.")
+        if not 0 < t_min < t_max:
+            raise ValueError("Periods must satisfy 0 < shortest < longest.")
+
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        x, fs_, _ = get_preprocessed(parsed, time_col, int(signal_col), fs, pp)
+
+        n_p = max(5, min(int(n_periods), 400))
+        periods = np.logspace(np.log10(t_min), np.log10(t_max), n_p)
+
+        # The solver is exact for the interpolated input; the interpolation is
+        # not, and it fails below about 10*dt. Say so rather than drawing a
+        # confident curve over periods the sample rate cannot support.
+        dt = 1.0 / fs_
+        limit = 10 * dt
+        n_below = int(np.sum(periods < limit))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            out = dsp.response_spectrum(x, fs_, periods=periods, zeta=np.array(zetas))
+
+        curves = []
+        for z in zetas:
+            r = out[float(z)]
+            curves.append({
+                "zeta": z,
+                "Sd": to_list(r["Sd"]), "Sv": to_list(r["Sv"]), "Sa": to_list(r["Sa"]),
+                "PSv": to_list(r["PSv"]), "PSa": to_list(r["PSa"]),
+            })
+        return {
+            "periods": to_list(periods),
+            "curves": curves,
+            "name": parsed["column_names"][int(signal_col)],
+            "resolution_limit_s": float(limit),
+            "n_below_limit": n_below,
+        }
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=friendly_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
+
+
+# ─── log decrement ────────────────────────────────────────────────────────────
+
+
+@app.post("/api/response/log_decrement")
+async def log_decrement_endpoint(
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_cols: str = Form(...),
+    signal_col: int = Form(...),
+    fs: Optional[float] = Form(None),
+    n_peaks: Optional[int] = Form(None),
+    floor_fraction: float = Form(0.05),
+    pp: PreprocParams = Depends(),
+):
+    """Damping from a free-decay record, with the fitted peaks for plotting."""
+    try:
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        x, fs_, t = get_preprocessed(parsed, time_col, int(signal_col), fs, pp)
+        r = dsp.log_decrement(x, fs_, n_peaks=n_peaks,
+                              floor_fraction=float(floor_fraction))
+
+        keep = min(len(x), 20000)
+        step = max(1, len(x) // keep)
+        return {
+            "name": parsed["column_names"][int(signal_col)],
+            "times": to_list(t[::step]),
+            "signal": to_list(x[::step]),
+            "peak_times": to_list(r["peak_times"]),
+            "peak_amplitudes": to_list(r["peak_amplitudes"]),
+            "delta": r["delta"],
+            "zeta": r["zeta"],
+            "zeta_pct": r["zeta_pct"],
+            "fd": r["fd"],
+            "fn": r["fn"],
+            "n_peaks_used": r["n_peaks_used"],
+            "r_squared": r["r_squared"],
+        }
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=friendly_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
+
+
+# ─── envelope spectrum ────────────────────────────────────────────────────────
+
+
+@app.post("/api/envelope/spectrum")
+async def envelope_spectrum_endpoint(
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_cols: str = Form(...),
+    signal_col: int = Form(...),
+    fs: Optional[float] = Form(None),
+    band_low: Optional[float] = Form(None),
+    band_high: Optional[float] = Form(None),
+    nperseg: Optional[int] = Form(None),
+    max_freq: Optional[float] = Form(None),
+    pp: PreprocParams = Depends(),
+):
+    """
+    Spectrum of the signal's envelope, for finding a repeating impact.
+
+    Also returns the band-kurtosis sweep, because choosing the band is the
+    whole method and impulsiveness is what marks the right one.
+    """
+    try:
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        x, fs_, t = get_preprocessed(parsed, time_col, int(signal_col), fs, pp)
+
+        band = None
+        if band_low is not None and band_high is not None:
+            band = (float(band_low), float(band_high))
+
+        freqs, spec, env = dsp.envelope_spectrum(x, fs_, band=band, nperseg=nperseg)
+
+        # Only the low end is interesting: modulation rates, not the carrier.
+        cutoff = float(max_freq) if max_freq else min(fs_ / 20.0, 200.0)
+        keep = freqs <= cutoff
+
+        # Where is the signal most impulsive? That band is usually the one to
+        # demodulate, so it is offered rather than left to trial and error.
+        n_bands = 12
+        edges = np.linspace(0, fs_ / 2, n_bands + 1)
+        sweep = []
+        for i in range(n_bands):
+            lo, hi = edges[i], edges[i + 1]
+            if lo <= 0 or hi >= fs_ / 2:
+                lo = max(lo, fs_ / 2 * 1e-3)
+                hi = min(hi, fs_ / 2 * 0.999)
+            if hi <= lo:
+                continue
+            try:
+                bx = dsp.bandpass(x, fs_, lo, hi, order=4, zero_phase=True)
+                sweep.append({"low": float(lo), "high": float(hi),
+                              "kurtosis": float(dsp.kurtosis(bx))})
+            except Exception:
+                continue
+
+        step = max(1, len(env) // 20000)
+        return {
+            "name": parsed["column_names"][int(signal_col)],
+            "freqs": to_list(freqs[keep]),
+            "spectrum": to_list(spec[keep]),
+            "env_times": to_list(t[::step]),
+            "envelope": to_list(env[::step]),
+            "band": list(band) if band else None,
+            "band_sweep": sweep,
+        }
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=friendly_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))

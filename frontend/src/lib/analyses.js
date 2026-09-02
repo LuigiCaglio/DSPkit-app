@@ -20,6 +20,11 @@ export const SCOPE = {
   csd:               'dynamic',
   coherence:         'dynamic',
   mutual_info:       'pair',
+  // FRF picks its own input/output channels, so it renders its own scope.
+  frf:               'none',
+  response_spectrum: 'single',
+  log_decrement:     'single',
+  envelope:          'single',
   filter:            'single',
   explorer:          'single',
   stft:              'single',
@@ -53,6 +58,7 @@ export const AUTORUN = new Set([
   'timeseries', 'fft', 'psd', 'autocorrelation', 'peaks',
   'cross_correlation', 'csd', 'coherence', 'filter', 'stft',
   'instantaneous', 'indicators', 'multisensor', 'predictability', 'fdd', 'statistics',
+  'envelope',
   // The Explorer opens on STFT, which is cheap. Its own control refuses to
   // auto-run when the selected transform is one of the O(N^2) pair.
   'explorer',

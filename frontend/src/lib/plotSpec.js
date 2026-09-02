@@ -72,7 +72,7 @@ export function isDownsampledFor(tab, d) {
  * Everything absent is signed (waveforms, ACF/CCF, IMFs, covariance, dB values)
  * or bounded (coherence), and must never get a log axis.
  */
-export const LOG_Y_TABS = new Set(['fft', 'psd', 'peaks'])
+export const LOG_Y_TABS = new Set(['fft', 'psd', 'peaks', 'envelope'])
 
 export const HEATMAP_SCALES = ['Viridis', 'Cividis', 'Magma', 'Inferno']
 
@@ -182,6 +182,7 @@ export function buildPlot(tab, d, opts) {
     response = null,         // {freqs, magnitude} — the filter's own response
     tf = {},                 // heatmap scaling: {db, rangeDb, clipPct, colorscale}
     units = {},              // resolved by units.js: {signal, x, y, byName}
+    rsQuantity = 'PSa',      // response spectrum: which quantity to draw
     showHist = true,         // distributions: draw the histogram bars
     showKde = true,          // distributions: draw the smooth density
   } = opts
@@ -655,6 +656,70 @@ export function buildPlot(tab, d, opts) {
       xaxis: { ...L.xaxis, title: scanned ? 'Lag [s]' : '' },
       yaxis: { ...L.yaxis, title: 'Mutual information [nats]', rangemode: 'tozero' },
       title: { text: title ?? `${d.x_label} vs ${d.y_label} — ${verdict}`,
+               font: { color: T.title, size: cell ? 11 : 12 } },
+    })}
+  }
+
+  if (tab === 'frf') {
+    // Magnitude on log-y: an FRF spans decades between resonance and
+    // anti-resonance, and a linear axis shows only the peaks.
+    const traces = d.inputs.map((it, i) =>
+      line(d.freqs, it.magnitude, it.name, 'solid', 'y', colors[i % colors.length]))
+    const head = d.mode === 'mimo'
+      ? `FRF to ${d.output} from ${d.inputs.length} inputs (multi-input H1)`
+      : `FRF ${d.inputs[0].name} to ${d.output} (${d.estimator})`
+    return { traces, layout: merge(L, {
+      xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
+      yaxis: { ...L.yaxis, title: 'Magnitude', type: 'log' },
+      title: { text: title ?? head, font: { color: T.title, size: cell ? 11 : 12 } },
+    })}
+  }
+
+  if (tab === 'response_spectrum') {
+    // One line per damping ratio. Log-log is the convention, and it is the
+    // right one: both axes span decades.
+    const traces = d.curves.map((c, i) =>
+      line(d.periods, c[rsQuantity] ?? c.PSa, `${(c.zeta * 100).toFixed(0)}%`,
+           'solid', 'y', colors[i % colors.length]))
+    const LABEL = {
+      Sd: 'Displacement', Sv: 'Velocity (true)', Sa: 'Acceleration (true)',
+      PSv: 'Pseudo-velocity', PSa: 'Pseudo-acceleration',
+    }
+    const warn = d.n_below_limit
+      ? `  ·  ${d.n_below_limit} point(s) below ${d.resolution_limit_s.toPrecision(3)} s are unreliable at this sample rate`
+      : ''
+    return { traces, layout: merge(L, {
+      xaxis: { ...L.xaxis, title: 'Period [s]', type: 'log' },
+      yaxis: { ...L.yaxis, title: LABEL[rsQuantity] ?? rsQuantity, type: 'log' },
+      title: { text: (title ?? `Response spectrum — ${d.name}`) + warn,
+               font: { color: T.title, size: cell ? 11 : 12 } },
+    })}
+  }
+
+  if (tab === 'log_decrement') {
+    // The decay with the peaks the fit actually used marked on it: the whole
+    // question is whether those are the peaks of the decay or of the noise.
+    const traces = [
+      line(d.times, d.signal, d.name, 'solid', 'y', colors[0]),
+      { x: d.peak_times, y: d.peak_amplitudes, type: 'scatter', mode: 'markers',
+        name: `${d.n_peaks_used} peaks fitted`,
+        marker: { symbol: 'circle-open', size: 8, line: { width: 2 }, color: T.danger } },
+    ]
+    const head = `zeta ${d.zeta_pct.toFixed(2)}%  ·  fn ${d.fn.toPrecision(4)} Hz  ·  R2 ${d.r_squared.toFixed(4)}`
+    return { traces, layout: merge(L, {
+      xaxis: { ...L.xaxis, title: 'Time [s]' },
+      yaxis: { ...L.yaxis, title: withUnit('Amplitude', oneUnit) },
+      title: { text: title ?? head, font: { color: T.title, size: cell ? 11 : 12 } },
+    })}
+  }
+
+  if (tab === 'envelope') {
+    const traces = [line(d.freqs, d.spectrum, 'Envelope spectrum', 'solid', 'y', colors[0])]
+    const band = d.band ? `  ·  band ${d.band[0].toFixed(0)}-${d.band[1].toFixed(0)} Hz` : '  ·  no band (whole signal)'
+    return { traces, layout: merge(L, {
+      xaxis: { ...L.xaxis, title: 'Modulation frequency [Hz]' },
+      yaxis: { ...L.yaxis, title: 'Envelope spectrum', type: yLog ? 'log' : 'linear' },
+      title: { text: (title ?? `${d.name} — envelope spectrum`) + band,
                font: { color: T.title, size: cell ? 11 : 12 } },
     })}
   }

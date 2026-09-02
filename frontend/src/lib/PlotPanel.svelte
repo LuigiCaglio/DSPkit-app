@@ -71,6 +71,10 @@
   // normally written and how it pastes into anything that expects shapes as
   // column vectors. The long form is one row per (frequency, vector) and is
   // the better shape for a spreadsheet you intend to filter or pivot.
+  // Which response-spectrum quantity to draw. Pseudo by default because that
+  // is the convention, with true available since they diverge as damping rises.
+  let rsQuantity = $state('PSa')
+
   let svLayout = $state('byVector')   // 'byVector' | 'long'
 
   // A mode shape is normally tabulated as a signed real number: each vector is
@@ -437,6 +441,7 @@
     lagSide,
     tf: { db: tfDb, rangeDb: tfRangeDb, clipPct: tfClipPct, colorscale: tfColorscale, surface3d: tfSurface3d },
     units,
+    rsQuantity,
     showHist,
     showKde,
   })
@@ -667,6 +672,18 @@
       <label><input type="checkbox" bind:checked={normalizeSignals} /> Normalize</label>
       {#if LOG_Y_TABS.has(activeTab) && activeTab !== 'psd' && !overview}
         <label><input type="checkbox" bind:checked={yLogScale} /> Log Y</label>
+      {/if}
+      {#if activeTab === 'response_spectrum' && single?.curves}
+        <span class="plot-toolbar-grouplabel">show</span>
+        <select bind:value={rsQuantity} class="plot-axis-input" style="width:auto"
+                aria-label="Which quantity to plot">
+          <option value="PSa">Pseudo-acceleration</option>
+          <option value="PSv">Pseudo-velocity</option>
+          <option value="Sd">Displacement</option>
+          <option value="Sv">Velocity (true)</option>
+          <option value="Sa">Acceleration (true)</option>
+        </select>
+        <span class="plot-toolbar-sep"></span>
       {/if}
       {#if isDistribution || isJoint}
         <label><input type="checkbox" bind:checked={showHist} /> Histogram</label>
@@ -1160,6 +1177,67 @@
           Copy gives tab-separated text, ready to paste into a spreadsheet.
         </div>
       {/if}
+    </div>
+  {/if}
+
+  <!-- FRF: coherence is what says whether the curve above is worth reading -->
+  {#if activeTab === 'frf' && single?.freqs}
+    <div class="sv-panel">
+      <div class="sv-bar">
+        <span class="sv-title">Quality</span>
+        <span class="plot-toolbar-grouplabel">
+          {single.mode === 'mimo'
+            ? 'multiple coherence, and how well the inputs can be told apart'
+            : 'coherence — where this is near 1, the estimator choice does not matter'}
+        </span>
+      </div>
+      <div class="mi-facts">
+        {#if single.mode === 'mimo'}
+          {@const mc = single.multiple_coherence}
+          {@const cond = single.input_condition}
+          {@const mean = mc.reduce((a, b) => a + b, 0) / mc.length}
+          {@const medCond = [...cond].sort((a, b) => a - b)[Math.floor(cond.length / 2)]}
+          <span>multiple coherence <b>{mean.toFixed(3)}</b> mean</span>
+          <span>input condition <b>{medCond.toFixed(1)}</b> median</span>
+          <span><b>{single.n_segments}</b> segments</span>
+          {#if medCond > 100}
+            <span class="mi-warn">
+              The inputs are too alike to separate — only their combined effect is
+              identifiable, and coherence will not tell you that.
+            </span>
+          {/if}
+        {:else}
+          {@const c = single.coherence}
+          {@const mean = c.reduce((a, b) => a + b, 0) / c.length}
+          <span>mean coherence <b>{mean.toFixed(3)}</b></span>
+          <span>estimator <b>{single.estimator}</b></span>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
+  <!-- log decrement: the numbers, and the caveat that matters -->
+  {#if activeTab === 'log_decrement' && single?.zeta !== undefined}
+    <div class="sv-panel">
+      <div class="sv-bar"><span class="sv-title">Damping from the decay</span></div>
+      <div class="mi-facts">
+        <span>damping ratio <b>{single.zeta_pct.toFixed(3)}%</b></span>
+        <span>log decrement <b>{single.delta.toPrecision(4)}</b></span>
+        <span>damped <b>{single.fd.toPrecision(5)} Hz</b></span>
+        <span>undamped <b>{single.fn.toPrecision(5)} Hz</b></span>
+        <span>peaks fitted <b>{single.n_peaks_used}</b></span>
+        <span>R&sup2; <b>{single.r_squared.toFixed(4)}</b></span>
+      </div>
+      <div class="mi-note">
+        {#if single.r_squared < 0.95}
+          R&sup2; is low, so the decay is not a single clean mode — two close modes
+          beat rather than decay, and this number should not be reported.
+        {:else}
+          A high R&sup2; is not on its own proof: check the peak count against the
+          cycles you can see in the record. A good fit through the wrong peaks
+          looks identical.
+        {/if}
+      </div>
     </div>
   {/if}
 

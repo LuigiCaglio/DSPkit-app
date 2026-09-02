@@ -119,6 +119,7 @@
       { id: 'csd', label: 'CSD' },
       { id: 'coherence', label: 'Coherence' },
       { id: 'mutual_info', label: 'Mutual information' },
+      { id: 'frf', label: 'FRF' },
     ]},
     { id: 'filtering',     label: 'Filtering',     tabs: [{ id: 'filter', label: 'Filter' }] },
     { id: 'timeFreq',      label: 'Time-Freq',     tabs: [
@@ -129,11 +130,16 @@
     { id: 'decomposition', label: 'Decomposition', tabs: [
       { id: 'instantaneous', label: 'Instantaneous' },
       { id: 'emd', label: 'EMD' }, { id: 'hht', label: 'HHT' },
+      { id: 'envelope', label: 'Envelope spectrum' },
     ]},
     { id: 'multiChannel',  label: 'Multi-Ch',      tabs: [
       { id: 'multisensor', label: 'Multi-Sensor' },
       { id: 'predictability', label: 'Coherence (conditioned)' },
       { id: 'fdd', label: 'FDD' },
+    ]},
+    { id: 'structural',    label: 'Structural',    tabs: [
+      { id: 'response_spectrum', label: 'Response spectrum' },
+      { id: 'log_decrement', label: 'Log decrement' },
     ]},
     { id: 'statistics',    label: 'Statistics',     tabs: [
       { id: 'statistics', label: 'Distributions' },
@@ -1080,6 +1086,7 @@ settings were restored from the last time this file was open.">
 
       <!-- Controls -->
       <AnalysisPanel
+        lastBandSweep={plotData?.band_sweep ?? []}
         {activeTab}
         {dualSignal}
         {columnNames}

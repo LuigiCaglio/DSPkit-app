@@ -23,6 +23,10 @@
   import IndicatorsControls  from './controls/IndicatorsControls.svelte'
   import MultisensorControls from './controls/MultisensorControls.svelte'
   import PredictabilityControls from './controls/PredictabilityControls.svelte'
+  import FrfControls          from './controls/FrfControls.svelte'
+  import ResponseSpectrumControls from './controls/ResponseSpectrumControls.svelte'
+  import LogDecrementControls from './controls/LogDecrementControls.svelte'
+  import EnvelopeControls     from './controls/EnvelopeControls.svelte'
   import FddControls         from './controls/FddControls.svelte'
   import StatisticsControls  from './controls/StatisticsControls.svelte'
 
@@ -30,6 +34,7 @@
     activeTab, dualSignal, columnNames = [], selected = [],
     focusChannel = $bindable(null), pairX = $bindable(null), pairY = $bindable(null),
     loading, plotError, runAnalysis, runOverview, runPairOverlay, runExplorer,
+    lastBandSweep = [],
   } = $props()
 
   let scope   = $derived(scopeOf(activeTab))
@@ -79,6 +84,15 @@
     <MutualInfoControls
       {columnNames} {selected} bind:focusChannel bind:pairX bind:pairY
       {loading} {runAnalysis} {dualSignal} />
+  {:else if activeTab === 'frf'}
+    <FrfControls {columnNames} {selected} {loading} {runAnalysis} />
+  {:else if activeTab === 'response_spectrum'}
+    <ResponseSpectrumControls signalCol={focusChannel} {autoRun} {loading} {runAnalysis} />
+  {:else if activeTab === 'log_decrement'}
+    <LogDecrementControls signalCol={focusChannel} {loading} {runAnalysis} />
+  {:else if activeTab === 'envelope'}
+    <EnvelopeControls signalCol={focusChannel} {autoRun} {loading} {runAnalysis}
+                      bandSweep={lastBandSweep} />
   {:else if activeTab === 'filter'}
     <FilterControls signalCol={focusChannel} {autoRun} {loading} {runAnalysis} />
   {:else if activeTab === 'explorer'}
