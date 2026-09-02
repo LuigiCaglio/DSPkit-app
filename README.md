@@ -48,6 +48,12 @@ override any of it. Then it plots straight away.
 *The Explorer: click the surface to slice a spectrum at that instant, or an
 envelope at that frequency.*
 
+![An STFT drawn as a rotatable 3D surface](docs/images/surface3d.png)
+
+*The same surface in 3D — optional, and off by default. It shows the shape of a
+ridge better than a heatmap does; the flat view is better for reading a value
+off, since peaks hide what is behind them.*
+
 Per-channel physical units carry onto every axis. Sessions resume where you left
 them. Any result exports to CSV.
 

@@ -109,13 +109,13 @@ null — is the design work. It is worth settling that before picking estimators
 
 ## 4. Email in commit metadata — done 2026-09-02
 
-`luigicaglio@gmail.com` was the author **and** committer email on every commit
+A personal address was the author **and** committer email on every commit
 in both repos. It is now gone from both, local and remote:
 
 | repo | commits | before | after |
 |---|---|---|---|
-| DSPkit | 15 | `luigicaglio@gmail.com` | noreply only |
-| DSPkit-app | 34 | `luigicaglio@gmail.com` | noreply only |
+| DSPkit | 15 | the personal address | noreply only |
+| DSPkit-app | 34 | the personal address | noreply only |
 
 No email ever appeared in a tracked file or a commit message. The only address
 in message bodies is `noreply@anthropic.com`, from `Co-Authored-By` trailers,
