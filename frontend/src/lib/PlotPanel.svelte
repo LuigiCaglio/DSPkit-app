@@ -67,9 +67,57 @@
   // ours to guess.
   let svCopied = $state(false)
 
+  // Channels down, one column per singular vector, is how a mode shape is
+  // normally written and how it pastes into anything that expects shapes as
+  // column vectors. The long form is one row per (frequency, vector) and is
+  // the better shape for a spreadsheet you intend to filter or pivot.
+  let svLayout = $state('byVector')   // 'byVector' | 'long'
+
+  const TAB = '\t'
+  const NL  = '\n'
+
+  /** Flattened (frequency, singular vector) pairs — one per output column. */
+  let svColumns = $derived.by(() => {
+    if (!fddVectors?.points?.length) return []
+    const out = []
+    for (const pt of fddVectors.points) {
+      for (const v of pt.vectors) {
+        out.push({
+          key: `${pt.freq_used.toPrecision(6)}|${v.sv}`,
+          freq: pt.freq_used,
+          sv: v.sv,
+          sigma: v.singular_value,
+          magnitude: v.magnitude,
+          phase_deg: v.phase_deg,
+          real: v.real,
+          imag: v.imag,
+        })
+      }
+    }
+    return out
+  })
+
   let svTable = $derived.by(() => {
     if (!fddVectors?.points?.length) return null
     const L = fddVectors.labels
+
+    // What you copy matches what you are looking at.
+    if (svLayout === 'byVector') {
+      const cols = svColumns
+      const head = ['channel', ...cols.map(c => `${c.freq.toPrecision(6)}Hz_SV${c.sv}`)]
+      const block = (field) => L.map((lab, ci) =>
+        [lab, ...cols.map(c => c[field][ci])].join(TAB))
+      return [
+        ['# magnitude'].join(TAB),
+        head.join(TAB),
+        ...block('magnitude'),
+        '',
+        ['# phase_deg'].join(TAB),
+        head.join(TAB),
+        ...block('phase_deg'),
+      ].join(NL)
+    }
+
     const head = ['freq_Hz', 'sv', 'singular_value',
       ...L.map(l => `${l}_mag`), ...L.map(l => `${l}_phase_deg`),
       ...L.map(l => `${l}_real`), ...L.map(l => `${l}_imag`)]
@@ -936,6 +984,21 @@
         {#if fddPicks.length}
           <button class="btn-ghost" onclick={() => onFddClear?.()}>Clear</button>
         {/if}
+        {#if fddVectors}
+          <span class="plot-toolbar-sep"></span>
+          <span class="seg">
+            <button class="seg-btn" class:on={svLayout === 'byVector'}
+                    onclick={() => svLayout = 'byVector'}
+                    title="Channels down the side, one column per singular vector — how a mode shape is normally written">
+              Vectors as columns
+            </button>
+            <button class="seg-btn" class:on={svLayout === 'long'}
+                    onclick={() => svLayout = 'long'}
+                    title="One row per frequency and vector — easier to filter or pivot in a spreadsheet">
+              One row each
+            </button>
+          </span>
+        {/if}
         {#if svTable}
           <button class="btn-ghost" onclick={copySvTable}>{svCopied ? 'Copied' : 'Copy table'}</button>
         {/if}
@@ -962,28 +1025,55 @@
 
       {#if fddVectors}
         <div class="sv-table-wrap">
-          <table class="results-table sv-table">
-            <thead>
-              <tr>
-                <th>Freq [Hz]</th><th>SV</th><th>&sigma;</th>
-                {#each fddVectors.labels as l}<th>{l}</th>{/each}
-              </tr>
-            </thead>
-            <tbody>
-              {#each fddVectors.points as pt}
-                {#each pt.vectors as v}
+          {#if svLayout === 'byVector'}
+            <table class="results-table sv-table">
+              <thead>
+                <tr>
+                  <th class="sv-rowhead">Channel</th>
+                  {#each svColumns as c}
+                    <th>{c.freq.toPrecision(5)} Hz<br /><span class="sv-sub">SV{c.sv}</span></th>
+                  {/each}
+                </tr>
+                <tr>
+                  <th class="sv-rowhead sv-sub">&sigma;</th>
+                  {#each svColumns as c}
+                    <th class="sv-sub">{c.sigma.toExponential(2)}</th>
+                  {/each}
+                </tr>
+              </thead>
+              <tbody>
+                {#each fddVectors.labels as lab, ci}
                   <tr>
-                    <td>{pt.freq_used.toPrecision(6)}</td>
-                    <td>SV{v.sv}</td>
-                    <td>{v.singular_value.toExponential(3)}</td>
-                    {#each v.magnitude as m, ci}
-                      <td>{m.toFixed(4)} ∠{v.phase_deg[ci].toFixed(1)}°</td>
+                    <td class="sv-rowhead">{lab}</td>
+                    {#each svColumns as c}
+                      <td>{c.magnitude[ci].toFixed(4)} ∠{c.phase_deg[ci].toFixed(1)}°</td>
                     {/each}
                   </tr>
                 {/each}
-              {/each}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          {:else}
+            <table class="results-table sv-table">
+              <thead>
+                <tr>
+                  <th>Freq [Hz]</th><th>SV</th><th>&sigma;</th>
+                  {#each fddVectors.labels as l}<th>{l}</th>{/each}
+                </tr>
+              </thead>
+              <tbody>
+                {#each svColumns as c}
+                  <tr>
+                    <td>{c.freq.toPrecision(6)}</td>
+                    <td>SV{c.sv}</td>
+                    <td>{c.sigma.toExponential(3)}</td>
+                    {#each c.magnitude as m, ci}
+                      <td>{m.toFixed(4)} ∠{c.phase_deg[ci].toFixed(1)}°</td>
+                    {/each}
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
         </div>
         <div class="sv-hint">
           Magnitude ∠ phase. Each vector is rotated so its largest channel is real
