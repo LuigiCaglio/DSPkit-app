@@ -616,6 +616,49 @@ export function buildPlot(tab, d, opts) {
     return null
   }
 
+  if (tab === 'mutual_info') {
+    const sig = d.significance
+    const scanned = d.lags_s.length > 1
+    const traces = []
+
+    if (scanned) {
+      traces.push(line(d.lags_s, d.mi, 'Mutual information', 'solid', 'y', colors[0]))
+      // The null floor is the whole reason the curve is readable: MI is biased
+      // upward by the estimator itself, so the interesting quantity is how far
+      // above this line the peak sits, not its height.
+      traces.push({
+        x: [d.lags_s[0], d.lags_s[d.lags_s.length - 1]],
+        y: [sig.null_p95, sig.null_p95],
+        type: 'scatter', mode: 'lines', name: 'null 95th pct',
+        line: { color: T.warning, dash: 'dash', width: 1.5 },
+      })
+      traces.push({
+        x: [sig.lag_s], y: [sig.mi], type: 'scatter', mode: 'markers',
+        name: `peak, lag ${sig.lag_s.toPrecision(3)} s`,
+        marker: { symbol: 'circle-open', size: 13, line: { width: 2 }, color: T.danger },
+      })
+    } else {
+      // A single lag is a bar against its null rather than a curve.
+      traces.push({
+        x: ['mutual information', 'null mean', 'null 95th pct'],
+        y: [sig.mi, sig.null_mean, sig.null_p95],
+        type: 'bar',
+        marker: { color: [colors[0], T.text, T.warning] },
+        name: 'nats',
+      })
+    }
+
+    const verdict = sig.p_value <= 0.05
+      ? `p = ${sig.p_value.toFixed(3)} — above the null`
+      : `p = ${sig.p_value.toFixed(3)} — not distinguishable from the null`
+    return { traces, layout: merge(L, {
+      xaxis: { ...L.xaxis, title: scanned ? 'Lag [s]' : '' },
+      yaxis: { ...L.yaxis, title: 'Mutual information [nats]', rangemode: 'tozero' },
+      title: { text: title ?? `${d.x_label} vs ${d.y_label} — ${verdict}`,
+               font: { color: T.title, size: cell ? 11 : 12 } },
+    })}
+  }
+
   if (tab === 'predictability') {
     const items = d.mode === 'partial'
       ? d.pairs.map(pp => ({ name: pp.label, values: pp.values }))

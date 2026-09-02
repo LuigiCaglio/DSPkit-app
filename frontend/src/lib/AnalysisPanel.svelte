@@ -8,6 +8,7 @@
   import CrossCorrControls   from './controls/CrossCorrControls.svelte'
   import CsdControls         from './controls/CsdControls.svelte'
   import CoherenceControls   from './controls/CoherenceControls.svelte'
+  import MutualInfoControls  from './controls/MutualInfoControls.svelte'
   import FilterControls      from './controls/FilterControls.svelte'
   import ExplorerControls    from './controls/ExplorerControls.svelte'
   import StftControls        from './controls/StftControls.svelte'
@@ -74,6 +75,10 @@
     <CoherenceControls
       {columnNames} {selected} bind:focusChannel bind:pairX bind:pairY
       {runPairOverlay} {autoRun} {loading} {runAnalysis} {dualSignal} />
+  {:else if activeTab === 'mutual_info'}
+    <MutualInfoControls
+      {columnNames} {selected} bind:focusChannel bind:pairX bind:pairY
+      {loading} {runAnalysis} {dualSignal} />
   {:else if activeTab === 'filter'}
     <FilterControls signalCol={focusChannel} {autoRun} {loading} {runAnalysis} />
   {:else if activeTab === 'explorer'}

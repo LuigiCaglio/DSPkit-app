@@ -118,6 +118,7 @@
       { id: 'cross_correlation', label: 'Cross-corr' },
       { id: 'csd', label: 'CSD' },
       { id: 'coherence', label: 'Coherence' },
+      { id: 'mutual_info', label: 'Mutual information' },
     ]},
     { id: 'filtering',     label: 'Filtering',     tabs: [{ id: 'filter', label: 'Filter' }] },
     { id: 'timeFreq',      label: 'Time-Freq',     tabs: [

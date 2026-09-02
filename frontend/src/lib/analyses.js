@@ -19,6 +19,7 @@ export const SCOPE = {
   cross_correlation: 'dynamic',
   csd:               'dynamic',
   coherence:         'dynamic',
+  mutual_info:       'pair',
   filter:            'single',
   explorer:          'single',
   stft:              'single',

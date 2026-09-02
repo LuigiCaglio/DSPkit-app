@@ -815,3 +815,22 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
   padding: 2px 4px;
 }
 .help-close:hover { color: var(--text-primary); }
+
+/* ── mutual information panel ── */
+.mi-note {
+  padding: 8px 12px 4px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  max-width: 860px;
+}
+.mi-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 2px 12px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.mi-facts b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.mi-toomany { color: var(--warning); margin-top: 3px; line-height: 1.45; }

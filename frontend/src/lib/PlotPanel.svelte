@@ -1163,6 +1163,21 @@
     </div>
   {/if}
 
+  <!-- mutual information: the number is meaningless without its null -->
+  {#if activeTab === 'mutual_info' && single?.significance}
+    <div class="sv-panel">
+      <div class="sv-bar"><span class="sv-title">How to read this</span></div>
+      <div class="mi-note">{single.significance.interpretation}</div>
+      <div class="mi-facts">
+        <span><b>{single.significance.n_samples.toLocaleString()}</b> samples</span>
+        <span><b>{single.significance.n_surrogates}</b> surrogates ({single.significance.method})</span>
+        <span>k = <b>{single.significance.k}</b></span>
+        <span>null mean <b>{single.significance.null_mean.toPrecision(3)}</b></span>
+        <span>null 95th <b>{single.significance.null_p95.toPrecision(3)}</b></span>
+      </div>
+    </div>
+  {/if}
+
   <!-- normality indicators, with the library's own interpretation of each -->
   {#if normalitySignals}
     <div class="results-table-wrap" style="max-height:260px">

@@ -2873,3 +2873,92 @@ async def fdd_vectors(
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
+_MI_MAX_EVALUATIONS = 400
+
+
+# ─── mutual information ───────────────────────────────────────────────────────
+
+
+@app.post("/api/crosssignal/mutual_information")
+async def crosssignal_mutual_information(
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_col_x: int = Form(...),
+    signal_col_y: int = Form(...),
+    fs: Optional[float] = Form(None),
+    k: int = Form(3),
+    max_lag_s: float = Form(0.0),        # 0 = lag 0 only
+    n_lags: int = Form(41),
+    n_surrogates: int = Form(199),
+    method: str = Form("shift"),
+    pp: PreprocParams = Depends(),
+):
+    """
+    Mutual information between two channels, optionally scanned over lag.
+
+    Coherence only sees linear, same-frequency structure. Mutual information
+    sees any dependence, which is the point of having it — but it is an
+    estimate, not a transform, and a number in nats means nothing on its own.
+    So the significance test travels with it: the same statistic recomputed on
+    surrogates that destroy the relationship while keeping each signal's own
+    distribution, giving a floor to read the value against.
+    """
+    try:
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        x, fs_, _ = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
+        y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
+
+        if max_lag_s and max_lag_s > 0:
+            max_lag = int(round(max_lag_s * fs_))
+            n = max(3, min(int(n_lags), 401))
+            lags = np.unique(np.linspace(-max_lag, max_lag, n).astype(int))
+        else:
+            lags = np.array([0])
+
+        # Cost is n_lags * n_surrogates nearest-neighbour searches, and each one
+        # is O(N log N). A 21-lag scan with 49 surrogates is over a thousand
+        # estimates -- minutes, from a button that gives no sign of it. Refuse
+        # with the arithmetic shown rather than appearing to hang.
+        budget = len(lags) * max(1, n_surrogates)
+        if budget > _MI_MAX_EVALUATIONS:
+            raise ValueError(
+                f"That is {budget:,} estimates ({len(lags)} lags x {n_surrogates} "
+                f"surrogates) and would take several minutes. Keep lags x surrogates "
+                f"under {_MI_MAX_EVALUATIONS:,} — fewer lag steps, or fewer surrogates "
+                f"while you explore."
+            )
+
+        mi = np.atleast_1d(dsp.mutual_information(x, y, k=k, lags=lags))
+        sig = dsp.mi_significance(x, y, k=k, lags=lags,
+                                  n_surrogates=n_surrogates, method=method)
+
+        return {
+            "lags_s": to_list(lags / fs_),
+            "lags_samples": to_list(lags),
+            "mi": to_list(mi),
+            "x_label": parsed["column_names"][signal_col_x],
+            "y_label": parsed["column_names"][signal_col_y],
+            "significance": {
+                "mi": float(sig["mi"]),
+                "lag_samples": int(sig["lag"]),
+                "lag_s": float(sig["lag"]) / fs_,
+                "p_value": float(sig["p_value"]),
+                "null_mean": float(sig["null_mean"]),
+                "null_p95": float(sig["null_p95"]),
+                "n_surrogates": int(sig["n_surrogates"]),
+                "n_samples": int(sig["n_samples"]),
+                "method": sig["method"],
+                "k": int(sig["k"]),
+                "interpretation": sig["interpretation"],
+            },
+        }
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=friendly_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
+
