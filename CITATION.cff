@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
 title: "DSPkit-app"
-abstract: "A desktop application for digital signal processing of time series data: spectral, time-frequency, decomposition, multi-channel and statistical analysis."
+abstract: "A local web application for digital signal processing of time series data: spectral, time-frequency, decomposition, multi-channel and statistical analysis. Runs entirely on the user's own machine."
 authors:
   - family-names: Caglio
     given-names: Luigi

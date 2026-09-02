@@ -109,7 +109,7 @@
       <div class="rs-panel">
         <div class="rs-section-title">DSPkit</div>
         <p class="rs-text">
-          Digital signal processing for time series data — spectral, time-frequency, decomposition, multi-channel and statistical analysis, on data you drop in.
+          Digital signal processing for time series data — spectral, time-frequency, decomposition, multi-channel and statistical analysis. Runs entirely on this machine; nothing is uploaded.
         </p>
         <div class="rs-info-row">
           <span class="rs-info-label">Frontend</span>

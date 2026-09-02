@@ -4,9 +4,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
-A desktop application for **digital signal processing** of time series data.
-Drop in a CSV and start looking — no script to write, no parameters to guess
-before you see anything.
+A **local web application** for **digital signal processing** of time series
+data. Drop in a CSV and start looking — no script to write, no parameters to
+guess before you see anything.
+
+It runs entirely on your own machine: the interface is served by a local
+process and opens in your browser, so nothing is uploaded anywhere.
 
 Built on [DSPkit](https://github.com/LuigiCaglio/DSPkit), the signal-processing
 library that does the maths.
