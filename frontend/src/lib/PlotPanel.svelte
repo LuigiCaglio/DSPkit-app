@@ -156,7 +156,14 @@
   // A long record is decimated to fit the point budget. When the user zooms in,
   // re-spend that budget on the visible window instead, up to the raw sample
   // rate — the data is already here, so no request is needed.
-  let zoomable = $derived(ZOOMABLE.has(activeTab) && !!single)
+  let zoomable = $derived(ZOOMABLE.has(activeTab) && (!!single || !!grid))
+
+  // Small multiples share one x-range by default: the cells are the same record
+  // on a common time axis, so zooming them independently breaks the comparison
+  // the grid exists for. Off, each cell keeps its own window.
+  let sharedZoom = $state(true)
+  let cellRanges = $state({})          // cell name -> [lo, hi], when not shared
+  $effect(() => { const _ = plotData, __ = activeTab, ___ = sharedZoom; cellRanges = {} })
   let xRange   = $state(null)
 
   // ── filter band picking (PSD and FFT) ──────────────────────────────────────
@@ -194,6 +201,27 @@
 
   // A new payload or a different analysis invalidates the old window.
   $effect(() => { const _ = plotData, __ = activeTab; xRange = null })
+
+  /** Zoom inside one grid cell: drives every cell, or just its own. */
+  function onCellRelayout(name, e) {
+    if (!e) return
+    if (e['xaxis.autorange'] || e.autosize) {
+      if (sharedZoom) xRange = null
+      else cellRanges = { ...cellRanges, [name]: null }
+      return
+    }
+    const lo = e['xaxis.range[0]'] ?? e['xaxis.range']?.[0]
+    const hi = e['xaxis.range[1]'] ?? e['xaxis.range']?.[1]
+    if (lo == null || hi == null) return
+    if (sharedZoom) {
+      if (xRange && Math.abs(xRange[0] - lo) < 1e-12 && Math.abs(xRange[1] - hi) < 1e-12) return
+      xRange = [lo, hi]
+    } else {
+      const cur = cellRanges[name]
+      if (cur && Math.abs(cur[0] - lo) < 1e-12 && Math.abs(cur[1] - hi) < 1e-12) return
+      cellRanges = { ...cellRanges, [name]: [lo, hi] }
+    }
+  }
 
   function onRelayout(e) {
     if (!e) return
@@ -276,7 +304,10 @@
       ? grid.map(r => ({
           name: r.name,
           error: r.error,
-          spec: r.data ? buildPlot(activeTab, r.data, { ...baseOpts, cell: true, title: r.name }) : null,
+          spec: r.data ? buildPlot(activeTab, r.data, {
+            ...baseOpts, cell: true, title: r.name,
+            xRange: zoomable ? (sharedZoom ? xRange : (cellRanges[r.name] ?? null)) : null,
+          }) : null,
         }))
       : []
   )
@@ -475,6 +506,17 @@
       {#if isDistribution || isJoint}
         <label><input type="checkbox" bind:checked={showHist} /> Histogram</label>
         <label><input type="checkbox" bind:checked={showKde} /> KDE</label>
+      {/if}
+      {#if grid && ZOOMABLE.has(activeTab)}
+        <span class="plot-toolbar-sep"></span>
+        <label title="Zooming one cell zooms them all, so the panels stay comparable">
+          <input type="checkbox" bind:checked={sharedZoom} /> Linked zoom
+        </label>
+        {#if sharedZoom ? xRange : Object.values(cellRanges).some(Boolean)}
+          <button class="btn-ghost" onclick={() => { xRange = null; cellRanges = {} }}>
+            Reset zoom
+          </button>
+        {/if}
       {/if}
       {#if isDownsampled || showAllPoints}
         <label><input type="checkbox" bind:checked={showAllPoints} /> All points</label>
@@ -758,7 +800,8 @@
             {#snippet children()}
               <div class="plot-grid-cell">
                 {#if cell.spec}
-                  <PlotCanvas spec={cell.spec} height="100%" />
+                  <PlotCanvas spec={cell.spec} height="100%"
+                              onRelayout={zoomable ? (e) => onCellRelayout(cell.name, e) : null} />
                 {:else}
                   <div class="ov-fail">{cell.name}: {cell.error ?? 'no result'}</div>
                 {/if}

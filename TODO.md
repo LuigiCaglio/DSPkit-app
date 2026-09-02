@@ -285,28 +285,23 @@ to get past the load error first, and right now they cannot.
 
 ---
 
-## 3.5 Zoom is lost on a small-multiples grid
+## 3.5 Zoom on a small-multiples grid — done 2026-09-02
 
-Reported 2026-09-02 on Decomposition > Instantaneous: zooming snaps back to the
-default view.
+Grid cells rendered `<PlotCanvas>` with no `onRelayout`, and `zoomable` was
+`ZOOMABLE.has(tab) && !!single` — null for a grid — so a zoom was never captured
+and died on the next spec recompute. Reported on Decomposition > Instantaneous
+with the channel scope set to All.
 
-`PlotCanvas` re-`react()`s whenever its `spec` prop changes identity, and the
-spec is `$derived`, so any recompute reapplies the layout — which autoranges the
-x-axis unless a range is pinned. In the single-chart path that is handled:
-`zoomable` wires `onRelayout`, which stores `xRange`, and `plotSpec` pins it.
+Cells now wire a handler and `zoomable` covers the grid. Zoom is **linked across
+cells by default**: they are the same record on a common time axis, so
+independent windows break the comparison the grid exists for. A "Linked zoom"
+toggle in the toolbar gives per-cell ranges instead, and a Reset appears once
+anything is zoomed.
 
-The grid path renders `<PlotCanvas spec={cell.spec} height="100%" />` with **no
-`onRelayout`**, and `zoomable` is false there anyway (`ZOOMABLE.has(tab) &&
-!!single`, and `single` is null for a grid). So a zoom in any cell is never
-captured and dies on the next recompute. `instantaneous` reaches this whenever
-the channel scope is All rather than one channel.
-
-Fix needs a decision first: per-cell zoom state, or one shared x-range across
-the grid. Shared is probably right — the cells are the same signal on a common
-time axis, and independent zooms would break the comparison the grid exists for.
-
-Not attempted yet: verifying this needs a rendered DOM, and a reactivity change
-in the plotting core is not something to ship unverified.
+**Unverified in a browser** — there is no rendered DOM in the environment this
+was written in. The reactive wiring is symmetrical with the single-chart path
+that is known to work, but confirm by hand: zoom one cell with linking on (all
+should follow), then off (only that cell), then Reset.
 
 ---
 
