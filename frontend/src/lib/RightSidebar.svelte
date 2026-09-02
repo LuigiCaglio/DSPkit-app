@@ -1,4 +1,6 @@
 <script>
+  import DspkitLogo from './DspkitLogo.svelte'
+  import pkg from '../../package.json'
   import {
     THEMES, SERIES_DARK, SERIES_LIGHT,
     themeState, themeById, setTheme, setCustom, plotTheme,
@@ -124,21 +126,52 @@
         <hr style="margin:10px 0" />
         <div class="rs-section-title">Modules</div>
         <div class="rs-list">
-          <div>Spectral analysis (FFT, PSD, CSD)</div>
-          <div>Time-frequency (STFT, CWT, WVD)</div>
-          <div>Signal decomposition (EMD, HHT)</div>
+          <div>Spectral — FFT, PSD, CSD, coherence</div>
+          <div>Time-frequency — STFT, CWT, WVD, SPWVD, synchrosqueezing</div>
+          <div>Decomposition — EMD, HHT, instantaneous</div>
           <div>Peak detection &amp; harmonics</div>
           <div>SHM indicators</div>
-          <div>Multi-sensor correlation</div>
+          <div>Multi-sensor — correlation, coherence, conditioned coherence</div>
           <div>Frequency Domain Decomposition</div>
-          <div>Statistical analysis</div>
+          <div>Statistics — distributions, joint density, normality</div>
         </div>
       </div>
     {/if}
+
+    <!-- Sits below whichever panel is open, pushed to the foot of the column. -->
+    <div class="rs-footer">
+      <DspkitLogo size={110} />
+      <div class="rs-wordmark">DSPkit</div>
+      <div class="rs-version">v{pkg.version}</div>
+    </div>
   </aside>
 {/if}
 
 <style>
+  /* margin-top:auto pushes the mark to the foot of the sidebar however short
+     the panel above it is; the aside is already a flex column. */
+  .rs-footer {
+    margin-top: auto;
+    padding: 22px 14px 18px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    border-top: 1px solid var(--border);
+    opacity: 0.9;
+  }
+  .rs-wordmark {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--text-primary);
+  }
+  .rs-version {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
   .theme-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
