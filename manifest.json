@@ -1,6 +1,6 @@
 {
   "name": "DSPkit GUI",
-  "description": "Interactive signal processing workbench powered by DSPkit",
+  "description": "Digital signal processing for time series data, powered by DSPkit",
   "version": "0.2.0",
   "entry": "run.py",
   "args": [

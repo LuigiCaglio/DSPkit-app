@@ -109,7 +109,7 @@
       <div class="rs-panel">
         <div class="rs-section-title">DSPkit</div>
         <p class="rs-text">
-          A digital signal processing toolkit for structural health monitoring and vibration analysis.
+          Digital signal processing for time series data — spectral, time-frequency, decomposition, multi-channel and statistical analysis, on data you drop in.
         </p>
         <div class="rs-info-row">
           <span class="rs-info-label">Frontend</span>

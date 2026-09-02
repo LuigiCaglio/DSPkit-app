@@ -4,9 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
-A desktop application for **exploratory signal analysis** of vibration and
-structural-health-monitoring data. Drop in a CSV and start looking — no script
-to write, no parameters to guess before you see anything.
+A desktop application for **digital signal processing** of time series data.
+Drop in a CSV and start looking — no script to write, no parameters to guess
+before you see anything.
 
 Built on [DSPkit](https://github.com/LuigiCaglio/DSPkit), the signal-processing
 library that does the maths.
@@ -19,7 +19,7 @@ library that does the maths.
 
 ## Why
 
-Exploratory DSP is a loop: plot it, filter it, look again, change your mind.
+Signal processing is a loop: plot it, filter it, look again, change your mind.
 Doing that in a notebook means re-running cells and re-typing parameters, and
 the transforms that matter most for modal work — synchrosqueezing, Wigner-Ville,
 FDD — each come from a different library with a different convention.
