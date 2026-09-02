@@ -1,5 +1,9 @@
 # DSPkit
 
+[![DOI](https://zenodo.org/badge/1175981676.svg)](https://doi.org/10.5281/zenodo.22257120)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+
 A desktop application for **exploratory signal analysis** of vibration and
 structural-health-monitoring data. Drop in a CSV and start looking — no script
 to write, no parameters to guess before you see anything.
