@@ -1,7 +1,7 @@
 {
   "name": "DSPkit GUI",
   "description": "Digital signal processing for time series data, powered by DSPkit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "entry": "run.py",
   "args": [
     "--no-browser"
