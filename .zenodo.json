@@ -1,0 +1,33 @@
+{
+  "title": "DSPkit-app: a local web application for digital signal processing of time series data",
+  "description": "<p>DSPkit-app is a local web application for digital signal processing of time series data, built on the DSPkit library.</p><p>A file is opened without configuration: the delimiter, header row, orientation, time column and sample rate are detected on load and shown so they can be overridden, and the signals are plotted immediately. Analyses cover spectral estimation, cross-signal relationships, filtering with cutoffs picked off the spectrum, a linked time-frequency explorer over five transforms, decomposition, multi-channel coherence including conditioned forms, Frequency Domain Decomposition with mode shape export, and statistical analysis including normality assessment.</p><p>It requires only Python 3.10 or newer; the interface ships pre-built and the analysis library is bundled. It runs entirely on the user's own machine &mdash; the interface is served by a local process and opens in the browser, so no data is uploaded anywhere.</p>",
+  "upload_type": "software",
+  "license": "MIT",
+  "access_right": "open",
+  "creators": [
+    {
+      "name": "Caglio, Luigi",
+      "orcid": "0000-0002-9830-2490"
+    }
+  ],
+  "keywords": [
+    "signal processing",
+    "digital signal processing",
+    "time series",
+    "spectral analysis",
+    "time-frequency analysis",
+    "Python",
+    "web application",
+    "modal analysis",
+    "FastAPI",
+    "Svelte"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "10.5281/zenodo.22257118",
+      "relation": "isSupplementedBy",
+      "scheme": "doi",
+      "resource_type": "software"
+    }
+  ]
+}
