@@ -606,6 +606,25 @@ export function buildPlot(tab, d, opts) {
     return null
   }
 
+  if (tab === 'predictability') {
+    const items = d.mode === 'partial'
+      ? d.pairs.map(pp => ({ name: pp.label, values: pp.values }))
+      : d.signals.map(sg => ({ name: sg.name, values: sg.values }))
+    const head = d.mode === 'partial'
+      ? 'Partial coherence — each pair with the other channels conditioned out'
+      : 'Multiple coherence — how much of each channel the others explain'
+    return { traces: items.map((it, i) =>
+      line(d.freqs, it.values, it.name, 'solid', 'y', colors[i % colors.length])),
+      layout: merge(L, {
+        xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
+        // Both quantities are shares of variance, so the axis is the full 0-1
+        // range whatever the data does. Letting it autoscale would make a flat
+        // curve near zero look like structure.
+        yaxis: { ...L.yaxis, title: 'Coherence', range: [0, 1] },
+        title: { text: title ?? head, font: { color: T.title, size: cell ? 11 : 12 } },
+      })}
+  }
+
   if (tab === 'fdd') {
     const nSv = d.S[0]?.length ?? 0
     const traces = []
@@ -633,6 +652,32 @@ export function buildPlot(tab, d, opts) {
   }
 
   if (tab === 'statistics') {
+    if (d.signals?.[0]?.qq) {
+      const traces = []
+      d.signals.forEach((sg, i) => {
+        const c = colors[i % colors.length]
+        traces.push({
+          x: sg.qq.theoretical, y: sg.qq.ordered, type: 'scatter', mode: 'markers',
+          name: sg.name, marker: { color: c, size: 4, opacity: 0.7 },
+        })
+        // The straight line is what normal data would fall on; the interest is
+        // entirely in how the points leave it at the ends.
+        const x0 = sg.qq.theoretical[0]
+        const x1 = sg.qq.theoretical[sg.qq.theoretical.length - 1]
+        traces.push({
+          x: [x0, x1],
+          y: [sg.qq.slope * x0 + sg.qq.intercept, sg.qq.slope * x1 + sg.qq.intercept],
+          type: 'scatter', mode: 'lines', name: `${sg.name} reference`,
+          line: { color: c, dash: 'dash', width: 1 }, showlegend: false,
+        })
+      })
+      return { traces, layout: merge(L, {
+        xaxis: { ...L.xaxis, title: 'Theoretical quantiles (normal)' },
+        yaxis: { ...L.yaxis, title: withUnit('Sample quantiles', oneUnit) },
+        title: { text: title ?? 'Q-Q against a normal distribution — points leaving the line at the ends are the departure',
+                 font: { color: T.title, size: cell ? 11 : 12 } },
+      })}
+    }
     if (d.signals?.[0]?.xi) {
       // One channel or several. Each keeps a single hue across both its marks,
       // so the histogram and the curve read as one series rather than two.

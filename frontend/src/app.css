@@ -678,3 +678,33 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 ::-webkit-scrollbar-track { background: var(--bg-base); }
 ::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* ── normality indicators ── */
+.norm-block {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.norm-block:last-child { border-bottom: none; }
+.norm-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-text);
+  margin-bottom: 2px;
+}
+.norm-summary {
+  font-size: 12px;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  line-height: 1.45;
+}
+.norm-row {
+  display: grid;
+  grid-template-columns: 130px 150px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 0;
+  font-size: 11px;
+}
+.norm-key { color: var(--text-muted); text-transform: capitalize; }
+.norm-val { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.norm-note { color: var(--text-secondary); line-height: 1.45; }

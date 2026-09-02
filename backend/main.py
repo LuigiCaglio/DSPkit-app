@@ -2649,3 +2649,132 @@ async def statistics_mahalanobis(
         raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
+
+
+# ─── normality ────────────────────────────────────────────────────────────────
+
+_QQ_MAX_POINTS = 1500
+_QQ_TAIL_KEEP = 250
+
+
+def _thin_qq(theoretical, ordered):
+    """
+    Thin a Q-Q plot for display, keeping both tails intact.
+
+    The tails are the whole reason to look at a Q-Q plot -- they are where a
+    departure from normal shows up. Uniform subsampling drops exactly those
+    points, so the extremes are kept in full and only the dense middle, where
+    thousands of points overplot into a solid line anyway, is thinned.
+    """
+    n = len(ordered)
+    if n <= _QQ_MAX_POINTS:
+        return list(range(n))
+    k = _QQ_TAIL_KEEP
+    middle = np.linspace(k, n - k - 1, _QQ_MAX_POINTS - 2 * k).astype(int)
+    return sorted(set(list(range(k)) + middle.tolist() + list(range(n - k, n))))
+
+
+@app.post("/api/statistics/normality")
+async def statistics_normality(
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_col: Optional[int] = Form(None),
+    signal_cols: Optional[str] = Form(None),
+    fs: Optional[float] = Form(None),
+    pp: PreprocParams = Depends(),
+):
+    """Q-Q plot against a normal, plus normality indicators, per channel."""
+    try:
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        cols: list[int] = []
+        if signal_cols:
+            cols = [int(c) for c in json.loads(signal_cols)]
+        if not cols and signal_col is not None:
+            cols = [int(signal_col)]
+        if not cols:
+            raise ValueError("No channels are selected. Tick at least one in the sidebar.")
+
+        signals = []
+        for col in cols:
+            x, _, _ = get_preprocessed(parsed, time_col, col, fs, pp)
+            th, od, slope, intercept = dsp.qq_normal(x)
+            keep = _thin_qq(th, od)
+            signals.append({
+                "name": parsed["column_names"][col],
+                "qq": {
+                    "theoretical": to_list(np.asarray(th)[keep]),
+                    "ordered": to_list(np.asarray(od)[keep]),
+                    "slope": float(slope),
+                    "intercept": float(intercept),
+                    "n_shown": len(keep),
+                    "n_total": int(len(od)),
+                },
+                "normality": dsp.normality(x),
+            })
+        return {"signals": signals}
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=friendly_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
+
+
+# ─── multiple / partial coherence ─────────────────────────────────────────────
+
+
+@app.post("/api/multisensor/coherence_conditioned")
+async def multisensor_coherence_conditioned(
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_cols: str = Form(...),
+    fs: Optional[float] = Form(None),
+    mode: str = Form("multiple"),          # "multiple" | "partial"
+    nperseg: Optional[int] = Form(None),
+    window: str = Form("hann"),
+    pp: PreprocParams = Depends(),
+):
+    """
+    How much of each channel the rest of the array already explains.
+
+    "multiple" gives one curve per channel: the share of that channel linearly
+    predicted by all the others, per frequency. "partial" gives the pairwise
+    relationships with every other channel conditioned out, which separates a
+    direct relationship from one running through a third sensor.
+    """
+    try:
+        cols = [int(c) for c in json.loads(signal_cols)]
+        if len(cols) < 3:
+            raise ValueError(
+                "Conditioned coherence needs at least 3 channels — with only two "
+                "there is nothing to condition out, so use ordinary coherence."
+            )
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        data, fs_, _t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
+
+        if mode == "partial":
+            freqs, C = dsp.partial_coherence(data, fs_, window=window, nperseg=nperseg)
+            pairs = []
+            for i in range(len(labels)):
+                for j in range(i + 1, len(labels)):
+                    pairs.append({"label": f"{labels[i]} - {labels[j]}",
+                                  "values": to_list(C[i, j, :])})
+            return {"mode": "partial", "freqs": to_list(freqs), "pairs": pairs,
+                    "labels": labels}
+
+        freqs, g2 = dsp.multiple_coherence(data, fs_, window=window, nperseg=nperseg)
+        return {"mode": "multiple", "freqs": to_list(freqs), "labels": labels,
+                "signals": [{"name": labels[i], "values": to_list(g2[i, :])}
+                            for i in range(len(labels))]}
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=friendly_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))

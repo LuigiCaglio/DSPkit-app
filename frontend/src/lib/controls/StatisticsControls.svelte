@@ -30,6 +30,7 @@
   let percentile = $state(kept.percentile)
   const SCOPE_BY_MODE = {
     pdf:         'multi',      // compare several channels' distributions
+    normality:   'multi',
     joint:       'pair',
     covariance:  'multi',
     mahalanobis: 'multi',
@@ -44,6 +45,8 @@
         bins,
         bandwidth: bandwidth || undefined,
       })
+    } else if (mode === 'normality') {
+      runAnalysis('/api/statistics/normality', {})
     } else if (mode === 'joint') {
       runAnalysis('/api/statistics/joint', {
         signal_col_x: pairX,
@@ -71,6 +74,7 @@
     <option value="pdf">PDF / Histogram</option>
     <!-- Joint works against a single channel (X = Y); the two matrix methods
          are between-channel by definition and stay gated. -->
+    <option value="normality">Normality (Q-Q + tests)</option>
     <option value="joint">Joint distribution</option>
     <option value="covariance" disabled={!dualSignal}>Covariance matrix</option>
     <option value="mahalanobis" disabled={!dualSignal}>Mahalanobis distance</option>

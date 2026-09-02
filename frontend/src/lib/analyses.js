@@ -29,6 +29,7 @@ export const SCOPE = {
   emd:               'single',
   hht:               'single',
   multisensor:       'multi',
+  predictability:    'multi',
   fdd:               'multi',
   statistics:        'dynamic',
   indicators:        'single',
@@ -50,7 +51,7 @@ export const ALL_CHANNELS = 'all'
 export const AUTORUN = new Set([
   'timeseries', 'fft', 'psd', 'autocorrelation', 'peaks',
   'cross_correlation', 'csd', 'coherence', 'filter', 'stft',
-  'instantaneous', 'indicators', 'multisensor', 'fdd', 'statistics',
+  'instantaneous', 'indicators', 'multisensor', 'predictability', 'fdd', 'statistics',
   // The Explorer opens on STFT, which is cheap. Its own control refuses to
   // auto-run when the selected transform is one of the O(N^2) pair.
   'explorer',

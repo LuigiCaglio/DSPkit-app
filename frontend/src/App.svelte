@@ -95,6 +95,7 @@
     ]},
     { id: 'multiChannel',  label: 'Multi-Ch',      tabs: [
       { id: 'multisensor', label: 'Multi-Sensor' },
+      { id: 'predictability', label: 'Predictability' },
       { id: 'fdd', label: 'FDD' },
     ]},
     { id: 'statistics',    label: 'Statistics',     tabs: [

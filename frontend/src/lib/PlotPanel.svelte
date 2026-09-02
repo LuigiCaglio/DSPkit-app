@@ -133,6 +133,11 @@
   // the KDE is the iso-probability contour set.
   let isJoint = $derived(activeTab === 'statistics' && !!single?.H)
 
+  // Normality returns numbers that need reading, not just a chart, so the
+  // interpretation strings the library writes are shown under the plot.
+  let normalitySignals = $derived(
+    activeTab === 'statistics' && single?.signals?.[0]?.normality ? single.signals : null)
+
   // ── PSD-specific axis controls ───────────────────────────────────────────────
   let psdYLog = $state(true)   // default: log scale
   let psdXMin = $state('')
@@ -861,7 +866,39 @@
       </div>
     {/if}
 
-    <!-- peaks results table -->
+    <!-- normality indicators, with the library's own interpretation of each -->
+  {#if normalitySignals}
+    <div class="results-table-wrap" style="max-height:260px">
+      {#each normalitySignals as sg}
+        <div class="norm-block">
+          <div class="norm-head">{sg.name}</div>
+          <div class="norm-summary">{sg.normality.summary}</div>
+          {#each ['skewness','excess_kurtosis','dagostino_k2','jarque_bera','anderson_darling','shapiro_wilk'] as key}
+            {#if sg.normality[key]}
+              <div class="norm-row">
+                <span class="norm-key">{key.replace(/_/g, ' ')}</span>
+                <span class="norm-val">
+                  {sg.normality[key].value !== undefined
+                    ? Number(sg.normality[key].value).toPrecision(4)
+                    : (sg.normality[key].statistic !== undefined
+                        ? `stat ${Number(sg.normality[key].statistic).toPrecision(4)}`
+                        : '')}
+                  {#if sg.normality[key].pvalue !== undefined && sg.normality[key].pvalue !== null}
+                    · p {Number(sg.normality[key].pvalue) < 1e-4
+                          ? Number(sg.normality[key].pvalue).toExponential(1)
+                          : Number(sg.normality[key].pvalue).toFixed(4)}
+                  {/if}
+                </span>
+                <span class="norm-note">{sg.normality[key].interpretation}</span>
+              </div>
+            {/if}
+          {/each}
+        </div>
+      {/each}
+    </div>
+  {/if}
+
+  <!-- peaks results table -->
     {#if activeTab === 'peaks' && single?.peak_freqs?.length}
       <div class="results-table-wrap">
         <table class="results-table">

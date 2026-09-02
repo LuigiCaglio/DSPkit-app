@@ -21,6 +21,7 @@
   import PeaksControls       from './controls/PeaksControls.svelte'
   import IndicatorsControls  from './controls/IndicatorsControls.svelte'
   import MultisensorControls from './controls/MultisensorControls.svelte'
+  import PredictabilityControls from './controls/PredictabilityControls.svelte'
   import FddControls         from './controls/FddControls.svelte'
   import StatisticsControls  from './controls/StatisticsControls.svelte'
 
@@ -97,6 +98,8 @@
     <IndicatorsControls signalCol={focusChannel} {autoRun} {loading} {runAnalysis} />
   {:else if activeTab === 'multisensor'}
     <MultisensorControls {autoRun} {loading} {runAnalysis} {dualSignal} />
+  {:else if activeTab === 'predictability'}
+    <PredictabilityControls {autoRun} {loading} {runAnalysis} {dualSignal} nSelected={selected.length} />
   {:else if activeTab === 'fdd'}
     <FddControls {autoRun} {loading} {runAnalysis} {dualSignal} />
   {:else if activeTab === 'statistics'}
