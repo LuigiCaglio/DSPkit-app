@@ -1227,9 +1227,17 @@
         <span>undamped <b>{single.fn.toPrecision(5)} Hz</b></span>
         <span>peaks fitted <b>{single.n_peaks_used}</b></span>
         <span>R&sup2; <b>{single.r_squared.toFixed(4)}</b></span>
+        {#if single.source_info?.n_segments}
+          <span>segments averaged <b>{single.source_info.n_segments.toLocaleString()}</b></span>
+          <span>trigger <b>{single.source_info.trigger_level_sd.toFixed(1)} sd</b></span>
+        {/if}
       </div>
       <div class="mi-note">
-        {#if single.r_squared < 0.95}
+        {#if single.source === 'random_decrement' && single.source_info?.n_segments < 100}
+          Only {single.source_info.n_segments} segments were averaged. The random
+          part of the response has not cancelled at that count, so the signature
+          is still partly noise — lower the trigger level or use a longer record.
+        {:else if single.r_squared < 0.95}
           R&sup2; is low, so the decay is not a single clean mode — two close modes
           beat rather than decay, and this number should not be reported.
         {:else}

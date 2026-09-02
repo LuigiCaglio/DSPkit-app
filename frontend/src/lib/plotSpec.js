@@ -699,15 +699,19 @@ export function buildPlot(tab, d, opts) {
   if (tab === 'log_decrement') {
     // The decay with the peaks the fit actually used marked on it: the whole
     // question is whether those are the peaks of the decay or of the noise.
+    const SRC = { decay: 'free decay', autocorrelation: 'autocorrelation',
+                  random_decrement: 'random decrement' }
     const traces = [
-      line(d.times, d.signal, d.name, 'solid', 'y', colors[0]),
+      line(d.times, d.signal, SRC[d.source] ?? d.name, 'solid', 'y', colors[0]),
       { x: d.peak_times, y: d.peak_amplitudes, type: 'scatter', mode: 'markers',
         name: `${d.n_peaks_used} peaks fitted`,
         marker: { symbol: 'circle-open', size: 8, line: { width: 2 }, color: T.danger } },
     ]
-    const head = `zeta ${d.zeta_pct.toFixed(2)}%  ·  fn ${d.fn.toPrecision(4)} Hz  ·  R2 ${d.r_squared.toFixed(4)}`
+    const via = d.source && d.source !== 'decay' ? `  ·  via ${SRC[d.source]}` : ''
+    const bnd = d.band ? `  ·  ${d.band[0]}-${d.band[1]} Hz` : ''
+    const head = `zeta ${d.zeta_pct.toFixed(2)}%  ·  fn ${d.fn.toPrecision(4)} Hz  ·  R2 ${d.r_squared.toFixed(4)}${via}${bnd}`
     return { traces, layout: merge(L, {
-      xaxis: { ...L.xaxis, title: 'Time [s]' },
+      xaxis: { ...L.xaxis, title: d.source === 'decay' ? 'Time [s]' : 'Lag [s]' },
       yaxis: { ...L.yaxis, title: withUnit('Amplitude', oneUnit) },
       title: { text: title ?? head, font: { color: T.title, size: cell ? 11 : 12 } },
     })}

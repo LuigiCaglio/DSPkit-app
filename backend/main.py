@@ -3159,21 +3159,73 @@ async def log_decrement_endpoint(
     fs: Optional[float] = Form(None),
     n_peaks: Optional[int] = Form(None),
     floor_fraction: float = Form(0.05),
+    source: str = Form("decay"),          # 'decay' | 'autocorrelation' | 'random_decrement'
+    band_low: Optional[float] = Form(None),
+    band_high: Optional[float] = Form(None),
+    rdt_level_sd: float = Form(1.0),
+    segment_length: Optional[int] = Form(None),
+    max_lag_s: Optional[float] = Form(None),
     pp: PreprocParams = Depends(),
 ):
-    """Damping from a free-decay record, with the fitted peaks for plotting."""
+    """
+    Damping by log decrement, from a decay or from ambient data.
+
+    Log decrement needs a free decay. Ambient vibration is not one, so two
+    routes turn it into one: the autocorrelation and the random decrement
+    signature are both proportional to the free-decay response. Which to use is
+    largely taste; they should agree, and disagreeing is informative.
+    """
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, int(signal_col), fs, pp)
+        raw, fs_, t = get_preprocessed(parsed, time_col, int(signal_col), fs, pp)
+
+        # Isolating one mode first is what makes any of this meaningful: the
+        # method assumes a single decaying mode, and a raw record has several.
+        src = raw
+        if band_low and band_high:
+            if not 0 < band_low < band_high < fs_ / 2:
+                raise ValueError(
+                    "Band must satisfy 0 < low < high < {:g} Hz (Nyquist).".format(fs_ / 2)
+                )
+            src = dsp.bandpass(raw, fs_, float(band_low), float(band_high),
+                               order=4, zero_phase=True)
+
+        info = {}
+        if source == "autocorrelation":
+            lags, acf = dsp.autocorrelation(src, fs=fs_, normalize=True)
+            pos = lags >= 0
+            x, t = acf[pos], lags[pos]
+            if max_lag_s:
+                keep = t <= float(max_lag_s)
+                x, t = x[keep], t[keep]
+            info = {"n_used": int(x.size)}
+        elif source == "random_decrement":
+            seg = int(segment_length) if segment_length else None
+            rd = dsp.random_decrement(src, fs_,
+                                      trigger_level=float(rdt_level_sd) * float(np.std(src)),
+                                      segment_length=seg)
+            x, t = rd["signature"], rd["tau"]
+            info = {"n_segments": rd["n_segments"],
+                    "trigger_level_sd": rd["trigger_level_sd"],
+                    "segment_length": rd["segment_length"]}
+        else:
+            x = src
+            if max_lag_s:
+                keep = t <= t[0] + float(max_lag_s)
+                x, t = x[keep], t[keep]
+
         r = dsp.log_decrement(x, fs_, n_peaks=n_peaks,
                               floor_fraction=float(floor_fraction))
 
-        keep = min(len(x), 20000)
-        step = max(1, len(x) // keep)
+        keep_n = min(len(x), 20000)
+        step = max(1, len(x) // keep_n)
         return {
             "name": parsed["column_names"][int(signal_col)],
-            "times": to_list(t[::step]),
-            "signal": to_list(x[::step]),
+            "source": source,
+            "band": [band_low, band_high] if (band_low and band_high) else None,
+            "source_info": info,
+            "times": to_list(np.asarray(t)[::step]),
+            "signal": to_list(np.asarray(x)[::step]),
             "peak_times": to_list(r["peak_times"]),
             "peak_amplitudes": to_list(r["peak_amplitudes"]),
             "delta": r["delta"],
