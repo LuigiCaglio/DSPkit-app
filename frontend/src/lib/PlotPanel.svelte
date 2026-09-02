@@ -92,6 +92,11 @@
   let tfRangeDb    = $state(60)
   let tfClipPct    = $state(99)
   let tfColorscale = $state('Viridis')
+  // A surface is worse than a heatmap for reading a value -- peaks occlude what
+  // is behind them and perspective distorts magnitude -- so it is an opt-in
+  // view, never the default. It is genuinely better at showing the shape of a
+  // ridge, which is why it is here at all.
+  let tfSurface3d  = $state(false)
   let tfLoaded     = false
 
   onMount(() => {
@@ -102,18 +107,23 @@
         tfRangeDb = v.rangeDb ?? tfRangeDb
         tfClipPct = v.clipPct ?? tfClipPct
         tfColorscale = HEATMAP_SCALES.includes(v.colorscale) ? v.colorscale : tfColorscale
+        tfSurface3d = v.surface3d ?? tfSurface3d
       }
     } catch { /* defaults are fine */ }
     tfLoaded = true
   })
 
   $effect(() => {
-    const v = { db: tfDb, rangeDb: tfRangeDb, clipPct: tfClipPct, colorscale: tfColorscale }
+    const v = { db: tfDb, rangeDb: tfRangeDb, clipPct: tfClipPct, colorscale: tfColorscale, surface3d: tfSurface3d }
     if (!tfLoaded) return          // don't overwrite storage before it is read
     try { localStorage.setItem(TF_KEY, JSON.stringify(v)) } catch { /* ignore */ }
   })
 
   let isHeatmap = $derived(HEATMAP.has(activeTab))
+
+  // Explorer is excluded: its whole point is clicking the surface to slice it,
+  // and picking a cell off a rotated 3-D mesh is not a usable gesture.
+  let canSurface3d = $derived(isHeatmap && activeTab !== 'explorer')
 
   // The distribution view is the only stats mode with marks to toggle;
   // joint, covariance and Mahalanobis return other shapes entirely.
@@ -270,7 +280,7 @@
     psd: { yLog: psdYLog, xMin: psdXMin, xMax: psdXMax, yMin: psdYMin, yMax: psdYMax },
     downsample: !showAllPoints,
     lagSide,
-    tf: { db: tfDb, rangeDb: tfRangeDb, clipPct: tfClipPct, colorscale: tfColorscale },
+    tf: { db: tfDb, rangeDb: tfRangeDb, clipPct: tfClipPct, colorscale: tfColorscale, surface3d: tfSurface3d },
     units,
     showHist,
     showKde,
@@ -572,6 +582,12 @@
             {#each HEATMAP_SCALES as c}<option value={c}>{c}</option>{/each}
           </select>
         </span>
+        {#if canSurface3d}
+          <span class="plot-toolbar-sep"></span>
+          <label title="Drag to rotate. Good for seeing the shape of a ridge; the flat view is better for reading a value off it, since peaks hide what is behind them.">
+            <input type="checkbox" bind:checked={tfSurface3d} /> 3D surface
+          </label>
+        {/if}
       {/if}
       {#if activeTab === 'cross_correlation'}
         <span class="plot-toolbar-sep"></span>

@@ -76,6 +76,26 @@ export const LOG_Y_TABS = new Set(['fft', 'psd', 'peaks'])
 
 export const HEATMAP_SCALES = ['Viridis', 'Cividis', 'Magma', 'Inferno']
 
+/**
+ * Thin a 2-D grid for a 3-D surface.
+ *
+ * A spectrogram is routinely hundreds of frequency bins by thousands of frames.
+ * A heatmap draws that as an image and does not care; a surface has to build a
+ * mesh, and hundreds of thousands of vertices makes the view unusable to rotate
+ * for a picture that a thinned grid draws identically.
+ */
+const SURFACE_MAX = 160
+
+function thinSurface(x, y, z) {
+  const sx = Math.max(1, Math.ceil(x.length / SURFACE_MAX))
+  const sy = Math.max(1, Math.ceil(y.length / SURFACE_MAX))
+  if (sx === 1 && sy === 1) return { x, y, z }
+  const xi = x.filter((_, i) => i % sx === 0)
+  const yi = y.filter((_, i) => i % sy === 0)
+  const zi = z.filter((_, r) => r % sy === 0).map(row => row.filter((_, c) => c % sx === 0))
+  return { x: xi, y: yi, z: zi }
+}
+
 /** Largest |value| in a 2-D array, ignoring non-finite entries. */
 function peakAbs(z) {
   let peak = 0
@@ -218,6 +238,22 @@ export function buildPlot(tab, d, opts) {
    * a streak. dB relative to the peak, with an explicit dynamic range, is what
    * makes the structure visible.
    */
+  /**
+   * Axis titles for a time-frequency view.
+   *
+   * A 3-D surface puts its axes inside `scene` rather than at the top level, so
+   * the tab branches ask for them here instead of writing xaxis/yaxis directly.
+   */
+  const tfAxes = () => tf.surface3d
+    ? { scene: {
+          xaxis: { title: { text: 'Time [s]' }, gridcolor: T.grid },
+          yaxis: { title: { text: 'Frequency [Hz]' }, gridcolor: T.grid },
+          zaxis: { title: { text: tf.db ? 'dB re peak' : 'Magnitude' }, gridcolor: T.grid },
+          camera: { eye: { x: 1.5, y: -1.6, z: 0.9 } },
+        } }
+    : { xaxis: { ...L.xaxis, title: 'Time [s]' },
+        yaxis: { ...L.yaxis, title: 'Frequency [Hz]' } }
+
   const heatmap = (x, y, z, { carriesSignalUnit = false } = {}) => {
     const { db = true, rangeDb = 60, clipPct = 99, colorscale = 'Viridis' } = tf
     let zz = z, zmin, zmax, unit
@@ -236,13 +272,26 @@ export function buildPlot(tab, d, opts) {
       unit = carriesSignalUnit ? withUnit('magnitude', oneUnit) : 'magnitude'
     }
 
+    const bar = {
+      thickness: cell ? 10 : 14, outlinewidth: 0,
+      title: { text: unit, side: 'right', font: { size: cell ? 9 : 11 } },
+    }
+
+    if (tf.surface3d) {
+      const t = thinSurface(x, y, zz)
+      return [{
+        x: t.x, y: t.y, z: t.z, type: 'surface', colorscale,
+        ...(zmin != null ? { cmin: zmin, cmax: zmax, cauto: false } : {}),
+        colorbar: bar,
+        contours: { z: { show: false } },
+        hovertemplate: `%{x:.4g} s, %{y:.4g} Hz — %{z:.3g} ${db ? 'dB' : ''}<extra></extra>`,
+      }]
+    }
+
     return [{
       x, y, z: zz, type: 'heatmap', colorscale,
       ...(zmin != null ? { zmin, zmax, zauto: false } : {}),
-      colorbar: {
-        thickness: cell ? 10 : 14, outlinewidth: 0,
-        title: { text: unit, side: 'right', font: { size: cell ? 9 : 11 } },
-      },
+      colorbar: bar,
       hovertemplate: `%{x:.4g} s, %{y:.4g} Hz — %{z:.3g} ${db ? 'dB' : ''}<extra></extra>`,
     }]
   }
@@ -444,24 +493,18 @@ export function buildPlot(tab, d, opts) {
   }
 
   if (tab === 'stft' || tab === 'cwt') {
-    return { traces: heatmap(d.times, d.freqs, d.magnitude, { carriesSignalUnit: true }), layout: merge(L, titled({
-      xaxis: { ...L.xaxis, title: 'Time [s]' },
-      yaxis: { ...L.yaxis, title: 'Frequency [Hz]' },
-    }))}
+    return { traces: heatmap(d.times, d.freqs, d.magnitude, { carriesSignalUnit: true }),
+             layout: merge(L, titled(tfAxes())) }
   }
 
   if (tab === 'wvd') {
-    return { traces: heatmap(d.times, d.freqs, d.wvd), layout: merge(L, titled({
-      xaxis: { ...L.xaxis, title: 'Time [s]' },
-      yaxis: { ...L.yaxis, title: 'Frequency [Hz]' },
-    }))}
+    return { traces: heatmap(d.times, d.freqs, d.wvd),
+             layout: merge(L, titled(tfAxes())) }
   }
 
   if (tab === 'spwvd') {
-    return { traces: heatmap(d.times, d.freqs, d.spwvd), layout: merge(L, titled({
-      xaxis: { ...L.xaxis, title: 'Time [s]' },
-      yaxis: { ...L.yaxis, title: 'Frequency [Hz]' },
-    }))}
+    return { traces: heatmap(d.times, d.freqs, d.spwvd),
+             layout: merge(L, titled(tfAxes())) }
   }
 
   if (tab === 'instantaneous') {
