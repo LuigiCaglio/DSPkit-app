@@ -62,6 +62,42 @@
   let plotError = $state(null)
   let loading   = $state(false)
 
+  // ── FDD: singular vectors at frequencies the user picks ───────────────────
+  // Kept apart from plotData so asking for a shape never replaces the plot the
+  // frequency was picked off.
+  let fddPicks   = $state([])      // frequencies [Hz], in the order chosen
+  let fddVectors = $state(null)    // response from /api/fdd/vectors
+  let fddNVec    = $state(1)
+  let fddBusy    = $state(false)
+  let fddError   = $state(null)
+
+  // A new file or a different analysis makes the old picks meaningless.
+  $effect(() => { const _ = session, __ = activeTab; fddPicks = []; fddVectors = null; fddError = null })
+
+  function fddPick(freq) {
+    if (freq == null) return
+    // Clicking the same peak twice should not queue it twice; a bin's width is
+    // the natural tolerance for "the same frequency".
+    const tol = fddVectors?.df ?? 0.5
+    if (fddPicks.some(f => Math.abs(f - freq) < tol)) return
+    fddPicks = [...fddPicks, freq].sort((a, b) => a - b)
+  }
+  const fddUnpick = (i) => { fddPicks = fddPicks.filter((_, j) => j !== i) }
+  const fddClear  = () => { fddPicks = []; fddVectors = null; fddError = null }
+
+  async function runFddVectors() {
+    if (!session || fddPicks.length === 0) return
+    fddBusy = true
+    fddError = null
+    const { data, error } = await post('/api/fdd/vectors', {
+      freqs_wanted: JSON.stringify(fddPicks),
+      n_vectors: fddNVec,
+    })
+    if (error) { fddError = error; fddVectors = null }
+    else fddVectors = data
+    fddBusy = false
+  }
+
   // ── right sidebar ──────────────────────────────────────────────────────────
   let rightOpen = $state(false)
 
@@ -1064,6 +1100,10 @@ settings were restored from the last time this file was open.">
             {activeTab} {plotData} {loading} {plotError}
             {preprocSummary} {filterBand} {filterResponse} {setFilterFromRange} {clearFilter}
             units={plotUnits}
+            {fddPicks} {fddVectors} {fddBusy} {fddError}
+            bind:fddNVec
+            onFddPick={fddPick} onFddUnpick={fddUnpick}
+            onFddClear={fddClear} onFddRun={runFddVectors}
           />
         {/if}
       </div>

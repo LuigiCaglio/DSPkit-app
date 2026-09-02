@@ -15,6 +15,9 @@
     preprocSummary = [], filterBand = null, filterResponse = null,
     setFilterFromRange = null, clearFilter = null,
     units = {},
+    fddPicks = [], fddVectors = null, fddBusy = false, fddError = null,
+    fddNVec = $bindable(1),
+    onFddPick = null, onFddUnpick = null, onFddClear = null, onFddRun = null,
   } = $props()
 
   // Three shapes arrive here:
@@ -56,6 +59,53 @@
 
   let explorerRes = $derived(
     explorer?.tf ? describeResolution(explorer.tf.times, explorer.tf.freqs) : '')
+
+  // ── FDD shapes: the copyable table ─────────────────────────────────────────
+  // Tab-separated, because that is what pastes into a spreadsheet as columns.
+  // Real and imaginary parts go alongside magnitude and phase: a shape usually
+  // leaves here to be used in something else, and which form that wants is not
+  // ours to guess.
+  let svCopied = $state(false)
+
+  let svTable = $derived.by(() => {
+    if (!fddVectors?.points?.length) return null
+    const L = fddVectors.labels
+    const head = ['freq_Hz', 'sv', 'singular_value',
+      ...L.map(l => `${l}_mag`), ...L.map(l => `${l}_phase_deg`),
+      ...L.map(l => `${l}_real`), ...L.map(l => `${l}_imag`)]
+    const rows = []
+    for (const pt of fddVectors.points) {
+      for (const v of pt.vectors) {
+        rows.push([pt.freq_used, v.sv, v.singular_value,
+          ...v.magnitude, ...v.phase_deg, ...v.real, ...v.imag].join('\t'))
+      }
+    }
+    return [head.join('\t'), ...rows].join('\n')
+  })
+
+  async function copySvTable() {
+    if (!svTable) return
+    try {
+      await navigator.clipboard.writeText(svTable)
+    } catch {
+      // Clipboard access can be refused (permissions, or a non-secure origin).
+      // Selecting the text is a worse experience but beats a button that does
+      // nothing and says nothing.
+      const ta = document.createElement('textarea')
+      ta.value = svTable
+      document.body.appendChild(ta); ta.select()
+      try { document.execCommand('copy') } catch { /* nothing else to try */ }
+      ta.remove()
+    }
+    svCopied = true
+    setTimeout(() => { svCopied = false }, 1800)
+  }
+
+  /** A click anywhere on the FDD plot picks that frequency for a shape. */
+  function onFddPlotClick(e) {
+    const pt = e?.points?.[0]
+    if (pt && onFddPick) onFddPick(pt.x)
+  }
 
   /** A click on the surface sets both slices; a click elsewhere is ignored. */
   function onExplorerClick(e) {
@@ -854,6 +904,7 @@
             spec={mainSpec}
             onRelayout={zoomable ? onRelayout : null}
             onSelected={bandPick ? onSelected : null}
+            onClick={activeTab === 'fdd' ? onFddPlotClick : null}
           />
         </div>
       {/snippet}
@@ -866,7 +917,85 @@
       </div>
     {/if}
 
-    <!-- normality indicators, with the library's own interpretation of each -->
+    <!-- FDD: singular vectors at frequencies picked off the plot -->
+  {#if activeTab === 'fdd' && single?.freqs}
+    <div class="sv-panel">
+      <div class="sv-bar">
+        <span class="sv-title">Mode shapes at picked frequencies</span>
+        <span class="plot-toolbar-grouplabel">
+          click the plot to pick{fddVectors?.df ? ` · resolution ${fddVectors.df.toPrecision(3)} Hz` : ''}
+        </span>
+        <span class="plot-toolbar-sep"></span>
+        <span class="plot-toolbar-grouplabel">vectors</span>
+        <input type="number" bind:value={fddNVec} min="1" max="12" class="plot-axis-input"
+               aria-label="How many singular vectors" />
+        <button class="btn-ghost" onclick={() => onFddRun?.()}
+                disabled={fddBusy || fddPicks.length === 0}>
+          {fddBusy ? 'Working…' : 'Get shapes'}
+        </button>
+        {#if fddPicks.length}
+          <button class="btn-ghost" onclick={() => onFddClear?.()}>Clear</button>
+        {/if}
+        {#if svTable}
+          <button class="btn-ghost" onclick={copySvTable}>{svCopied ? 'Copied' : 'Copy table'}</button>
+        {/if}
+      </div>
+
+      {#if fddPicks.length}
+        <div class="sv-picks">
+          {#each fddPicks as f, i}
+            <button class="sv-chip" onclick={() => onFddUnpick?.(i)} title="Remove">
+              {f.toPrecision(5)} Hz ×
+            </button>
+          {/each}
+        </div>
+      {:else}
+        <div class="sv-hint">
+          No frequencies picked yet. Click anywhere on the singular-value curves —
+          a peak, or a frequency the automatic picker missed.
+        </div>
+      {/if}
+
+      {#if fddError}
+        <div class="error">{fddError}</div>
+      {/if}
+
+      {#if fddVectors}
+        <div class="sv-table-wrap">
+          <table class="results-table sv-table">
+            <thead>
+              <tr>
+                <th>Freq [Hz]</th><th>SV</th><th>&sigma;</th>
+                {#each fddVectors.labels as l}<th>{l}</th>{/each}
+              </tr>
+            </thead>
+            <tbody>
+              {#each fddVectors.points as pt}
+                {#each pt.vectors as v}
+                  <tr>
+                    <td>{pt.freq_used.toPrecision(6)}</td>
+                    <td>SV{v.sv}</td>
+                    <td>{v.singular_value.toExponential(3)}</td>
+                    {#each v.magnitude as m, ci}
+                      <td>{m.toFixed(4)} ∠{v.phase_deg[ci].toFixed(1)}°</td>
+                    {/each}
+                  </tr>
+                {/each}
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <div class="sv-hint">
+          Magnitude ∠ phase. Each vector is rotated so its largest channel is real
+          and positive, so two shapes can be compared rather than differing by an
+          arbitrary phase. Copy gives tab-separated text, ready to paste into a
+          spreadsheet.
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- normality indicators, with the library's own interpretation of each -->
   {#if normalitySignals}
     <div class="results-table-wrap" style="max-height:260px">
       {#each normalitySignals as sg}

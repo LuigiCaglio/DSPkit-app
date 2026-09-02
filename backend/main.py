@@ -2785,3 +2785,91 @@ async def multisensor_coherence_conditioned(
         raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
+
+# ─── FDD singular vectors at chosen frequencies ───────────────────────────────
+
+
+@app.post("/api/fdd/vectors")
+async def fdd_vectors(
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_cols: str = Form(...),
+    fs: Optional[float] = Form(None),
+    freqs_wanted: str = Form(...),        # JSON list of frequencies [Hz]
+    n_vectors: int = Form(1),
+    window: str = Form("hann"),
+    nperseg: Optional[int] = Form(None),
+    pp: PreprocParams = Depends(),
+):
+    """
+    Singular vectors of the CSD matrix at frequencies the user picked.
+
+    The automatic peak picker answers "where are the modes"; this answers "give
+    me the shape at exactly here", which is what you need when you disagree with
+    the picker, or want the second singular vector at a frequency where two
+    modes are close.
+
+    Each requested frequency is snapped to the nearest analysis bin, and the bin
+    actually used is returned alongside it -- silently rounding and not saying so
+    would misreport which frequency a shape belongs to.
+    """
+    try:
+        cols = [int(c) for c in json.loads(signal_cols)]
+        if len(cols) < 2:
+            raise ValueError("FDD needs at least 2 channels. Tick more of them in the sidebar.")
+        wanted = [float(f) for f in json.loads(freqs_wanted)]
+        if not wanted:
+            raise ValueError("No frequencies picked. Click the plot to choose one.")
+
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        data, fs_, _t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
+
+        from dspkit.fdd import fdd_svd as _svd
+        freqs, S, U = _svd(data, fs_, window=window, nperseg=nperseg)
+
+        n_ch = len(cols)
+        n_vec = max(1, min(int(n_vectors), n_ch))
+
+        points = []
+        for fw in wanted:
+            k = int(np.argmin(np.abs(freqs - fw)))
+            vectors = []
+            for v in range(n_vec):
+                u = U[k, :, v]
+                # A singular vector is defined up to an arbitrary complex phase.
+                # Rotating so the largest-magnitude channel is real and positive
+                # makes two shapes comparable instead of differing by a spin.
+                ref = u[int(np.argmax(np.abs(u)))]
+                if abs(ref) > 0:
+                    u = u * np.conj(ref) / abs(ref)
+                vectors.append({
+                    "sv": v + 1,
+                    "singular_value": float(S[k, v]),
+                    "magnitude": to_list(np.abs(u)),
+                    "phase_deg": to_list(np.angle(u, deg=True)),
+                    "real": to_list(np.real(u)),
+                    "imag": to_list(np.imag(u)),
+                })
+            points.append({
+                "freq_requested": float(fw),
+                "freq_used": float(freqs[k]),
+                "bin": k,
+                "vectors": vectors,
+            })
+
+        return {
+            "labels": labels,
+            "df": float(freqs[1] - freqs[0]) if len(freqs) > 1 else None,
+            "n_vectors": n_vec,
+            "points": points,
+        }
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=friendly_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
+
