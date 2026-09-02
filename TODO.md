@@ -266,6 +266,25 @@ annotation rather than a second data series.
 
 ---
 
+## 3.4b Row-oriented files with row labels are rejected
+
+Found 2026-09-02. Orientation detection handles rows correctly when the data is
+bare numbers (3 x 2000 detected as `rows`), but a row-oriented file that names
+each row -- `t,0.0,0.002,...` / `acc1,...` -- fails outright with "No numeric
+data found in file".
+
+`autodetect` (`backend/main.py`) looks for the first row that parses as *fully*
+numeric. Every row here starts with a label, so no row qualifies and it gives
+up before orientation is ever considered. `parse_file` then never gets a chance.
+
+A leading label per row is the row-orientation equivalent of a header row, and
+is common in exported data, so this is worth handling: if no row is fully
+numeric, retry ignoring the first field of each row, and use those first fields
+as the channel names. The user can still override in File layout, but they have
+to get past the load error first, and right now they cannot.
+
+---
+
 ## 3.5 Zoom is lost on a small-multiples grid
 
 Reported 2026-09-02 on Decomposition > Instantaneous: zooming snaps back to the

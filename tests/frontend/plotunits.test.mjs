@@ -73,11 +73,32 @@ test('a cross-spectrum uses both channels, not the selection', () => {
 })
 
 test('a probability density gets the reciprocal on y and the unit on x', () => {
-  const d = { xi: [1], density: [1], bin_centres: [1], hist_density: [1] }
+  const d = { signals: [{ name: 'acc1', xi: [1], density: [1], bin_centres: [1], hist_density: [1] }] }
   const u = { focus: 'm/s²', byName: {} }
   const spec = buildPlot('statistics', d, { T, units: u })
   assert.equal(xTitle(spec), 'Value [m/s²]')
   assert.equal(yTitle(spec), 'Density [1/(m/s²)]')
+})
+
+test('several channels overlay, each keeping one hue for both its marks', () => {
+  const mk = (name) => ({ name, xi: [1], density: [1], bin_centres: [1], hist_density: [1] })
+  const d = { signals: [mk('a'), mk('b')] }
+  const spec = buildPlot('statistics', d, { T, units: { byName: {} } })
+  // two channels x (histogram + KDE)
+  assert.equal(spec.traces.length, 4)
+  const hist = spec.traces.filter(t => t.type === 'bar')
+  const kde  = spec.traces.filter(t => t.type !== 'bar')
+  assert.equal(hist.length, 2)
+  assert.equal(kde.length, 2)
+  assert.equal(hist[0].marker.color, kde[0].line.color)
+})
+
+test('the histogram and the KDE can each be turned off', () => {
+  const d = { signals: [{ name: 'a', xi: [1], density: [1], bin_centres: [1], hist_density: [1] }] }
+  const o = { T, units: { byName: {} } }
+  assert.equal(buildPlot('statistics', d, { ...o, showHist: false }).traces.length, 1)
+  assert.equal(buildPlot('statistics', d, { ...o, showKde: false }).traces.length, 1)
+  assert.equal(buildPlot('statistics', d, { ...o, showHist: false, showKde: false }).traces.length, 0)
 })
 
 // ── the payload deciding the unit ────────────────────────────────────────────

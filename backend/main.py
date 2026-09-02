@@ -2317,24 +2317,45 @@ async def statistics_pdf(
     orientation: str = Form("columns"),
     header_row: int = Form(-1),
     time_col: int = Form(-1),
-    signal_col: int = Form(...),
+    signal_col: Optional[int] = Form(None),
+    signal_cols: Optional[str] = Form(None),
     fs: Optional[float] = Form(None),
     bins: int = Form(50),
     bandwidth: Optional[float] = Form(None),
     pp: PreprocParams = Depends(),
 ):
+    """
+    Distribution of one or more channels.
+
+    Comparing distributions is the usual reason to look at one, so this takes
+    the whole selection and returns a list. `signal_col` still works on its own
+    for a single channel.
+    """
     try:
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
+
+        cols: list[int] = []
+        if signal_cols:
+            cols = [int(c) for c in json.loads(signal_cols)]
+        if not cols and signal_col is not None:
+            cols = [int(signal_col)]
+        if not cols:
+            raise ValueError("No signal columns selected")
+
         from dspkit.statistics import pdf_estimate as _pdf, histogram as _hist
-        xi, density = _pdf(x, bandwidth=bandwidth)
-        bin_centres, counts = _hist(x, bins=bins, density=True)
-        return {
-            "xi": to_list(xi),
-            "density": to_list(density),
-            "bin_centres": to_list(bin_centres),
-            "hist_density": to_list(counts),
-        }
+        signals = []
+        for col in cols:
+            x, fs_, _ = get_preprocessed(parsed, time_col, col, fs, pp)
+            xi, density = _pdf(x, bandwidth=bandwidth)
+            bin_centres, counts = _hist(x, bins=bins, density=True)
+            signals.append({
+                "name": parsed["column_names"][col],
+                "xi": to_list(xi),
+                "density": to_list(density),
+                "bin_centres": to_list(bin_centres),
+                "hist_density": to_list(counts),
+            })
+        return {"signals": signals}
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:

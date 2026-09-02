@@ -162,6 +162,8 @@ export function buildPlot(tab, d, opts) {
     response = null,         // {freqs, magnitude} — the filter's own response
     tf = {},                 // heatmap scaling: {db, rangeDb, clipPct, colorscale}
     units = {},              // resolved by units.js: {signal, x, y, byName}
+    showHist = true,         // distributions: draw the histogram bars
+    showKde = true,          // distributions: draw the smooth density
   } = opts
 
   const L = baseLayout(T, cell)
@@ -588,12 +590,25 @@ export function buildPlot(tab, d, opts) {
   }
 
   if (tab === 'statistics') {
-    if (d.xi) {
-      return { traces: [
-        { x: d.bin_centres, y: d.hist_density, type: 'bar', name: 'Histogram',
-          marker: { color: colors[0], opacity: 0.4 } },
-        line(d.xi, d.density, 'KDE', 'solid', 'y', T.danger),
-      ], layout: merge(L, {
+    if (d.signals?.[0]?.xi) {
+      // One channel or several. Each keeps a single hue across both its marks,
+      // so the histogram and the curve read as one series rather than two.
+      const multi = d.signals.length > 1
+      const traces = []
+      d.signals.forEach((sg, i) => {
+        const c = colors[i % colors.length]
+        if (showHist) {
+          traces.push({
+            x: sg.bin_centres, y: sg.hist_density, type: 'bar',
+            name: multi ? `${sg.name} hist` : 'Histogram',
+            marker: { color: c, opacity: multi ? 0.28 : 0.4 },
+          })
+        }
+        if (showKde) {
+          traces.push(line(sg.xi, sg.density, multi ? sg.name : 'KDE', 'solid', 'y', c))
+        }
+      })
+      return { traces, layout: merge(L, {
         xaxis: { ...L.xaxis, title: withUnit('Value', oneUnit) },
         yaxis: { ...L.yaxis, title: withUnit('Density', densityUnit(oneUnit)) },
         barmode: 'overlay',

@@ -29,7 +29,7 @@
   let bandwidth = $state(kept.bandwidth)
   let percentile = $state(kept.percentile)
   const SCOPE_BY_MODE = {
-    pdf:         'single',
+    pdf:         'multi',      // compare several channels' distributions
     joint:       'pair',
     covariance:  'multi',
     mahalanobis: 'multi',
@@ -38,8 +38,9 @@
 
   function run() {
     if (mode === 'pdf') {
+      // signal_cols is already on every request; the endpoint reads the
+      // whole selection, so no channel argument is needed here.
       runAnalysis('/api/statistics/pdf', {
-        signal_col: focusChannel,
         bins,
         bandwidth: bandwidth || undefined,
       })

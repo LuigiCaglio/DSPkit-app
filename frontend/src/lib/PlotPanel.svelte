@@ -71,6 +71,11 @@
   let normalizeSignals = $state(false)
   let yLogScale        = $state(false)
 
+  // Distributions: which marks to draw. Overlaying several channels' histograms
+  // gets busy fast, so being able to drop to curves only is the point.
+  let showHist = $state(true)
+  let showKde  = $state(true)
+
   // Shared row height for the small-multiples grid; every cell binds to it.
   let gridCellH = $state(270)
 
@@ -109,6 +114,10 @@
   })
 
   let isHeatmap = $derived(HEATMAP.has(activeTab))
+
+  // The distribution view is the only stats mode with marks to toggle;
+  // joint, covariance and Mahalanobis return other shapes entirely.
+  let isDistribution = $derived(activeTab === 'statistics' && !!single?.signals?.[0]?.xi)
 
   // ── PSD-specific axis controls ───────────────────────────────────────────────
   let psdYLog = $state(true)   // default: log scale
@@ -231,6 +240,8 @@
     lagSide,
     tf: { db: tfDb, rangeDb: tfRangeDb, clipPct: tfClipPct, colorscale: tfColorscale },
     units,
+    showHist,
+    showKde,
   })
 
   let mainSpec = $derived(
@@ -456,6 +467,10 @@
       <label><input type="checkbox" bind:checked={normalizeSignals} /> Normalize</label>
       {#if LOG_Y_TABS.has(activeTab) && activeTab !== 'psd' && !overview}
         <label><input type="checkbox" bind:checked={yLogScale} /> Log Y</label>
+      {/if}
+      {#if isDistribution}
+        <label><input type="checkbox" bind:checked={showHist} /> Histogram</label>
+        <label><input type="checkbox" bind:checked={showKde} /> KDE</label>
       {/if}
       {#if isDownsampled || showAllPoints}
         <label><input type="checkbox" bind:checked={showAllPoints} /> All points</label>
