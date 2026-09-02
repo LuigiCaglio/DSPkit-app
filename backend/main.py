@@ -1541,7 +1541,8 @@ async def spectral_autocorrelation(
     normalize: bool = Form(True),
     max_lag: Optional[float] = Form(None),
     lag_windows: str = Form("[]"),        # JSON list of lag-window names
-    bt_max_lag: Optional[int] = Form(None),
+    bt_max_lag: Optional[float] = Form(None),
+    bt_lag_unit: str = Form("samples"),   # "samples" | "seconds"
     bt_decay: float = Form(3.0),
     pp: PreprocParams = Depends(),
 ):
@@ -1565,6 +1566,20 @@ async def spectral_autocorrelation(
         bt = None
         wins = [str(w) for w in json.loads(lag_windows)]
         if wins:
+            # The lag count can be given either way. Seconds is usually the
+            # natural unit -- it is what sets the frequency resolution, roughly
+            # 1/(max lag in seconds) -- while samples is what the estimator
+            # actually consumes.
+            bt_lags = None
+            if bt_max_lag:
+                bt_lags = (int(round(float(bt_max_lag) * fs_))
+                           if bt_lag_unit == "seconds" else int(bt_max_lag))
+                if bt_lags < 4:
+                    raise ValueError(
+                        "That is {} lag(s) at {:g} Hz — too few to estimate a "
+                        "spectrum from. Ask for at least {:.4g} s.".format(
+                            bt_lags, fs_, 4 / fs_)
+                    )
             x, _, _ = get_preprocessed(parsed, time_col, cols[0], fs, pp)
             f_ref, p_ref = dsp.psd(x, fs=fs_)
             curves = []
@@ -1572,14 +1587,13 @@ async def spectral_autocorrelation(
                 try:
                     f, p, neg = dsp.blackman_tukey_psd(
                         x, fs_, lag_window_name=w,
-                        max_lag=int(bt_max_lag) if bt_max_lag else None,
-                        decay=float(bt_decay))
+                        max_lag=bt_lags, decay=float(bt_decay))
                 except ValueError as e:
                     curves.append({"window": w, "error": str(e)})
                     continue
                 # The window itself and what it does to the ACF, so the taper
                 # is visible rather than an invisible step between two plots.
-                m = int(bt_max_lag) if bt_max_lag else max(8, len(x) // 10)
+                m = bt_lags if bt_lags else max(8, len(x) // 10)
                 m = max(4, min(m, len(x) - 1))
                 win = dsp.lag_window(w, m, decay=float(bt_decay))
                 full = np.correlate(x - x.mean(), x - x.mean(), mode="full") / len(x)
@@ -1600,7 +1614,8 @@ async def spectral_autocorrelation(
                 "name": parsed["column_names"][cols[0]],
                 "reference": {"freqs": to_list(f_ref), "psd": to_list(p_ref)},
                 "curves": curves,
-                "max_lag": int(bt_max_lag) if bt_max_lag else None,
+                "max_lag": bt_lags,
+                "max_lag_s": (bt_lags / fs_) if bt_lags else None,
             }
 
         # Echoed because it decides the y-axis units: a normalized ACF is a

@@ -6,12 +6,13 @@
 
   const kept = paramsFor('autocorrelation', {
     normalize: true, maxLag: null,
-    windows: ['parzen'], btMaxLag: null, btDecay: 3.0, showBt: false,
+    windows: ['parzen'], btMaxLag: null, btLagUnit: 'seconds', btDecay: 3.0, showBt: false,
   })
   let normalize = $state(kept.normalize)
   let maxLag    = $state(kept.maxLag)
   let windows   = $state(kept.windows)
   let btMaxLag  = $state(kept.btMaxLag)
+  let btLagUnit = $state(kept.btLagUnit)
   let btDecay   = $state(kept.btDecay)
   let showBt    = $state(kept.showBt)
   let helpOpen  = $state(false)
@@ -38,12 +39,13 @@
       max_lag: maxLag || undefined,
       lag_windows: JSON.stringify(showBt ? windows : []),
       bt_max_lag: btMaxLag || undefined,
+      bt_lag_unit: btLagUnit,
       bt_decay: btDecay,
     })
   }
   onMount(() => { if (autoRun) run() })
   $effect(() => remember(kept, {
-    normalize, maxLag, windows, btMaxLag, btDecay, showBt,
+    normalize, maxLag, windows, btMaxLag, btLagUnit, btDecay, showBt,
   }))
 </script>
 
@@ -87,8 +89,17 @@
 
   <div class="field">
     <label for="bt-lag">Lags used</label>
-    <input id="bt-lag" type="number" bind:value={btMaxLag} min="8" step="64"
-           placeholder="auto" style="width:90px" />
+    <div style="display:flex;align-items:center;gap:6px">
+      <input id="bt-lag" type="number" bind:value={btMaxLag} min="0" step={btLagUnit === 'seconds' ? 0.1 : 64}
+             placeholder="auto" style="width:80px" />
+      <select bind:value={btLagUnit} style="min-width:0;font-size:11px;padding:3px 5px">
+        <option value="seconds">s</option>
+        <option value="samples">samples</option>
+      </select>
+    </div>
+    <div class="detect-note">
+      Sets the frequency resolution, roughly 1 / (lags in seconds).
+    </div>
   </div>
 
   {#if windows.includes('exponential')}
