@@ -298,10 +298,9 @@ independent windows break the comparison the grid exists for. A "Linked zoom"
 toggle in the toolbar gives per-cell ranges instead, and a Reset appears once
 anything is zoomed.
 
-**Unverified in a browser** — there is no rendered DOM in the environment this
-was written in. The reactive wiring is symmetrical with the single-chart path
-that is known to work, but confirm by hand: zoom one cell with linking on (all
-should follow), then off (only that cell), then Reset.
+Confirmed by hand 2026-09-02 on Decomposition > Instantaneous with the channel
+scope set to All: linked zoom moves every cell together, unlinked moves only the
+cell dragged, and Reset restores the full record.
 
 ---
 
