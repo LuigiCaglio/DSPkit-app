@@ -412,6 +412,40 @@ export function buildPlot(tab, d, opts) {
   }
 
   if (tab === 'autocorrelation') {
+    // With a lag window chosen, the ACF panel shows what that window does:
+    // the untapered curve faded, the window itself, and the product. Keeping
+    // them on one axis is why everything here is scaled to the ACF peak --
+    // the alternative is a second y-axis, which invents a relationship
+    // between two scales that have none.
+    const bt = d.blackman_tukey
+    if (bt?.curves?.some(c => c.taper)) {
+      const traces = []
+      const first = bt.curves.find(c => c.taper)
+      traces.push({
+        x: first.taper_lags, y: first.acf_raw,
+        type: 'scatter', mode: 'lines', name: 'ACF (untapered)',
+        line: { color: T.text, width: 1 }, opacity: 0.45,
+      })
+      bt.curves.forEach((c, i) => {
+        if (!c.taper) return
+        const col = colors[i % colors.length]
+        traces.push({
+          x: c.taper_lags, y: c.taper,
+          type: 'scatter', mode: 'lines', name: `${c.window} window`,
+          line: { color: col, width: 1, dash: 'dot' }, opacity: 0.75,
+        })
+        traces.push({
+          x: c.taper_lags, y: c.acf_tapered,
+          type: 'scatter', mode: 'lines', name: `ACF x ${c.window}`,
+          line: { color: col, width: 2 },
+        })
+      })
+      return { traces, layout: merge(L, titled({
+        xaxis: { ...L.xaxis, title: 'Lag [s]' },
+        yaxis: { ...L.yaxis, title: 'Scaled to the ACF peak' },
+      }))}
+    }
+
     const traces = d.signals.map((sig, i) =>
       line(d.lags, sig.acf, sig.name, 'solid', 'y', colors[i % colors.length]))
     return { traces, layout: merge(L, titled({

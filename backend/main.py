@@ -1577,12 +1577,24 @@ async def spectral_autocorrelation(
                 except ValueError as e:
                     curves.append({"window": w, "error": str(e)})
                     continue
+                # The window itself and what it does to the ACF, so the taper
+                # is visible rather than an invisible step between two plots.
+                m = int(bt_max_lag) if bt_max_lag else max(8, len(x) // 10)
+                m = max(4, min(m, len(x) - 1))
+                win = dsp.lag_window(w, m, decay=float(bt_decay))
+                full = np.correlate(x - x.mean(), x - x.mean(), mode="full") / len(x)
+                acf_raw = full[len(x) - 1: len(x) - 1 + m]
+                scale = np.max(np.abs(acf_raw)) or 1.0
                 curves.append({
                     "window": w,
                     "freqs": to_list(f),
                     "psd": to_list(p),
                     "negative_fraction": neg,
                     "safe": w in dsp.NONNEGATIVE_LAG_WINDOWS,
+                    "taper_lags": to_list(np.arange(m) / fs_),
+                    "taper": to_list(win),
+                    "acf_raw": to_list(acf_raw / scale),
+                    "acf_tapered": to_list(acf_raw * win / scale),
                 })
             bt = {
                 "name": parsed["column_names"][cols[0]],
