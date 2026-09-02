@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte'
   import { paramsFor, remember } from '../paramStore.svelte.js'
 
   let {
@@ -17,15 +18,26 @@
   let output = $state(null)
   let helpOpen = $state(false)
 
-  // Default to something sensible: last selected channel as the output, the
+  // Default to something sensible: last selected channel as the output and the
   // rest as inputs, which matches a force-then-response column layout.
+  //
+  // The reads are untracked. Without that this effect both depends on `output`
+  // and assigns to it, which Svelte 5 treats as an update loop -- it was
+  // throwing rather than settling, which is why the tab appeared to crash.
   $effect(() => {
     const sel = selected
     if (!sel.length) return
-    if (output === null || !sel.includes(output)) {
-      output = sel[sel.length - 1]
-      inputs = sel.slice(0, -1)
-    }
+    untrack(() => {
+      if (output === null || !sel.includes(output)) {
+        const out = sel[sel.length - 1]
+        output = out
+        inputs = sel.filter(c => c !== out)
+      } else {
+        // Keep the input list inside the current selection.
+        const valid = inputs.filter(c => sel.includes(c) && c !== output)
+        if (valid.length !== inputs.length) inputs = valid
+      }
+    })
   })
 
   const name = (i) => columnNames[i] ?? `Ch ${i}`
