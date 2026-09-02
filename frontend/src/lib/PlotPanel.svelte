@@ -73,6 +73,53 @@
   // the better shape for a spreadsheet you intend to filter or pivot.
   let svLayout = $state('byVector')   // 'byVector' | 'long'
 
+  // A mode shape is normally tabulated as a signed real number: each vector is
+  // already rotated so its largest channel is real and positive, so phases sit
+  // near 0 or 180 and the sign alone says in-phase or out-of-phase. That reads
+  // at a glance and pastes as a number. 'polar' is there for the cases where
+  // the phases are not near 0/180 and the sign would be hiding something.
+  let svForm = $state('signed')      // 'signed' | 'polar'
+
+  /**
+   * How far a channel's phase sits from the nearest of 0 or 180 degrees.
+   * Near zero, the signed real value tells the whole story. Far from it, the
+   * mode is genuinely complex and a single number cannot represent it.
+   */
+  const phaseOffAxis = (deg) => {
+    const a = Math.abs(((deg % 360) + 360) % 360)
+    return Math.min(a, Math.abs(180 - a), Math.abs(360 - a))
+  }
+  const OFF_AXIS_WARN = 15           // degrees
+
+  /** True when any channel of any picked vector is far from a real mode. */
+  let svComplexWarn = $derived.by(() => {
+    if (!fddVectors?.points?.length) return null
+    let worst = 0
+    for (const pt of fddVectors.points) {
+      for (const v of pt.vectors) {
+        for (let i = 0; i < v.phase_deg.length; i++) {
+          // A channel with almost no amplitude has a meaningless phase, so it
+          // should not raise the alarm on its own.
+          const rel = v.magnitude[i] / Math.max(...v.magnitude)
+          if (rel < 0.15) continue
+          worst = Math.max(worst, phaseOffAxis(v.phase_deg[i]))
+        }
+      }
+    }
+    return worst > OFF_AXIS_WARN ? worst : null
+  })
+
+  /** The number shown in a cell, in whichever form is selected. */
+  function svCell(col, ci) {
+    if (svForm === 'polar') {
+      return `${col.magnitude[ci].toFixed(4)} ∠${col.phase_deg[ci].toFixed(1)}°`
+    }
+    // Signed real: the rotation has already put the dominant channel on the
+    // positive real axis, so this is the projection onto that axis.
+    const v = col.real[ci]
+    return (Math.abs(v) < 5e-5 ? 0 : v).toFixed(4)
+  }
+
   const TAB = '\t'
   const NL  = '\n'
 
@@ -107,12 +154,17 @@
       const head = ['channel', ...cols.map(c => `${c.freq.toPrecision(6)}Hz_SV${c.sv}`)]
       const block = (field) => L.map((lab, ci) =>
         [lab, ...cols.map(c => c[field][ci])].join(TAB))
+      // Signed is one block of plain numbers, which is the point of it. Polar
+      // needs both parts, so it writes two.
+      if (svForm === 'signed') {
+        return [head.join(TAB), ...block('real')].join(NL)
+      }
       return [
-        ['# magnitude'].join(TAB),
+        '# magnitude',
         head.join(TAB),
         ...block('magnitude'),
         '',
-        ['# phase_deg'].join(TAB),
+        '# phase_deg',
         head.join(TAB),
         ...block('phase_deg'),
       ].join(NL)
@@ -987,6 +1039,19 @@
         {#if fddVectors}
           <span class="plot-toolbar-sep"></span>
           <span class="seg">
+            <button class="seg-btn" class:on={svForm === 'signed'}
+                    onclick={() => svForm = 'signed'}
+                    title="Signed real value — the usual way a mode shape is written. The sign says in-phase or out-of-phase.">
+              Signed
+            </button>
+            <button class="seg-btn" class:on={svForm === 'polar'}
+                    onclick={() => svForm = 'polar'}
+                    title="Magnitude and phase in degrees. Needed when phases are not near 0 or 180, where a single signed number would hide the phase.">
+              Mag ∠ phase
+            </button>
+          </span>
+          <span class="plot-toolbar-sep"></span>
+          <span class="seg">
             <button class="seg-btn" class:on={svLayout === 'byVector'}
                     onclick={() => svLayout = 'byVector'}
                     title="Channels down the side, one column per singular vector — how a mode shape is normally written">
@@ -1046,7 +1111,7 @@
                   <tr>
                     <td class="sv-rowhead">{lab}</td>
                     {#each svColumns as c}
-                      <td>{c.magnitude[ci].toFixed(4)} ∠{c.phase_deg[ci].toFixed(1)}°</td>
+                      <td>{svCell(c, ci)}</td>
                     {/each}
                   </tr>
                 {/each}
@@ -1066,8 +1131,8 @@
                     <td>{c.freq.toPrecision(6)}</td>
                     <td>SV{c.sv}</td>
                     <td>{c.sigma.toExponential(3)}</td>
-                    {#each c.magnitude as m, ci}
-                      <td>{m.toFixed(4)} ∠{c.phase_deg[ci].toFixed(1)}°</td>
+                    {#each c.magnitude as _m, ci}
+                      <td>{svCell(c, ci)}</td>
                     {/each}
                   </tr>
                 {/each}
@@ -1075,11 +1140,24 @@
             </table>
           {/if}
         </div>
+        {#if svComplexWarn}
+          <div class="sv-warn">
+            A channel sits {svComplexWarn.toFixed(0)}° away from 0 or 180°, so this
+            shape is genuinely complex and a signed number cannot represent it.
+            Read it as Mag ∠ phase.
+          </div>
+        {/if}
         <div class="sv-hint">
-          Magnitude ∠ phase. Each vector is rotated so its largest channel is real
-          and positive, so two shapes can be compared rather than differing by an
-          arbitrary phase. Copy gives tab-separated text, ready to paste into a
-          spreadsheet.
+          {#if svForm === 'signed'}
+            Signed real value. Each vector is rotated so its largest channel is real
+            and positive, so the sign says whether a channel moves with that one or
+            against it.
+          {:else}
+            Magnitude ∠ phase in degrees. Each vector is rotated so its largest
+            channel is real and positive, so two shapes can be compared rather than
+            differing by an arbitrary phase.
+          {/if}
+          Copy gives tab-separated text, ready to paste into a spreadsheet.
         </div>
       {/if}
     </div>

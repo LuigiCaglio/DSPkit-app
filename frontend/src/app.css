@@ -766,3 +766,14 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 .sv-table th, .sv-table td { padding-left: 14px; padding-right: 14px; text-align: right; }
 .sv-table .sv-rowhead { text-align: left; color: var(--accent-text); font-weight: 600; }
 .sv-table .sv-sub { font-weight: 400; color: var(--text-muted); font-size: 10px; }
+
+.sv-warn {
+  margin: 6px 12px;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+  border-radius: var(--radius);
+}
