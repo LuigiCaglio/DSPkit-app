@@ -95,7 +95,7 @@ def _joint_kde(x: np.ndarray, y: np.ndarray, masses: list[float]) -> dict:
     xy = xy[:, np.all(np.isfinite(xy), axis=0)]
     n = xy.shape[1]
     if n < 10:
-        raise ValueError("Need at least 10 finite samples for a 2-D KDE.")
+        raise ValueError("Not enough usable samples to estimate a density — at least 10 are needed.")
 
     fitted = xy
     if n > _KDE_MAX_POINTS:
@@ -140,6 +140,67 @@ def _joint_kde(x: np.ndarray, y: np.ndarray, masses: list[float]) -> dict:
         "n_fitted": int(fitted.shape[1]),
         "n_total": int(n),
     }
+
+
+# ─── error messages ───────────────────────────────────────────────────────────
+#
+# Endpoints used to report `f"{type(e).__name__}: {e}"`. That is fine when you
+# wrote the code and reads as a crash to anyone else. Errors we raise ourselves
+# are already sentences and pass through untouched; the ones that surface from
+# numpy/scipy get translated, and anything genuinely unexpected keeps its
+# technical text after a plain-language lead so a bug report is still possible.
+
+import re as _re
+
+_TRANSLATIONS: "list[tuple]" = [
+    (_re.compile(r"nperseg\s*=\s*(\d+) is greater than input length\s*=?\s*(\d+)", _re.I),
+     lambda m: (f"The analysis window ({m.group(1)} samples) is longer than the signal "
+                f"({m.group(2)} samples). Use a shorter window, or select a longer "
+                f"stretch of data.")),
+    (_re.compile(r"singular matrix|data appears to lie in a lower-dimensional", _re.I),
+     lambda m: ("These channels are too closely related to separate — the data lies on a "
+                "line rather than spreading out. Try channels that are not copies or exact "
+                "multiples of each other.")),
+    (_re.compile(r"(array must not contain|contains) (infs|nan)", _re.I),
+     lambda m: ("This channel contains gaps or non-numeric values (NaN or infinity). "
+                "Check the file, or window the analysis to a clean stretch.")),
+    (_re.compile(r"object of type .* has no len|index \d+ is out of bounds", _re.I),
+     lambda m: ("A channel selection points past the end of the data. Reload the file, or "
+                "reselect the channels in the sidebar.")),
+    (_re.compile(r"Digital filter critical frequencies must be 0 < Wn < 1|must be less than", _re.I),
+     lambda m: ("A filter cutoff is outside the usable range. It has to be above 0 and below "
+                "half the sample rate (the Nyquist frequency).")),
+    (_re.compile(r"memory", _re.I),
+     lambda m: ("Not enough memory for this analysis at the current settings. Resample to a "
+                "lower rate, or window the signal to a shorter stretch.")),
+]
+
+
+def friendly_error(exc: Exception, unexpected: bool = False) -> str:
+    """
+    A sentence a stranger can act on, rather than a Python repr.
+
+    Our own ValueErrors are written as guidance already, so they are returned
+    unchanged. Anything else is matched against known library failures, and
+    what is left keeps its technical text after a plain lead.
+    """
+    text = str(exc).strip()
+
+    for pattern, render in _TRANSLATIONS:
+        m = pattern.search(text)
+        if m:
+            return render(m)
+
+    # Our own messages end in a full stop or read as guidance; library messages
+    # are usually a bare fragment. Passing ours through keeps them as written.
+    if isinstance(exc, ValueError) and text and text[0].isupper() and len(text) > 15:
+        return text
+
+    if unexpected:
+        return (f"Something went wrong running this analysis. "
+                f"Technical detail: {type(exc).__name__}: {text}")
+    return (f"This analysis could not run with the current settings. "
+            f"Technical detail: {type(exc).__name__}: {text}")
 
 
 # ─── health ───────────────────────────────────────────────────────────────────
@@ -217,7 +278,7 @@ def parse_file(content: bytes, orientation: str = "columns", header_row: int = -
     text = content.decode("utf-8-sig")
     lines = [l for l in text.splitlines() if l.strip()]
     if not lines:
-        raise ValueError("File is empty")
+        raise ValueError("This file has no content in it.")
 
     sample_start = max(0, header_row if header_row >= 0 else 0)
     sample = "\n".join(lines[sample_start : sample_start + 20])
@@ -250,7 +311,7 @@ def parse_file(content: bytes, orientation: str = "columns", header_row: int = -
             row_names.append(name)
 
     if not numeric_rows:
-        raise ValueError("No numeric data found in file")
+        raise ValueError("No numbers could be read from this file. If it is a CSV, check the delimiter and whether the data starts after a header or preamble — File layout in the sidebar overrides what was detected.")
 
     # Ragged rows would make an object array rather than a 2-D one, and every
     # downstream index would then fail somewhere far from the cause.
@@ -421,7 +482,7 @@ def autodetect(content: bytes) -> dict:
     text = content.decode("utf-8-sig", errors="replace")
     lines = [l for l in text.splitlines() if l.strip()]
     if not lines:
-        raise ValueError("File is empty")
+        raise ValueError("This file has no content in it.")
 
     delimiter = detect_delimiter("\n".join(lines[:20]))
     rows = list(csv.reader(io.StringIO("\n".join(lines[:200])), delimiter=delimiter))
@@ -445,7 +506,7 @@ def autodetect(content: bytes) -> dict:
                 row_labelled = True
                 break
     if first_numeric == -1:
-        raise ValueError("No numeric data found in file")
+        raise ValueError("No numbers could be read from this file. If it is a CSV, check the delimiter and whether the data starts after a header or preamble — File layout in the sidebar overrides what was detected.")
 
     # The line directly above the data is a header only if it is non-numeric
     # and has one field per data column.
@@ -728,7 +789,7 @@ async def resolve_parsed(
 def extract_col(parsed: dict, col: int) -> np.ndarray:
     n = parsed["n_columns"]
     if col < 0 or col >= n:
-        raise ValueError(f"Column index {col} out of range (file has {n} columns: 0..{n-1})")
+        raise ValueError(f"Channel {col} is not in this file, which has {n} ({0}-{n-1}). Reload the file or reselect the channels.")
     return parsed["data"][col]
 
 
@@ -743,7 +804,7 @@ def get_signal_times_fs(
         return x, t, fs_calc
     if fs is not None and fs > 0:
         return x, None, float(fs)
-    raise ValueError("Provide either a time column (time_col >= 0) or a sample rate (fs > 0)")
+    raise ValueError("The sample rate is unknown. Either pick the time column under File layout, or type the sample rate in hertz.")
 
 
 # ─── preprocessing ────────────────────────────────────────────────────────────
@@ -948,9 +1009,9 @@ async def session_create(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
@@ -1040,7 +1101,7 @@ def _reopen(session_id: str, force_reread: bool = False) -> dict:
     except HTTPException:
         raise
     except (ValueError, TypeError, KeyError, IndexError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
 
     result["source_path"] = meta.get("source_path")
     result["ui"] = meta.get("ui")
@@ -1105,9 +1166,9 @@ async def session_open(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.get("/api/session/recent")
@@ -1210,11 +1271,11 @@ async def session_reparse(
         result["header_row"] = header_row
         return result
     except (ValueError, TypeError, KeyError, IndexError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.delete("/api/session/{session_id}")
@@ -1258,9 +1319,9 @@ async def signal_parse(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 # ─── /api/signal/info ────────────────────────────────────────────────────────
@@ -1298,9 +1359,9 @@ async def signal_info(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 # ─── /api/signal/timeseries ──────────────────────────────────────────────────
@@ -1320,7 +1381,7 @@ async def signal_timeseries(
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
-            raise ValueError("No signal columns selected")
+            raise ValueError("No channels are selected. Tick at least one in the sidebar.")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
 
         # Reference time axis from first column
@@ -1358,9 +1419,9 @@ async def signal_timeseries(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 # ─── spectral ────────────────────────────────────────────────────────────────
@@ -1382,7 +1443,7 @@ async def spectral_fft(
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
-            raise ValueError("No signal columns selected")
+            raise ValueError("No channels are selected. Tick at least one in the sidebar.")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, pp)
         freqs, _ = dsp.fft_spectrum(x0, fs_, window=window, scaling=scaling)
@@ -1397,9 +1458,9 @@ async def spectral_fft(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/spectral/psd")
@@ -1420,7 +1481,7 @@ async def spectral_psd(
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
-            raise ValueError("No signal columns selected")
+            raise ValueError("No channels are selected. Tick at least one in the sidebar.")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, pp)
         freqs, _ = dsp.psd(x0, fs_, window=window, nperseg=nperseg, noverlap=noverlap, scaling=scaling)
@@ -1433,9 +1494,9 @@ async def spectral_psd(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/spectral/autocorrelation")
@@ -1454,7 +1515,7 @@ async def spectral_autocorrelation(
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
-            raise ValueError("No signal columns selected")
+            raise ValueError("No channels are selected. Tick at least one in the sidebar.")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
         x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, pp)
         lags, _ = dsp.autocorrelation(x0, fs=fs_, normalize=normalize, max_lag=max_lag)
@@ -1469,9 +1530,9 @@ async def spectral_autocorrelation(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/spectral/cross_correlation")
@@ -1498,9 +1559,9 @@ async def spectral_cross_correlation(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/spectral/csd")
@@ -1527,9 +1588,9 @@ async def spectral_csd(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/spectral/coherence")
@@ -1557,9 +1618,9 @@ async def spectral_coherence(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 # ─── filter ──────────────────────────────────────────────────────────────────
@@ -1589,30 +1650,30 @@ async def filter_apply(
 
         ft = filter_type.lower()
         if ft == "lowpass":
-            if cutoff is None: raise ValueError("cutoff required for lowpass")
+            if cutoff is None: raise ValueError("A low-pass filter needs a cutoff frequency.")
             y = dsp.lowpass(x, fs_, cutoff, order=order, zero_phase=zero_phase)
         elif ft == "highpass":
-            if cutoff is None: raise ValueError("cutoff required for highpass")
+            if cutoff is None: raise ValueError("A high-pass filter needs a cutoff frequency.")
             y = dsp.highpass(x, fs_, cutoff, order=order, zero_phase=zero_phase)
         elif ft == "bandpass":
-            if low is None or high is None: raise ValueError("low and high required for bandpass")
+            if low is None or high is None: raise ValueError("A band-pass filter needs both a lower and an upper cutoff frequency.")
             y = dsp.bandpass(x, fs_, low, high, order=order, zero_phase=zero_phase)
         elif ft == "bandstop":
-            if low is None or high is None: raise ValueError("low and high required for bandstop")
+            if low is None or high is None: raise ValueError("A band-stop filter needs both a lower and an upper cutoff frequency.")
             y = dsp.bandstop(x, fs_, low, high, order=order, zero_phase=zero_phase)
         elif ft == "notch":
-            if freq is None: raise ValueError("freq required for notch")
+            if freq is None: raise ValueError("A notch filter needs the frequency to remove.")
             y = dsp.notch(x, fs_, freq, zero_phase=zero_phase)
         else:
-            raise ValueError(f"Unknown filter_type: {filter_type!r}")
+            raise ValueError(f"{filter_type!r} is not a filter type this app knows.")
 
         return {"times": to_list(t), "signal_raw": to_list(x), "signal_filtered": to_list(y)}
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/filter/response")
@@ -1641,7 +1702,7 @@ async def filter_response(
         from scipy import signal as _sig
 
         if fs <= 0:
-            raise ValueError("fs must be positive")
+            raise ValueError("The sample rate has to be greater than zero.")
         nyq = fs / 2.0
         w = np.linspace(0.0, nyq, max(16, min(n_points, 8192)))
         mag = np.ones_like(w)
@@ -1687,9 +1748,9 @@ async def filter_response(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 # ─── time-frequency ───────────────────────────────────────────────────────────
@@ -1790,9 +1851,9 @@ async def timefreq_stft(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/timefreq/fsst")
@@ -1826,9 +1887,9 @@ async def timefreq_fsst(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/timefreq/cwt")
@@ -1862,9 +1923,9 @@ async def timefreq_cwt(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/timefreq/wvd")
@@ -1892,9 +1953,9 @@ async def timefreq_wvd(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/timefreq/spwvd")
@@ -1924,9 +1985,9 @@ async def timefreq_spwvd(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 # ─── instantaneous ────────────────────────────────────────────────────────────
@@ -1957,9 +2018,9 @@ async def instantaneous(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 # ─── EMD ─────────────────────────────────────────────────────────────────────
@@ -1986,9 +2047,9 @@ async def emd_decompose(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/emd/hht")
@@ -2023,9 +2084,9 @@ async def emd_hht(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 # ─── helpers: multi-channel ──────────────────────────────────────────────────
@@ -2102,9 +2163,9 @@ async def peaks_detect(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/peaks/harmonics")
@@ -2140,9 +2201,9 @@ async def peaks_harmonics(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 # ─── SHM indicators ──────────────────────────────────────────────────────────
@@ -2193,9 +2254,9 @@ async def shm_indicators(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 # ─── multi-sensor ────────────────────────────────────────────────────────────
@@ -2215,7 +2276,7 @@ async def multisensor_correlation(
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
-            raise ValueError("At least 2 channels required")
+            raise ValueError("This needs at least 2 channels. Tick more of them in the sidebar.")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.multisensor import correlation_matrix as _corr_mat
@@ -2224,9 +2285,9 @@ async def multisensor_correlation(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/multisensor/coherence_matrix")
@@ -2245,7 +2306,7 @@ async def multisensor_coherence_mat(
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
-            raise ValueError("At least 2 channels required")
+            raise ValueError("This needs at least 2 channels. Tick more of them in the sidebar.")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.multisensor import coherence_matrix as _coh_mat
@@ -2262,9 +2323,9 @@ async def multisensor_coherence_mat(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 # ─── FDD ──────────────────────────────────────────────────────────────────────
@@ -2332,7 +2393,7 @@ async def fdd_analyze(
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
-            raise ValueError("At least 2 channels required")
+            raise ValueError("This needs at least 2 channels. Tick more of them in the sidebar.")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.fdd import fdd_svd, fdd_peak_picking, fdd_mode_shapes, efdd_damping
@@ -2418,9 +2479,9 @@ async def fdd_analyze(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 # ─── statistics ───────────────────────────────────────────────────────────────
@@ -2456,7 +2517,7 @@ async def statistics_pdf(
         if not cols and signal_col is not None:
             cols = [int(signal_col)]
         if not cols:
-            raise ValueError("No signal columns selected")
+            raise ValueError("No channels are selected. Tick at least one in the sidebar.")
 
         from dspkit.statistics import pdf_estimate as _pdf, histogram as _hist
         signals = []
@@ -2475,9 +2536,9 @@ async def statistics_pdf(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/statistics/joint")
@@ -2522,9 +2583,9 @@ async def statistics_joint(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/statistics/covariance")
@@ -2541,7 +2602,7 @@ async def statistics_covariance(
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
-            raise ValueError("At least 2 channels required")
+            raise ValueError("This needs at least 2 channels. Tick more of them in the sidebar.")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.statistics import covariance_matrix as _cov
@@ -2550,9 +2611,9 @@ async def statistics_covariance(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
 @app.post("/api/statistics/mahalanobis")
@@ -2570,7 +2631,7 @@ async def statistics_mahalanobis(
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
-            raise ValueError("At least 2 channels required")
+            raise ValueError("This needs at least 2 channels. Tick more of them in the sidebar.")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.statistics import mahalanobis as _maha
@@ -2585,6 +2646,6 @@ async def statistics_mahalanobis(
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
