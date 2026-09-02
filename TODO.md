@@ -1,20 +1,43 @@
 # DSPkit-app — what's left
 
-State as of 2026-08-07. `timefreq-display` is **merged**; `master` carries
-§3.1, the session-persistence work and per-channel units.
-
-The app is usable for day-to-day work now. Everything below is either
-*repeatability* or *someone-else-sized* — nothing here blocks your own use.
+State as of **2026-09-02**, at **v0.4.0**. Public, MIT, with a Zenodo DOI.
 
 Run the tests with `python tests/run_all.py` — no third-party packages needed.
-342 assertions (83 API, 39 persistence, 26 detection, 23 FDD, 171 frontend).
-dspkit has its own suite: `pytest tests/` in the DSPkit repo, 189 passing, and
-its own `TODO.md` for library work — response spectrum, tapering the
-autocorrelation, and the FSST inverse all live there rather than here.
+The library has its own suite (`pytest tests/` in the DSPkit repo, 285 passing)
+and its own `TODO.md` for anything algorithmic.
 
-**§1.1 (file formats) is deliberately closed.** Confirmed 2026-08-06 that the
-data here is CSV/TSV/TXT only, so `.mat`/`.tdms`/HDF5 support would be work for
-a hypothetical other user. Reopen it if that stops being true.
+## Where to pick up
+
+Nothing here blocks day-to-day use. In rough order of value:
+
+1. **Verify the new tabs in a browser.** FRF, Random decrement, the Blackman-
+   Tukey panel and the Envelope spectrum were all built and checked through the
+   API, but only partly seen rendered. Two reactivity bugs this session got past
+   a clean build *and* passing tests, because neither exercises a mounted
+   component — see §3.7.
+2. **§3.7, the untested surface.** Anything needing a rendered DOM: drag
+   resizing, plot scroll behaviour, parameter persistence across tab switches,
+   whether auto-run fires on mount, and now the newer control panels.
+3. **§1.1, file formats.** Still CSV/TSV/TXT. Deliberately closed for your own
+   use; reopens the moment someone else's `.mat` or `.tdms` arrives.
+4. **§3.6, time-resolved mutual information.** App-side windowing over the
+   existing library call; watch the estimator bias as windows shorten.
+5. **Bundle size.** 5 MB, nearly all Plotly. Fine over localhost, not fine if
+   this is ever served remotely.
+
+### Known rough edges
+
+- The envelope tab's "most impulsive band" suggestion picked 0-42 Hz on a test
+  whose true answer was 200-400 Hz. It is a suggestion, not a default, so it
+  does no harm — but do not trust it blindly, and it is worth refining.
+- `docs/dev/` is gitignored: development notes stay local and are not published.
+
+### One thing to know when working on this
+
+A frontend change needs a browser reload; a **backend change needs the app
+restarted**, because Python loads its module once at startup. A stale backend
+shows as a 404, which the app now explains rather than reporting "Not Found" —
+but it will still catch you out.
 
 ---
 
@@ -331,6 +354,29 @@ conditional MI in the library, and it is genuinely harder — k-nearest-neighbou
 estimators degrade quickly with dimension, so conditioning on several channels
 needs far more samples before the number means anything. Library first, app
 after.
+
+---
+
+## 3.7 The untested surface
+
+`tests/run_all.py` covers the API, persistence, detection, FDD and the chart
+builders, and none of it mounts a component. Two bugs this session went through
+a clean build and a green suite:
+
+- `PlotPanel` created its Plotly div in `onMount` with an empty trace list.
+  Svelte 5 runs `$effect` before `onMount`, so the draw effect rendered the data
+  and `onMount` then wiped it. The request succeeded, the chart was blank.
+- `FrfControls` had an effect that both read and assigned `output`. Svelte 5
+  treats that as an update loop and throws, so the tab either crashed or left
+  Run permanently disabled.
+
+Both are the same shape: reactive wiring that only fails once mounted. Either
+add a DOM test runner, or accept that this class of bug is found by hand and
+check the tabs after touching `PlotPanel` or any control.
+
+Still uncovered: drag-resizing, plot-area scrolling, parameter persistence
+across tab switches, whether auto-run fires on mount, and the newer control
+panels (FRF, Random decrement, Envelope, Response spectrum).
 
 ---
 
