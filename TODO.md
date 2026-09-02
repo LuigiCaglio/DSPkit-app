@@ -304,6 +304,36 @@ cell dragged, and Reset restores the full record.
 
 ---
 
+## 3.6 Mutual information: two extensions worth having
+
+The Cross-Signal tab computes MI for a pair, optionally scanned over lag, with a
+surrogate null. Two things it deliberately does not do.
+
+### Time-resolved MI
+MI is currently one number per lag, global over the whole record — the same
+scope as coherence. Computing it on overlapping windows would give MI against
+*time*, which is a different axis from the lag scan and shows a relationship
+appearing or breaking during a record. That is the same shape as the SHM
+indicators tab, and each window is shorter so the per-window cost is lower.
+App-side work: it windows the existing `dspkit.mutual_information`, no new
+library function needed.
+
+Watch the bias. The KSG estimator's floor rises as the sample count falls, so a
+short window reads higher than a long one for reasons that have nothing to do
+with the data. Either hold the window length fixed and say so, or show the
+per-window null alongside — a curve that drifts up as windows shorten would
+otherwise look like a strengthening relationship.
+
+### Conditional MI
+`I(X;Y|Z)` is the MI analogue of partial coherence, and multivariate MI
+generalises multiple coherence. Not possible yet: `../DSPkit/TODO.md` §6 defers
+conditional MI in the library, and it is genuinely harder — k-nearest-neighbour
+estimators degrade quickly with dimension, so conditioning on several channels
+needs far more samples before the number means anything. Library first, app
+after.
+
+---
+
 ## 4. Nice, not blocking
 
 - **Figure export** at publication size / SVG. Plotly's modebar already gives a

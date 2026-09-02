@@ -39,6 +39,10 @@ export function defaultPreproc() {
     notchFreq:       50,      // mains hum in Europe
     notchQ:          30,
     zeroPhase:       true,    // offline analysis: no phase distortion
+    calculusEnabled: false,
+    calculusOrder:   -1,        // -1/-2 integrate, +1/+2 differentiate
+    calculusHp:      0.5,
+    calculusLp:      null,
     resampleEnabled: false,
     targetFs:        512,
   }

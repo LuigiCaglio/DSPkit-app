@@ -145,6 +145,47 @@
       </div>
     </div>
 
+    <!-- Integrate / differentiate -->
+    <div>
+      <div class="checkbox-row" style="margin-bottom:5px">
+        <input type="checkbox" id="cal-en" bind:checked={preproc.calculusEnabled} onchange={touched} />
+        <label for="cal-en" style="margin:0;font-size:12px;color:var(--text-secondary)">Integrate / differentiate</label>
+      </div>
+      {#if preproc.calculusEnabled}
+        <select bind:value={preproc.calculusOrder} onchange={touched}
+                style="width:100%;font-size:12px;margin-bottom:5px">
+          <option value={-1}>Integrate once (accel → velocity)</option>
+          <option value={-2}>Integrate twice (accel → displacement)</option>
+          <option value={1}>Differentiate once (displ → velocity)</option>
+          <option value={2}>Differentiate twice (displ → accel)</option>
+        </select>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          <span style="color:var(--text-muted);font-size:11px;width:26px">hp</span>
+          <input type="number" bind:value={preproc.calculusHp} onchange={touched}
+                 min="0" step="0.1" placeholder="off" style="width:70px;font-size:12px" />
+          <span style="color:var(--text-muted);font-size:11px">Hz</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="color:var(--text-muted);font-size:11px;width:26px">lp</span>
+          <input type="number" bind:value={preproc.calculusLp} onchange={touched}
+                 min="0" step="1" placeholder="off" style="width:70px;font-size:12px" />
+          <span style="color:var(--text-muted);font-size:11px">Hz</span>
+        </div>
+        <div class="detect-note" style="margin-top:4px">
+          {#if preproc.calculusOrder < 0}
+            Dividing by ω grows without bound towards DC, so drift just above
+            zero is amplified enormously — set hp below your lowest frequency of
+            interest and above the drift. It matters more for twice, not less.
+          {:else}
+            Multiplying by ω amplifies the high end, so flat measurement noise
+            comes out tilted upward. Set lp below where noise takes over.
+          {/if}
+          Done in the frequency domain; the first and last few samples are the
+          least reliable.
+        </div>
+      {/if}
+    </div>
+
     <!-- Resample -->
     <div>
       <div class="checkbox-row" style="margin-bottom:5px">

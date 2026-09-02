@@ -194,6 +194,17 @@
     if ((preproc.hpEnabled || preproc.lpEnabled || preproc.notchEnabled) && !preproc.zeroPhase) {
       bits.push('causal')
     }
+    if (preproc.calculusEnabled && preproc.calculusOrder) {
+      const n = Math.abs(preproc.calculusOrder)
+      const verb = preproc.calculusOrder < 0
+        ? (n === 1 ? 'integrated' : `integrated ${n}x`)
+        : (n === 1 ? 'differentiated' : `differentiated ${n}x`)
+      const band = [
+        preproc.calculusHp ? `hp ${preproc.calculusHp} Hz` : null,
+        preproc.calculusLp ? `lp ${preproc.calculusLp} Hz` : null,
+      ].filter(Boolean).join(', ')
+      bits.push(band ? `${verb} (${band})` : verb)
+    }
     if (preproc.resampleEnabled && preproc.targetFs) bits.push(`resampled to ${preproc.targetFs} Hz`)
     return bits
   })
@@ -373,6 +384,11 @@
     // Only worth sending when a filter is actually on.
     if (preproc.hpEnabled || preproc.lpEnabled || preproc.notchEnabled) {
       p.set('zero_phase', String(preproc.zeroPhase))
+    }
+    if (preproc.calculusEnabled && preproc.calculusOrder) {
+      p.set('calculus_order', preproc.calculusOrder)
+      if (preproc.calculusHp) p.set('calculus_hp', preproc.calculusHp)
+      if (preproc.calculusLp) p.set('calculus_lp', preproc.calculusLp)
     }
     if (preproc.resampleEnabled && preproc.targetFs) p.set('target_fs', preproc.targetFs)
     const qs = p.toString()

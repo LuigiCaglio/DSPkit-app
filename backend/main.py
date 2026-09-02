@@ -832,6 +832,12 @@ class PreprocParams:
         notch_freq: Optional[float] = Query(None),
         notch_q: float = Query(30.0),
         zero_phase: bool = Query(True),
+        # Frequency-domain integration / differentiation. Negative integrates,
+        # positive differentiates, 0 does nothing: one control, because they are
+        # the same operator with the sign of the exponent flipped.
+        calculus_order: int = Query(0),
+        calculus_hp: Optional[float] = Query(None),
+        calculus_lp: Optional[float] = Query(None),
         target_fs: Optional[float] = Query(None),
     ):
         self.win_start = win_start
@@ -845,6 +851,9 @@ class PreprocParams:
         self.notch_freq = notch_freq
         self.notch_q = notch_q
         self.zero_phase = zero_phase
+        self.calculus_order = calculus_order
+        self.calculus_hp = calculus_hp
+        self.calculus_lp = calculus_lp
         self.target_fs = target_fs
 
 
@@ -901,7 +910,22 @@ def apply_preprocessing(
     if pp.lp_cutoff is not None and pp.lp_cutoff > 0:
         x = dsp.lowpass(x, fs, pp.lp_cutoff, order=pp.lp_order, zero_phase=pp.zero_phase)
 
-    # 6. Resample — use linear interpolation to avoid group-delay time shift
+    # 6. Integrate or differentiate.
+    #
+    # After the filters so the user's own band limits already apply, and before
+    # resampling so the operator works at the rate the data was measured at.
+    # Its own cutoffs are separate from the preprocessing ones: dividing by
+    # omega needs a high-pass tight enough to stop drift blowing up, which is
+    # usually not the high-pass you want on the signal itself.
+    if pp.calculus_order:
+        if pp.calculus_order < 0:
+            x = dsp.integrate_fft(x, fs, order=-pp.calculus_order,
+                                  hp_cutoff=pp.calculus_hp, lp_cutoff=pp.calculus_lp)
+        else:
+            x = dsp.differentiate_fft(x, fs, order=pp.calculus_order,
+                                      hp_cutoff=pp.calculus_hp, lp_cutoff=pp.calculus_lp)
+
+    # 7. Resample — use linear interpolation to avoid group-delay time shift
     if pp.target_fs is not None and abs(pp.target_fs - fs) > 0.01:
         n_new = round(len(x) * pp.target_fs / fs)
         t_new = np.linspace(times[0], times[-1], n_new)
