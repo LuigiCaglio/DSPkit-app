@@ -24,6 +24,7 @@ export const SCOPE = {
   frf:               'none',
   response_spectrum: 'single',
   log_decrement:     'single',
+  random_decrement:  'single',
   envelope:          'single',
   filter:            'single',
   explorer:          'single',

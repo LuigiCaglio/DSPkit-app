@@ -26,6 +26,7 @@
   import FrfControls          from './controls/FrfControls.svelte'
   import ResponseSpectrumControls from './controls/ResponseSpectrumControls.svelte'
   import LogDecrementControls from './controls/LogDecrementControls.svelte'
+  import RandomDecrementControls from './controls/RandomDecrementControls.svelte'
   import EnvelopeControls     from './controls/EnvelopeControls.svelte'
   import FddControls         from './controls/FddControls.svelte'
   import StatisticsControls  from './controls/StatisticsControls.svelte'
@@ -90,6 +91,9 @@
     <ResponseSpectrumControls signalCol={focusChannel} {autoRun} {loading} {runAnalysis} />
   {:else if activeTab === 'log_decrement'}
     <LogDecrementControls signalCol={focusChannel} {loading} {runAnalysis} />
+  {:else if activeTab === 'random_decrement'}
+    <RandomDecrementControls signalCol={focusChannel} {columnNames} {selected}
+                             {loading} {runAnalysis} />
   {:else if activeTab === 'envelope'}
     <EnvelopeControls signalCol={focusChannel} {autoRun} {loading} {runAnalysis}
                       bandSweep={lastBandSweep} />

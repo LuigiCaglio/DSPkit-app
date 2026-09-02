@@ -75,6 +75,11 @@
   // is the convention, with true available since they diverge as damping rises.
   let rsQuantity = $state('PSa')
 
+  // Normalised by default: for a linear system the signature's shape does not
+  // depend on the trigger level, so comparing shapes is the question. Raw
+  // amplitudes just restate the level you triggered at.
+  let rdtNormalize = $state(true)
+
   let svLayout = $state('byVector')   // 'byVector' | 'long'
 
   // A mode shape is normally tabulated as a signed real number: each vector is
@@ -442,6 +447,7 @@
     tf: { db: tfDb, rangeDb: tfRangeDb, clipPct: tfClipPct, colorscale: tfColorscale, surface3d: tfSurface3d },
     units,
     rsQuantity,
+    rdtNormalize,
     showHist,
     showKde,
   })
@@ -672,6 +678,12 @@
       <label><input type="checkbox" bind:checked={normalizeSignals} /> Normalize</label>
       {#if LOG_Y_TABS.has(activeTab) && activeTab !== 'psd' && !overview}
         <label><input type="checkbox" bind:checked={yLogScale} /> Log Y</label>
+      {/if}
+      {#if activeTab === 'random_decrement' && single?.levels}
+        <label title="Divide each signature by its own peak. For a linear system the shapes then coincide; separation means they do not.">
+          <input type="checkbox" bind:checked={rdtNormalize} /> Normalise
+        </label>
+        <span class="plot-toolbar-sep"></span>
       {/if}
       {#if activeTab === 'response_spectrum' && single?.curves}
         <span class="plot-toolbar-grouplabel">show</span>
@@ -1177,6 +1189,51 @@
           Copy gives tab-separated text, ready to paste into a spreadsheet.
         </div>
       {/if}
+    </div>
+  {/if}
+
+  <!-- random decrement: one row per trigger level, so the comparison is numeric -->
+  {#if activeTab === 'random_decrement' && single?.levels}
+    <div class="sv-panel">
+      <div class="sv-bar">
+        <span class="sv-title">Per trigger level</span>
+        <span class="plot-toolbar-grouplabel">
+          record sd {single.sd.toPrecision(3)} · trigger on {single.condition.replace(/_/g, ' ')}
+        </span>
+      </div>
+      <div class="sv-table-wrap">
+        <table class="results-table sv-table">
+          <thead>
+            <tr>
+              <th class="sv-rowhead">Level</th><th>Segments</th><th>Damping</th>
+              <th>fn [Hz]</th><th>R&sup2;</th><th>Peak</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each single.levels as l}
+              <tr>
+                <td class="sv-rowhead">{l.level_sd.toFixed(1)} sd</td>
+                {#if l.error}
+                  <td colspan="5" style="text-align:left;color:var(--warning)">{l.error}</td>
+                {:else}
+                  <td class:mi-warn={l.n_segments < 100}>{l.n_segments.toLocaleString()}</td>
+                  <td>{l.zeta_pct !== undefined ? l.zeta_pct.toFixed(3) + '%' : '—'}</td>
+                  <td>{l.fn !== undefined ? l.fn.toPrecision(5) : '—'}</td>
+                  <td>{l.r_squared !== undefined ? l.r_squared.toFixed(4) : '—'}</td>
+                  <td>{l.peak.toPrecision(3)}</td>
+                {/if}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      <div class="sv-hint">
+        For a linear system the normalised signatures coincide and the damping
+        column is flat. Separation, or damping that trends with level, means the
+        response depends on amplitude. A level with under 100 segments has not
+        averaged its random part away and should not be read as evidence either
+        way.
+      </div>
     </div>
   {/if}
 

@@ -183,6 +183,7 @@ export function buildPlot(tab, d, opts) {
     tf = {},                 // heatmap scaling: {db, rangeDb, clipPct, colorscale}
     units = {},              // resolved by units.js: {signal, x, y, byName}
     rsQuantity = 'PSa',      // response spectrum: which quantity to draw
+    rdtNormalize = true,     // random decrement: compare shapes, not amplitudes
     showHist = true,         // distributions: draw the histogram bars
     showKde = true,          // distributions: draw the smooth density
   } = opts
@@ -692,6 +693,40 @@ export function buildPlot(tab, d, opts) {
       xaxis: { ...L.xaxis, title: 'Period [s]', type: 'log' },
       yaxis: { ...L.yaxis, title: LABEL[rsQuantity] ?? rsQuantity, type: 'log' },
       title: { text: (title ?? `Response spectrum — ${d.name}`) + warn,
+               font: { color: T.title, size: cell ? 11 : 12 } },
+    })}
+  }
+
+  if (tab === 'random_decrement') {
+    const ok = d.levels.filter(l => l.signature)
+    // Normalising is what makes the comparison meaningful: for a linear system
+    // the *shape* is independent of trigger level, and only the amplitude
+    // scales with it. Un-normalised, every curve simply sits at its own level
+    // and tells you nothing you did not already know.
+    const traces = ok.map((l, i) => {
+      const y = rdtNormalize && l.peak > 0
+        ? l.signature.map(v => v / l.peak)
+        : l.signature
+      const fit = l.zeta_pct !== undefined ? ` — ${l.zeta_pct.toFixed(2)}%` : ''
+      return line(d.tau, y, `${l.level_sd.toFixed(1)} sd${fit}`, 'solid', 'y',
+                  colors[i % colors.length])
+    })
+    const zs = ok.filter(l => l.zeta_pct !== undefined).map(l => l.zeta_pct)
+    let verdict = ''
+    if (zs.length > 1) {
+      const lo = Math.min(...zs), hi = Math.max(...zs)
+      const spread = 100 * (hi - lo) / ((hi + lo) / 2)
+      verdict = spread > 20
+        ? `  ·  damping varies ${lo.toFixed(2)}-${hi.toFixed(2)}% with level — amplitude-dependent`
+        : `  ·  damping ${lo.toFixed(2)}-${hi.toFixed(2)}% across levels — consistent`
+    }
+    const bnd = d.band ? `  ·  ${d.band[0]}-${d.band[1]} Hz` : ''
+    return { traces, layout: merge(L, {
+      xaxis: { ...L.xaxis, title: 'Lag [s]' },
+      yaxis: { ...L.yaxis,
+               title: rdtNormalize ? 'Signature (normalised)'
+                                   : withUnit('Signature', oneUnit) },
+      title: { text: (title ?? `Random decrement — ${d.name}${d.cross_name ? ` to ${d.cross_name}` : ''}`) + bnd + verdict,
                font: { color: T.title, size: cell ? 11 : 12 } },
     })}
   }

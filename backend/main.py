@@ -3318,3 +3318,118 @@ async def envelope_spectrum_endpoint(
         raise HTTPException(status_code=422, detail=friendly_error(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
+
+
+# ─── random decrement ─────────────────────────────────────────────────────────
+
+
+@app.post("/api/response/random_decrement")
+async def random_decrement_endpoint(
+    file: Optional[UploadFile] = None,
+    session_id: Optional[str] = Form(None),
+    orientation: str = Form("columns"),
+    header_row: int = Form(-1),
+    time_col: int = Form(-1),
+    signal_cols: str = Form(...),
+    signal_col: int = Form(...),
+    fs: Optional[float] = Form(None),
+    levels: str = Form("[1.0]"),           # trigger levels, in standard deviations
+    condition: str = Form("level_up"),
+    segment_length: Optional[int] = Form(None),
+    band_low: Optional[float] = Form(None),
+    band_high: Optional[float] = Form(None),
+    cross_col: Optional[int] = Form(None),
+    pp: PreprocParams = Depends(),
+):
+    """
+    Free-decay signatures from ambient data, at one or more trigger levels.
+
+    Several levels is the interesting case rather than a convenience. For a
+    linear system the normalised signature does not depend on where you trigger,
+    so signatures that separate once normalised are evidence the system is not
+    behaving linearly -- and damping that rises or falls with trigger level is
+    the classic amplitude-dependent signature. Each level is therefore fitted
+    for damping as well, so the comparison is a number and not only a picture.
+    """
+    try:
+        lv = [float(v) for v in json.loads(levels)]
+        lv = [v for v in lv if v > 0]
+        if not lv:
+            raise ValueError("Give at least one trigger level, as a multiple of the standard deviation.")
+        if len(lv) > 8:
+            raise ValueError("At most 8 trigger levels at once.")
+
+        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        raw, fs_, _ = get_preprocessed(parsed, time_col, int(signal_col), fs, pp)
+
+        # A raw record carries several modes, which beat rather than decay. The
+        # signature is only readable one mode at a time.
+        src = raw
+        if band_low and band_high:
+            if not 0 < band_low < band_high < fs_ / 2:
+                raise ValueError(
+                    "Band must satisfy 0 < low < high < {:g} Hz (Nyquist).".format(fs_ / 2)
+                )
+            src = dsp.bandpass(raw, fs_, float(band_low), float(band_high),
+                               order=4, zero_phase=True)
+
+        other = None
+        if cross_col is not None and int(cross_col) != int(signal_col):
+            other, _, _ = get_preprocessed(parsed, time_col, int(cross_col), fs, pp)
+            if band_low and band_high:
+                other = dsp.bandpass(other, fs_, float(band_low), float(band_high),
+                                     order=4, zero_phase=True)
+
+        sd = float(np.std(src))
+        seg = int(segment_length) if segment_length else None
+
+        out = []
+        tau = None
+        for v in sorted(lv):
+            try:
+                rd = dsp.random_decrement(src, fs_, trigger_level=v * sd,
+                                          segment_length=seg, condition=condition,
+                                          y=other)
+            except ValueError as e:
+                out.append({"level_sd": v, "error": str(e)})
+                continue
+            tau = rd["tau"]
+            sig = rd["signature"]
+            entry = {
+                "level_sd": v,
+                "n_segments": rd["n_segments"],
+                "signature": to_list(sig),
+                "peak": float(np.max(np.abs(sig))),
+            }
+            # Damping per level: the number that makes the comparison concrete.
+            try:
+                ld = dsp.log_decrement(sig, fs_)
+                entry.update({
+                    "zeta_pct": ld["zeta_pct"], "fn": ld["fn"],
+                    "r_squared": ld["r_squared"], "n_peaks": ld["n_peaks_used"],
+                })
+            except ValueError:
+                entry["fit_error"] = "Not enough usable peaks in this signature to fit."
+            out.append(entry)
+
+        if tau is None:
+            raise ValueError(
+                "No trigger level produced a usable signature. Lower the levels, "
+                "or use a longer record."
+            )
+
+        return {
+            "name": parsed["column_names"][int(signal_col)],
+            "cross_name": parsed["column_names"][int(cross_col)] if other is not None else None,
+            "tau": to_list(tau),
+            "levels": out,
+            "condition": condition,
+            "band": [band_low, band_high] if (band_low and band_high) else None,
+            "sd": sd,
+        }
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=friendly_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))

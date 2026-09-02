@@ -140,6 +140,7 @@
     { id: 'structural',    label: 'Structural',    tabs: [
       { id: 'response_spectrum', label: 'Response spectrum' },
       { id: 'log_decrement', label: 'Log decrement' },
+      { id: 'random_decrement', label: 'Random decrement' },
     ]},
     { id: 'statistics',    label: 'Statistics',     tabs: [
       { id: 'statistics', label: 'Distributions' },
