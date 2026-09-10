@@ -196,6 +196,46 @@ def test_reopen_keeps_detected_time_col(base, r):
             str(back.get("time_col")))
 
 
+def test_pinning_a_reference_does_not_reorder_recents(base, r):
+    """Reading a session to compare against must not count as opening it.
+
+    The recents list is ordered by when a session was last opened, and the app
+    reopens the top entry on launch. If pinning a dataset as a comparison
+    reference touched it, the next launch would come back showing the
+    *reference* instead of the file being worked on — the one thing the restore
+    path exists to get right.
+    """
+    r.section("pinning a comparison reference")
+
+    st, a = post(base, "/api/session/open", {"path": str(EXAMPLE)})
+    if not r.check(st == 200, "reference file opens", str(st)):
+        return
+    st, b = post(base, "/api/session/create", {}, {"file": (CSV.name, CSV.read_bytes())})
+    if not r.check(st == 200, "working file opens second", str(st)):
+        return
+
+    st, rec = get(base, "/api/session/recent")
+    before = [x["session_id"] for x in rec["recent"]]
+    r.check(before and before[0] == b["session_id"],
+            "the most recently opened file is at the top")
+
+    st, ref = get(base, f"/api/session/{a['session_id']}?touch=false")
+    r.check(st == 200, "a session can be read without touching it", str(st))
+    r.check(ref.get("column_names"),
+            "and still carries what a comparison needs — the channel names")
+
+    st, rec = get(base, "/api/session/recent")
+    after = [x["session_id"] for x in rec["recent"]]
+    r.check(after == before, "the order is untouched",
+            "unchanged" if after == before else "REORDERED")
+
+    # The default must keep working, or the restore path breaks instead.
+    st, _ = get(base, f"/api/session/{a['session_id']}")
+    st, rec = get(base, "/api/session/recent")
+    r.check(rec["recent"][0]["session_id"] == a["session_id"],
+            "while an ordinary read still promotes it, as the restore path needs")
+
+
 def main(base):
     r = Results()
     print(f"persistence tests against {base}")
@@ -205,6 +245,7 @@ def main(base):
     if sess:
         test_ui_state_roundtrip(base, sess, r)
     test_reopen_keeps_detected_time_col(base, r)
+    test_pinning_a_reference_does_not_reorder_recents(base, r)
     test_survives_ram_eviction(base, r)
     test_recent_list(base, r)
     test_launch_target(base, r)

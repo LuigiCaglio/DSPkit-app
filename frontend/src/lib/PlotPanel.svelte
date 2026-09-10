@@ -3,7 +3,7 @@
   import PlotCanvas from './PlotCanvas.svelte'
   import ResizablePane from './ResizablePane.svelte'
   import { plotTheme, themeState } from './theme.svelte.js'
-  import { buildPlot, buildPhasePlot, buildPairOverlay, buildExplorer,
+  import { buildPlot, buildPhasePlot, buildPairOverlay, buildExplorer, buildComparison,
            isDownsampledFor, MAX_PLOT_POINTS, HEATMAP_SCALES, LOG_Y_TABS,
            buildBlackmanTukey } from './plotSpec.js'
   import { nearestIndex, spectrumAt, envelopeAt, describeResolution } from './explorer.js'
@@ -19,6 +19,7 @@
     fddPicks = [], fddVectors = null, fddBusy = false, fddError = null,
     fddNVec = $bindable(1),
     onFddPick = null, onFddUnpick = null, onFddClear = null, onFddRun = null,
+    onViewChange = null, fetchFullData = null, fetchFullGrid = null,
   } = $props()
 
   // Three shapes arrive here:
@@ -29,8 +30,15 @@
   let overview = $derived(plotData?.overview ?? null)
   let explorer = $derived(plotData?.explorer ?? null)
   let overlay  = $derived(plotData?.overlay ?? null)
+  // {comparison: {items}} — the same analysis run against two datasets. It
+  // rides the ordinary single-chart path rather than getting a branch of its
+  // own, because that is all it is: one chart, with more traces on it.
+  let comparison = $derived(plotData?.comparison ?? null)
   let single   = $derived(
-    plotData && !grid && !overview && !overlay && !explorer ? plotData : null)
+    plotData && !grid && !overview && !overlay && !explorer && !comparison
+      ? plotData : null)
+  let comparisonFailures = $derived(
+    comparison ? comparison.items.filter(i => i.error) : [])
 
   // ── explorer: the picked time and frequency ────────────────────────────────
   // Slices are taken from the surface already in memory, so picking costs a
@@ -400,13 +408,16 @@
 
   function onRelayout(e) {
     if (!e) return
-    if (e['xaxis.autorange'] || e.autosize) { xRange = null; return }
+    if (e['xaxis.autorange'] || e.autosize) { xRange = null; onViewChange?.(null); return }
     const lo = e['xaxis.range[0]'] ?? e['xaxis.range']?.[0]
     const hi = e['xaxis.range[1]'] ?? e['xaxis.range']?.[1]
     if (lo == null || hi == null) return
     // Ignore the echo of our own pinned range, which would loop.
     if (xRange && Math.abs(xRange[0] - lo) < 1e-12 && Math.abs(xRange[1] - hi) < 1e-12) return
     xRange = [lo, hi]
+    // The series on screen is thinned to a point budget, so zooming has to ask
+    // the server for the window rather than magnifying what is already here.
+    onViewChange?.(xRange)
   }
 
   /** Points actually drawn for the first series, so the gain is visible. */
@@ -454,7 +465,12 @@
   })
 
   let mainSpec = $derived(
-    single
+    comparison
+      ? buildComparison(activeTab, comparison.items, {
+          ...baseOpts,
+          xRange: zoomable ? xRange : null,
+        })
+    : single
       ? buildPlot(activeTab, single, {
           ...baseOpts,
           xRange: zoomable ? xRange : null,
@@ -617,20 +633,56 @@
     URL.revokeObjectURL(a.href)
   }
 
-  function exportCsv(tab = activeTab, d = single, name = `${activeTab}.csv`) {
-    if (!d) return
-    const built = csvFor(tab, d)
+  let exporting = $state(false)
+
+  /**
+   * Export what was computed, not what was drawn.
+   *
+   * The chart is fed a series thinned to a point budget — that is what makes a
+   * long record usable. A CSV built from the same arrays would be a *picture*
+   * of the data saved as numbers, which is a quiet way to corrupt someone's
+   * analysis. So the export asks the server again with the thinning turned off
+   * and writes that. It falls back to the drawn arrays only when there is no
+   * way to re-fetch, and then only for a response that was never thinned.
+   */
+  async function exportCsv(tab = activeTab, d = single, name = `${activeTab}.csv`) {
+    if (!d || exporting) return
+    let full = d
+    if (d.decimated && fetchFullData) {
+      exporting = true
+      try {
+        full = (await fetchFullData()) ?? d
+      } finally {
+        exporting = false
+      }
+    }
+    const built = csvFor(tab, full)
     if (!built) return
     download(name, built[0], built[1])
   }
 
-  /** Grid export: one file, with a channel column identifying each block. */
-  function exportGridCsv() {
+  /**
+   * Grid export: one file, with a channel column identifying each block.
+   *
+   * Same rule as the single export — what was computed, not what was drawn.
+   * The cells come from a fan-out, so re-fetching means re-running the analysis
+   * once per channel with the thinning off.
+   */
+  async function exportGridCsv() {
     const usable = gridSpecs.filter((_, i) => grid[i].data)
-    if (!usable.length) return
+    if (!usable.length || exporting) return
+    let cells = grid
+    if (grid.some(c => c.data?.decimated) && fetchFullGrid) {
+      exporting = true
+      try {
+        cells = (await fetchFullGrid()) ?? grid
+      } finally {
+        exporting = false
+      }
+    }
     let headers = null
     const rows = []
-    for (const cell of grid) {
+    for (const cell of cells) {
       if (!cell.data) continue
       const built = csvFor(activeTab, cell.data)
       if (!built) continue
@@ -641,10 +693,28 @@
     download(`${activeTab}_all_channels.csv`, headers, rows)
   }
 
-  /** Overlay export: shared x column, one column per compared channel. */
+  /**
+   * Overlay export: shared x column, one column per compared channel.
+   *
+   * This path does *not* re-fetch, so it must never see a thinned response.
+   * It cannot today — the overlay only runs on the pair tabs, none of which
+   * thin — but that is a property of which endpoints happen to take a point
+   * budget, not a guarantee. The guard below is a tripwire: if one of them is
+   * ever thinned, this refuses rather than quietly writing a picture of the
+   * data as numbers.
+   */
+  let overlayExportError = $state(null)
   function exportOverlayCsv() {
     const usable = overlay.items.filter(i => i.data)
     if (!usable.length) return
+    if (usable.some(i => i.data.decimated)) {
+      overlayExportError =
+        'This analysis now thins its result for display, and the overlay export ' +
+        'cannot yet ask for the full one. Export the channels one at a time ' +
+        'until it can.'
+      return
+    }
+    overlayExportError = null
     const d0 = usable[0].data
     const xName = activeTab === 'cross_correlation' ? 'lag_s' : 'frequency_Hz'
     const xs = activeTab === 'cross_correlation' ? d0.lags : d0.freqs
@@ -820,7 +890,7 @@
         </span>
       {/if}
       {#if csvSupported}
-        <button class="btn-ghost btn-csv" onclick={() => exportCsv()}>↓ CSV</button>
+        <button class="btn-ghost btn-csv" onclick={() => exportCsv()} disabled={exporting}>{exporting ? "…" : "↓ CSV"}</button>
       {:else if overlay}
         <button class="btn-ghost btn-csv" onclick={exportOverlayCsv}>↓ CSV (all pairs)</button>
       {:else if gridCsvSupported}
@@ -984,6 +1054,9 @@
         </div>
       {/snippet}
     </ResizablePane>
+    {#if overlayExportError}
+      <div class="ov-fail">{overlayExportError}</div>
+    {/if}
     {#if overlayFailures.length}
       <div class="ov-fail">
         {overlayFailures.length} comparison{overlayFailures.length > 1 ? 's' : ''} failed:
@@ -1044,6 +1117,13 @@
         </div>
       {/snippet}
     </ResizablePane>
+
+    <!-- One dataset failing must not read as the other one being wrong. -->
+    {#if comparisonFailures.length}
+      <div class="ov-fail">
+        {comparisonFailures.map(f => `${f.label}: ${f.error}`).join('; ')}
+      </div>
+    {/if}
 
     <!-- spectrum from the autocorrelation, sharing the frequency axis -->
     {#if btSpec}
@@ -1316,6 +1396,37 @@
           A high R&sup2; is not on its own proof: check the peak count against the
           cycles you can see in the record. A good fit through the wrong peaks
           looks identical.
+        {/if}
+      </div>
+    </div>
+  {/if}
+
+  <!-- error spectrum: the headline number, and what would make it a lie -->
+  {#if activeTab === 'predictability' && single?.mode === 'error'}
+    <div class="sv-panel">
+      <div class="sv-bar">
+        <span class="sv-title">{single.target} explained by {single.predictors.join(', ')}</span>
+      </div>
+      <div class="mi-facts">
+        <span>unexplained <b>{(100 * single.unexplained_fraction).toPrecision(3)}%</b></span>
+        <span>residual variance <b>{single.unexplained_variance.toPrecision(3)}</b></span>
+        <span>bias floor <b>{single.bias_floor.toFixed(3)}</b></span>
+        <span>segments <b>{single.n_segments}</b></span>
+        <span>predictors <b>{single.predictors.length}</b></span>
+      </div>
+      <div class="mi-note">
+        {#if single.notes?.length}
+          {single.notes[0]}
+        {:else if single.unexplained_fraction > 0.2}
+          A fifth of the target is unaccounted for. Before concluding the sensors
+          cannot do the job, lengthen nperseg: too coarse a resolution smears
+          sharp peaks and notches and invents a residual that is not there,
+          worst exactly where the target carries the most power.
+        {:else}
+          The coherence curve and this one describe the same failure. Where they
+          disagree, trust this one: a band where coherence collapses costs
+          nothing if there is no power in it. Both conflate measurement noise,
+          unmeasured inputs and nonlinearity, and neither can separate them.
         {/if}
       </div>
     </div>

@@ -41,14 +41,20 @@ override any of it. Then it plots straight away.
 | | |
 |---|---|
 | **Inspect** | Time series, data table |
-| **Spectral** | FFT, Welch PSD, peak detection with Q-factor, autocorrelation |
+| **Spectral** | FFT, Welch PSD, autoregressive PSD for records too short to average, peak detection with Q-factor, autocorrelation — with a check that says whether your segment length resolves the peaks *and* averages enough |
 | **Cross-signal** | Cross-correlation, CSD, coherence |
 | **Filtering** | High/low/band-pass, notch, detrend, zero-phase or causal — with the response drawn over the spectrum, and cutoffs pickable off the plot |
 | **Time-frequency** | A linked **Explorer** over STFT, CWT, Wigner-Ville, smoothed-pseudo WVD and Fourier synchrosqueezing — click the surface to slice a spectrum or an envelope out of it |
 | **Decomposition** | Hilbert instantaneous frequency, EMD, Hilbert-Huang |
-| **Multi-channel** | Correlation and coherence matrices, Frequency Domain Decomposition (FDD/EFDD) for natural frequencies, mode shapes and damping |
+| **Multi-channel** | Correlation and coherence matrices, multiple and partial coherence, the error spectrum — what no linear model can explain about one channel, in its own units — and Frequency Domain Decomposition (FDD/EFDD) for natural frequencies, mode shapes and damping |
 | **Statistics** | Distributions, joint densities, covariance, Mahalanobis outliers, SHM indicators |
 
+
+**Two files at once.** Pin any recent file as a reference and the spectral,
+autocorrelation, response-spectrum, FDD and coherence tabs draw both on one
+chart — solid for the open file, dotted for the reference, each channel keeping
+its colour so you can pair them by eye. Channels are matched by name, and it
+refuses rather than guessing when they do not line up.
 
 ![The linked Time-Frequency Explorer](docs/images/explorer.png)
 
@@ -129,11 +135,11 @@ cd frontend && npm install && npm run build
 ## Tests
 
 ```bash
-python tests/run_all.py     # 342 assertions, no third-party packages needed
+python tests/run_all.py     # 428 assertions, no third-party packages needed
 ```
 
 The library has its own suite — `pytest tests/` in the
-[DSPkit](https://github.com/LuigiCaglio/DSPkit) repo, 189 passing.
+[DSPkit](https://github.com/LuigiCaglio/DSPkit) repo, 306 passing.
 
 ## Built with
 

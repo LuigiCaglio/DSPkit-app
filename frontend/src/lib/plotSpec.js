@@ -26,6 +26,19 @@ function lowerBound(x, v) {
  * zooming in spends the whole point budget on what is actually on screen — a
  * 20x zoom shows 20x the detail, up to the raw sample rate. The alternative
  * (decimate once, then let the viewer zoom) turns a smooth curve into steps.
+ *
+ * **Min and max per bin, never a stride.** Taking every k-th sample is faster
+ * and is wrong in a way that does not look wrong: it *deletes* whatever falls
+ * between the samples it keeps. Measured on a 600k-bin FFT thinned to this
+ * budget, a one-bin resonance reached the chart 8% of the time — the other 92%
+ * it was simply absent, with nothing on screen to say so. Spectra are the worst
+ * case, because a narrow peak is usually the entire point of the plot, but a
+ * transient in a long time series disappears the same way.
+ *
+ * Keeping both extremes of each bin costs one pass and two points per bin, and
+ * it cannot lose a peak: whatever the largest value in the bin is, it is drawn.
+ * The two are emitted in their original x order so the line still reads as a
+ * function of x rather than zig-zagging backwards.
  */
 export function downsampleXY(x, y, enabled = true, range = null) {
   if (!x || x.length === 0) return { x, y }
@@ -42,15 +55,34 @@ export function downsampleXY(x, y, enabled = true, range = null) {
   if (!enabled || n <= MAX_PLOT_POINTS) {
     return range ? { x: x.slice(lo, hi + 1), y: y.slice(lo, hi + 1) } : { x, y }
   }
-  const step = Math.ceil(n / MAX_PLOT_POINTS)
+
+  // Two points per bin, so the budget buys half as many bins.
+  const bins = Math.max(1, Math.floor(MAX_PLOT_POINTS / 2))
+  const width = n / bins            // fractional: bins stay evenly spread
   const xd = [], yd = []
-  for (let i = lo; i <= hi; i += step) { xd.push(x[i]); yd.push(y[i]) }
+  for (let b = 0; b < bins; b++) {
+    const s = lo + Math.floor(b * width)
+    const e = Math.min(hi, lo + Math.floor((b + 1) * width) - 1)
+    if (e < s) continue
+    let iMin = s, iMax = s
+    for (let i = s + 1; i <= e; i++) {
+      if (y[i] < y[iMin]) iMin = i
+      if (y[i] > y[iMax]) iMax = i
+    }
+    const first = Math.min(iMin, iMax), second = Math.max(iMin, iMax)
+    xd.push(x[first]); yd.push(y[first])
+    if (second !== first) { xd.push(x[second]); yd.push(y[second]) }
+  }
   return { x: xd, y: yd }
 }
 
 /** True when `tab`'s payload is long enough that display downsampling kicks in. */
 export function isDownsampledFor(tab, d) {
   if (!d) return false
+  // The server now thins before sending, and says so. Its own flag is the
+  // truth: comparing array lengths here would report "not thinned" precisely
+  // because the thinning already happened.
+  if (d.decimated !== undefined) return !!d.decimated
   if (tab === 'timeseries')
     return d.times_raw?.length > MAX_PLOT_POINTS || d.times_proc?.length > MAX_PLOT_POINTS
   if (tab === 'filter' || tab === 'instantaneous')
@@ -352,23 +384,26 @@ export function buildPlot(tab, d, opts) {
 
   if (tab === 'timeseries') {
     const traces = []
+    // The original is optional now: the endpoint omits it when the ghost trace
+    // is switched off, which is most of the payload on a resampled record.
+    const hasRaw = d.preprocessed && d.times_raw != null &&
+                   d.signals.some(sg => sg.signal_raw != null)
     d.signals.forEach((sig, i) => {
       const color = colors[i % colors.length]
-      if (d.preprocessed) {
+      if (hasRaw) {
         const dr = ds(d.times_raw, norm(sig.signal_raw))
         traces.push({ x: dr.x, y: dr.y, type: 'scatter', mode: 'lines',
                       name: `${sig.name} (raw)`, opacity: 0.35, line: { color, dash: 'dot' } })
-        const dp = ds(d.times_proc, norm(sig.signal_proc))
-        traces.push({ x: dp.x, y: dp.y, type: 'scatter', mode: 'lines',
-                      name: sig.name, line: { color } })
-      } else {
-        const dd = ds(d.times_raw, norm(sig.signal_raw))
-        traces.push({ x: dd.x, y: dd.y, type: 'scatter', mode: 'lines',
-                      name: sig.name, line: { color } })
       }
+      const proc = sig.signal_proc ?? sig.signal_raw
+      const times = d.times_proc ?? d.times_raw
+      const dp = ds(times, norm(proc))
+      traces.push({ x: dp.x, y: dp.y, type: 'scatter', mode: 'lines',
+                    name: sig.name, line: { color } })
     })
-    const dsLabel = isDownsampledFor(tab, d) && dsOn && !xRange ? '  (downsampled for display)' : ''
-    const heading = title ?? `${d.n_proc.toLocaleString()} samples  ·  fs = ${d.fs_proc.toFixed(2)} Hz${dsLabel}`
+    const dsLabel = isDownsampledFor(tab, d) ? '  (thinned for display)' : ''
+    const nShown = d.n_total ?? d.n_proc
+    const heading = title ?? `${nShown.toLocaleString()} samples  ·  fs = ${d.fs_proc.toFixed(2)} Hz${dsLabel}`
     return { traces, layout: merge(L, {
       xaxis: { ...L.xaxis, title: 'Time [s]', ...xAxisRange },
       yaxis: { ...L.yaxis, title: ampTitle(), type: yType },
@@ -391,8 +426,15 @@ export function buildPlot(tab, d, opts) {
   }
 
   if (tab === 'psd') {
+    // An AR spectrum is a fitted model, not an average of the data, and the
+    // order it was fitted at decides what it says. Naming the order in the
+    // legend is not decoration: two AR curves at different orders are different
+    // claims about the same record, and without it they are indistinguishable.
+    const isAr = d.method === 'ar'
     const traces = d.signals.map((sig, i) =>
-      line(d.freqs, norm(sig.Pxx), sig.name, 'solid', 'y', colors[i % colors.length]))
+      line(d.freqs, norm(sig.Pxx),
+           isAr && sig.order != null ? `${sig.name} (AR ${sig.order})` : sig.name,
+           'solid', 'y', colors[i % colors.length]))
     const rp = responseTrace()
     if (rp) traces.push(rp.trace)
     const xr = (psd.xMin !== '' && psd.xMin != null && psd.xMax !== '' && psd.xMax != null)
@@ -408,6 +450,10 @@ export function buildPlot(tab, d, opts) {
                ...(xr ? { range: xr, autorange: false } : { autorange: true }) },
       yaxis: { ...L.yaxis, title: withUnit('PSD', psdUnit(sigUnit)), type: (psd.yLog ?? true) ? 'log' : 'linear',
                ...(yr ? { range: yr, autorange: false } : { autorange: true }) },
+      ...(isAr ? { title: { text: title ??
+        `AR spectrum (${d.ar_method === 'yule_walker' ? 'Yule-Walker' : 'Burg'}` +
+        `${d.ar_selected ? `, order by ${String(d.ar_selected).toUpperCase()}` : ''})`,
+        font: { color: T.title, size: cell ? 11 : 12 } } } : {}),
     }))}
   }
 
@@ -798,6 +844,35 @@ export function buildPlot(tab, d, opts) {
   }
 
   if (tab === 'predictability') {
+    // The error spectrum is a different kind of picture from the other two
+    // modes: a power density in the target's own units rather than a share, so
+    // it gets a log axis and the target's own spectrum drawn behind it. The
+    // gap between the two curves *is* the answer, and on a linear 0-1 axis it
+    // would be invisible.
+    if (d.mode === 'error') {
+      const tUnit = units.byName?.[d.target] ?? ''
+      const traces = [
+        line(d.freqs, d.target_psd, `${d.target} — total`, 'solid', 'y', T.danger),
+        line(d.freqs, d.error_spectrum, 'Unexplained', 'solid', 'y', colors[0]),
+      ]
+      const pct = 100 * d.unexplained_fraction
+      // Two significant figures below 1%, where the interesting values live.
+      const pctText = pct >= 1 ? pct.toFixed(1) : pct.toPrecision(2)
+      const from = d.predictors.length > 2
+        ? `${d.predictors.length} channels`
+        : d.predictors.join(' + ')
+      return { traces, layout: merge(L, {
+        xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
+        // Always log: an error spectrum worth reading is usually orders of
+        // magnitude below the signal, which is the whole point of drawing it.
+        yaxis: { ...L.yaxis, title: withUnit('PSD', psdUnit(tUnit)), type: 'log' },
+        title: { text: title ??
+          `${d.target} from ${from} — ${pctText}% unexplained` +
+          `  ·  bias floor ${d.bias_floor.toFixed(3)} over ${d.n_segments} segments`,
+          font: { color: T.title, size: cell ? 11 : 12 } },
+      })}
+    }
+
     const items = d.mode === 'partial'
       ? d.pairs.map(pp => ({ name: pp.label, values: pp.values }))
       : d.signals.map(sg => ({ name: sg.name, values: sg.values }))
@@ -1282,4 +1357,75 @@ export function buildExplorer(d, opts) {
   }
 
   return { traces, layout }
+}
+
+
+/**
+ * One analysis, two datasets, one axis.
+ *
+ * This deliberately knows nothing about any particular tab. It builds each
+ * dataset's chart with the ordinary `buildPlot` and then merges the traces, so
+ * every axis title, log scale, unit and label that the tab already gets right
+ * stays right, and a new tab becomes comparable by being named in `COMPARABLE`
+ * rather than by being special-cased here. The same trick `runFanout` uses on
+ * the request side.
+ *
+ * Datasets are told apart by **dash, not colour**. Colour is already spent on
+ * the channel, and it is the channel-to-channel correspondence that a reader is
+ * trying to see: acc1 here against acc1 there. Recolouring by dataset would
+ * destroy exactly the pairing the chart exists to show.
+ *
+ * `items` is `[{label, data, error}]`, first entry the active dataset.
+ */
+export function buildComparison(tab, items, opts) {
+  const { T, cell = false, title = null } = opts
+  const built = items.map(it => (it.data ? buildPlot(tab, it.data, opts) : null))
+  const first = built.findIndex(Boolean)
+  if (first < 0) return null
+
+  // A heatmap or a bar cannot be overlaid onto another of its kind and stay
+  // readable. COMPARABLE should already have excluded these tabs; this is the
+  // backstop, so a tab added to that set without thought degrades to showing
+  // the active dataset alone rather than drawing nonsense.
+  const drawable = built.map(sp =>
+    sp && sp.traces.every(tr => (tr.type ?? 'scatter') === 'scatter') ? sp : null)
+  if (!drawable[first]) return built[first]
+
+  const DASH = ['solid', 'dot', 'dashdot', 'dash']
+  const traces = []
+  drawable.forEach((sp, i) => {
+    if (!sp) return
+    for (const tr of sp.traces) {
+      traces.push({
+        ...tr,
+        name: `${tr.name} · ${items[i].label}`,
+        line: { ...(tr.line ?? {}), dash: DASH[i % DASH.length] },
+        // Markers would double up and clutter; the line carries the comparison.
+        mode: tr.mode === 'lines+markers' ? 'lines' : tr.mode,
+      })
+    }
+  })
+
+  const base = drawable[first].layout
+  const shown = items.filter((_, i) => drawable[i]).map(it => it.label)
+  return {
+    traces,
+    layout: {
+      ...base,
+      title: {
+        text: title ?? `${stripDataset(base.title?.text)} — ${shown.join(' vs ')}`,
+        font: { color: T.title, size: cell ? 11 : 12 },
+      },
+    },
+  }
+}
+
+/**
+ * A tab's own title may already name its channels; the dataset names are added
+ * by the caller. Trailing whitespace and a dangling separator are all that need
+ * removing, and doing it here keeps the joined title from reading oddly.
+ */
+function stripDataset(text) {
+  if (!text) return 'Comparison'
+  return String(text).replace(/\s*[—·-]\s*$/, '').trim()
 }

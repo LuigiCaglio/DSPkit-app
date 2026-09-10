@@ -6,7 +6,7 @@
   import PreprocessPanel   from './lib/PreprocessPanel.svelte'
   import RightSidebar      from './lib/RightSidebar.svelte'
   import ChannelSelect     from './lib/ChannelSelect.svelte'
-  import { ALL_CHANNELS } from './lib/analyses.js'
+  import { ALL_CHANNELS, isComparable } from './lib/analyses.js'
   import { exportParams, importParams, resetParams } from './lib/paramStore.svelte.js'
   import { applyState, buildState, debounce, defaultPreproc } from './lib/sessionState.js'
   import { describeRejection, impliedFs } from './lib/detect.js'
@@ -354,14 +354,22 @@
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────
-  function buildFormData(extraFields = {}) {
+  function buildFormData(extraFields = {}, override = null) {
     const fd = new FormData()
-    fd.append('session_id', session.session_id)
-    fd.append('orientation', orientation)
-    fd.append('header_row', String(headerRow))
-    fd.append('time_col', String(timeCol))
-    fd.append('fs', String(effectiveFs))
-    fd.append('signal_cols', JSON.stringify(signalCols.map(Number)))
+    // `override` swaps the five fields that identify *which* record is being
+    // analysed, leaving everything else — including the preprocessing in the
+    // query string — untouched. That is what lets the same request be aimed at
+    // a second dataset without duplicating the request builder.
+    const base = {
+      session_id: session.session_id,
+      orientation,
+      header_row: String(headerRow),
+      time_col: String(timeCol),
+      fs: String(effectiveFs),
+      signal_cols: JSON.stringify(signalCols.map(Number)),
+      ...(override ?? {}),
+    }
+    for (const [k, v] of Object.entries(base)) fd.append(k, String(v))
     for (const [k, v] of Object.entries(extraFields)) {
       if (v !== null && v !== undefined) fd.append(k, String(v))
     }
@@ -670,7 +678,7 @@
    *   this one call. Only the Explorer uses it, to narrow the sample window for
    *   an O(N²) transform without touching the preprocessing panel the user set.
    */
-  async function post(endpoint, extraFields = {}, queryOverride = null) {
+  async function post(endpoint, extraFields = {}, queryOverride = null, sessionOverride = null) {
     try {
       let url = buildPreprocUrl(endpoint)
       if (queryOverride) {
@@ -680,7 +688,7 @@
         url = `${path}?${p.toString()}`
       }
       const res  = await fetch(url, {
-        method: 'POST', body: buildFormData(extraFields),
+        method: 'POST', body: buildFormData(extraFields, sessionOverride),
       })
       const data = await res.json()
       if (res.ok) return { data }
@@ -708,6 +716,10 @@
     if (!session) return
     if (signalCols.length === 0) { plotError = 'Select at least one channel.'; return }
     if (extraFields.signal_col === ALL_CHANNELS) return runFanout(endpoint, extraFields)
+    // A pinned reference turns every comparable analysis into a two-dataset
+    // one. Tabs outside COMPARABLE ignore it and run normally rather than
+    // silently dropping the reference — the banner keeps saying it is pinned.
+    if (compareRef && isComparable(activeTab)) return runComparison(endpoint, extraFields)
 
     lastRun = { kind: 'single', endpoint, extra: extraFields }
     const seq = ++runSeq
@@ -775,6 +787,256 @@
     if (seq !== runSeq) return
     if (items.every(r => r.error)) plotError = items[0].error
     else plotData = { overlay: { ref: channelName(refCol), items } }
+    loading = false
+  }
+
+  // ── comparing against a second dataset ─────────────────────────────────────
+  //
+  // The backend was already multi-session — every analysis endpoint takes a
+  // session_id and several parsed files stay in memory — so this holds a second
+  // session alongside the active one and runs the same analysis twice. No new
+  // endpoint, and the reference is never "loaded" in the sense that would
+  // disturb the channel selection, preprocessing or tab.
+  //
+  // Only one reference, deliberately. Two datasets is where nearly all of the
+  // value is, and each extra one multiplies the channel-matching problem below
+  // while making the chart harder to read, not easier.
+  let compareRef = $state(null)   // {session_id, filename, column_names, fs, time_col}
+
+  async function toggleCompare(entry) {
+    if (compareRef?.session_id === entry.session_id) { compareRef = null; return }
+    if (session && entry.session_id === session.session_id) {
+      plotError = 'That is the dataset already open. Pick a different one to compare against.'
+      return
+    }
+    try {
+      // touch=false: pinning is not opening. Without it the reference is
+      // stamped as the most recently used file and comes back on next launch
+      // instead of the dataset actually being worked on.
+      const res = await fetch(`/api/session/${entry.session_id}?touch=false`)
+      const data = await res.json()
+      if (!res.ok) { plotError = data.detail; return }
+      const ref = {
+        session_id: data.session_id,
+        filename: data.filename,
+        column_names: data.column_names ?? [],
+        n_samples: data.n_samples,
+        fs: data.fs,
+        time_col: data.time_col ?? -1,
+        orientation: data.orientation,
+        header_row: data.header_row,
+      }
+      // Check the names now rather than on the next run. Pinning a file that
+      // shares no channel with this one leaves the tab refusing every analysis
+      // until the reference is cleared, and the reason for that is much harder
+      // to see once it is three clicks behind you.
+      const names = new Set(ref.column_names)
+      const wanted = signalCols.map(c => session.column_names?.[c])
+      if (wanted.length && !wanted.some(n => names.has(n))) {
+        plotError =
+          `${ref.filename} shares no channel name with ${session.filename} ` +
+          `(looking for ${wanted.join(', ')}). Channels are matched by name, so ` +
+          `there is nothing to compare. Not pinned.`
+        return
+      }
+      compareRef = ref
+      rerunActive()
+    } catch (e) {
+      plotError = `Could not open that dataset to compare (${e.message}).`
+    }
+  }
+
+  function clearCompare() {
+    compareRef = null
+    rerunActive()
+  }
+
+  /**
+   * Where the active selection's channels live in the reference file.
+   *
+   * **By name, and it refuses rather than guessing.** Column *order* agreeing
+   * between two files is a coincidence, not a guarantee, and silently comparing
+   * acc1 against a differently-ordered acc3 would produce a chart that looks
+   * fine and means nothing. A name that is missing is a real answer — the two
+   * files do not hold the same measurement — so it is reported, not patched.
+   */
+  function mapColumns(cols) {
+    if (!compareRef) return { cols: null, missing: [] }
+    const refNames = compareRef.column_names
+    const missing = []
+    const mapped = cols.map((c) => {
+      const wanted = session.column_names?.[c]
+      const i = refNames.indexOf(wanted)
+      if (i < 0) missing.push(wanted ?? `column ${c}`)
+      return i
+    })
+    return { cols: mapped, missing }
+  }
+
+  /**
+   * The reference's own fields for a request: its session, its time column, its
+   * sample rate, and the active channels translated into its own numbering.
+   */
+  function compareOverride(extraFields) {
+    const { cols, missing } = mapColumns(signalCols.map(Number))
+    if (missing.length) return { error:
+      `${compareRef.filename} has no ${missing.length > 1 ? 'channels' : 'channel'} ` +
+      `named ${missing.join(', ')}. Channels are matched by name between datasets, ` +
+      `so the comparison would not be like for like.` }
+
+    const fields = {
+      session_id: compareRef.session_id,
+      orientation: compareRef.orientation,
+      header_row: String(compareRef.header_row),
+      time_col: String(compareRef.time_col),
+      fs: String(compareRef.fs ?? effectiveFs),
+      signal_cols: JSON.stringify(cols),
+    }
+    // Single-channel analyses name one column, and it needs translating too.
+    const extra = { ...extraFields }
+    for (const key of ['signal_col', 'signal_col_x', 'signal_col_y', 'target_col']) {
+      if (extra[key] !== undefined && extra[key] !== null && extra[key] !== ALL_CHANNELS) {
+        const m = mapColumns([Number(extra[key])])
+        if (m.missing.length) return { error:
+          `${compareRef.filename} has no channel named ${m.missing[0]}.` }
+        extra[key] = m.cols[0]
+      }
+    }
+    return { fields, extra }
+  }
+
+  /**
+   * A caveat when the two records are not really commensurable.
+   *
+   * Different sample rates are *not* refused: a spectrum is in Hz either way
+   * and the comparison is still meaningful, it is just no longer like for like
+   * at a given nperseg — the resolution and the Nyquist both move. That is a
+   * thing to say, not a thing to block, and saying it beats a refusal that
+   * would stop a legitimate comparison.
+   */
+  let compareCaveat = $derived.by(() => {
+    if (!compareRef || !session) return null
+    const notes = []
+    const a = Number(effectiveFs), b = Number(compareRef.fs)
+    if (a && b && Math.abs(a - b) / a > 1e-6) {
+      notes.push(
+        `sample rates differ (${a.toFixed(2)} Hz here, ${b.toFixed(2)} Hz there), ` +
+        `so the same nperseg gives a different frequency resolution in each`)
+    }
+    if (compareRef.n_samples && session.n_samples &&
+        Math.abs(compareRef.n_samples - session.n_samples) /
+          Math.max(compareRef.n_samples, session.n_samples) > 0.25) {
+      notes.push(
+        `record lengths differ substantially (${session.n_samples.toLocaleString()} ` +
+        `against ${compareRef.n_samples.toLocaleString()} samples), which changes ` +
+        `how many segments each average has`)
+    }
+    notes.push(
+      'preprocessing set here is applied to both, so the reference is filtered ' +
+      'and detrended the same way')
+    return notes
+  })
+
+  /**
+   * The same analysis again with the display thinning switched off.
+   *
+   * Only the CSV export uses this. It is deliberately not cached: an export is
+   * rare and can afford a round trip, where holding the full arrays in memory
+   * against the chance of one would give back everything the thinning bought.
+   */
+  async function fetchFullData() {
+    if (!lastRun || lastRun.kind !== 'single') return null
+    const { data, error } = await post(lastRun.endpoint, {
+      ...lastRun.extra, max_points: 0, include_raw: true,
+      view_start: null, view_end: null,
+    })
+    return error ? null : data
+  }
+
+  /**
+   * Ask the library whether a segment length is a good one, on this record.
+   *
+   * Not an analysis: it answers a question about the *parameters* rather than
+   * producing a chart, so it returns to the caller instead of touching
+   * plotData. That keeps a check from wiping the plot the user is comparing
+   * against.
+   */
+  async function checkSegments(extra = {}) {
+    if (!session || signalCols.length === 0) return null
+    const { data, error } = await post('/api/spectral/segment_advice', extra)
+    return error ? { verdict: 'error', advice: error } : data
+  }
+
+  /** The fan-out again with the thinning off, for a grid CSV export. */
+  async function fetchFullGrid() {
+    if (!lastRun || lastRun.kind !== 'fanout') return null
+    const channels = [...signalCols]
+    return Promise.all(channels.map(async (ci) => {
+      const { data, error } = await post(lastRun.endpoint, {
+        ...lastRun.extra, signal_col: ci, max_points: 0,
+      })
+      return { name: channelName(ci), col: ci, data, error }
+    }))
+  }
+
+  /**
+   * Re-fetch the visible window when the chart is zoomed.
+   *
+   * The series arrives thinned to a point budget, so magnifying it client-side
+   * would just show bigger steps. Asking the server for the window spends the
+   * same budget on a shorter span, which is what makes a zoom reveal detail —
+   * the property `downsample.test.mjs` has always asserted, now paid for over
+   * the wire instead of by sending the whole record up front.
+   *
+   * Deliberately quiet: `plotData` is left in place while the request is in
+   * flight, so the chart does not blank on every drag. Debounced, because a
+   * drag emits a relayout per frame.
+   */
+  let viewTimer = null
+  function onViewChange(range) {
+    if (!lastRun || lastRun.kind !== 'single') return
+    if (lastRun.endpoint !== '/api/signal/timeseries') return
+    clearTimeout(viewTimer)
+    viewTimer = setTimeout(async () => {
+      const seq = ++runSeq
+      const { data, error } = await post(lastRun.endpoint, {
+        ...lastRun.extra,
+        view_start: range?.[0] ?? null,
+        view_end: range?.[1] ?? null,
+      })
+      if (seq !== runSeq) return
+      if (!error && data) plotData = data
+    }, 250)
+  }
+
+  /**
+   * Run one analysis against both datasets and put the results on one chart.
+   *
+   * The reference is fetched with the *active* preprocessing query, which is
+   * the point: comparing a filtered record against an unfiltered one would be
+   * comparing the filter.
+   */
+  async function runComparison(endpoint, extraFields) {
+    const over = compareOverride(extraFields)
+    if (over.error) { plotError = over.error; loading = false; return }
+
+    lastRun = { kind: 'comparison', endpoint, extra: extraFields }
+    const seq = ++runSeq
+    loading = true
+    plotData = null
+    plotError = null
+
+    const [mine, theirs] = await Promise.all([
+      post(endpoint, extraFields),
+      post(endpoint, over.extra, null, over.fields),
+    ])
+    if (seq !== runSeq) return
+
+    if (mine.error && theirs.error) { plotError = mine.error; loading = false; return }
+    plotData = { comparison: { items: [
+      { label: session.filename, data: mine.data, error: mine.error },
+      { label: compareRef.filename, data: theirs.data, error: theirs.error },
+    ] } }
     loading = false
   }
 
@@ -944,13 +1206,37 @@ settings were restored from the last time this file was open.">
       {hasFile}
       {sourcePath}
       sessionId={session?.session_id ?? null}
+      compareId={compareRef?.session_id ?? null}
       filename={session?.filename ?? file?.name}
       onfile={onFileChosen}
       onopen={(entry) => entry.source_path
         ? openPath(entry.source_path)
         : openSession(entry.session_id)}
+      oncompare={toggleCompare}
       onclose={closeSession}
     />
+
+    {#if compareRef}
+      <div class="compare-banner">
+        <div class="compare-title">
+          Comparing against
+          <button class="compare-clear" onclick={clearCompare}
+                  title="Stop comparing">×</button>
+        </div>
+        <div class="compare-file">{compareRef.filename}</div>
+        {#if !isComparable(activeTab)}
+          <div class="compare-note">
+            This tab shows one dataset at a time. Switch to a spectrum,
+            autocorrelation, response spectrum, FDD or conditioned-coherence tab
+            to see both.
+          </div>
+        {:else}
+          {#each compareCaveat ?? [] as note}
+            <div class="compare-note">{note}</div>
+          {/each}
+        {/if}
+      </div>
+    {/if}
 
     {#if hasParsed}
       <!-- what the loader worked out on its own -->
@@ -1098,6 +1384,7 @@ settings were restored from the last time this file was open.">
         {loading}
         {plotError}
         {runAnalysis}
+        {checkSegments}
         {runOverview}
         {runPairOverlay}
         {runExplorer}
@@ -1147,6 +1434,7 @@ settings were restored from the last time this file was open.">
             bind:fddNVec
             onFddPick={fddPick} onFddUnpick={fddUnpick}
             onFddClear={fddClear} onFddRun={runFddVectors}
+            {onViewChange} {fetchFullData} {fetchFullGrid}
           />
         {/if}
       </div>

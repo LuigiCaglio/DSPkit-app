@@ -70,3 +70,66 @@ test('isDownsampledFor only claims tabs that actually decimate', () => {
   assert.ok(!isDownsampledFor('fft', long), 'spectra are not decimated')
   assert.ok(!isDownsampledFor('timeseries', { times_raw: [1, 2, 3] }), 'short record')
 })
+
+
+// ── peaks must survive the thinning ─────────────────────────────────────────
+//
+// The bug these guard: decimating by stride deleted whatever fell between the
+// samples it kept. On a 600k-bin FFT thinned to the budget, a one-bin peak was
+// drawn 8% of the time. A chart that silently omits the resonance you are
+// looking for is worse than a slow one.
+
+test('a one-bin peak survives wherever it falls', () => {
+  const n = 600_000
+  const x = Array.from({ length: n }, (_, i) => i)
+  const y = new Array(n).fill(1)
+  // Deliberately awkward positions: just inside, just outside and far from a
+  // bin edge, plus the two ends.
+  for (const peak of [0, 1, 11, 12, 13, 4999, 300_000, 599_998, n - 1]) {
+    y[peak] = 1000
+    const d = downsampleXY(x, y, true, null)
+    assert.ok(d.y.includes(1000), `peak at index ${peak} was dropped`)
+    y[peak] = 1
+  }
+})
+
+test('a one-sample dropout survives too, not just a spike', () => {
+  const n = 200_000
+  const x = Array.from({ length: n }, (_, i) => i)
+  const y = new Array(n).fill(1)
+  y[123_457] = -50
+  const d = downsampleXY(x, y, true, null)
+  assert.ok(d.y.includes(-50), 'the minimum of the bin must be kept as well')
+})
+
+test('the thinned series still runs left to right', () => {
+  // Two points per bin means emitting a min and a max; out of order they would
+  // draw a line that doubles back on itself.
+  const n = 300_000
+  const x = Array.from({ length: n }, (_, i) => i)
+  const y = Array.from({ length: n }, (_, i) => Math.sin(i / 7) + Math.sin(i / 991))
+  const d = downsampleXY(x, y, true, null)
+  for (let i = 1; i < d.x.length; i++) {
+    assert.ok(d.x[i] >= d.x[i - 1], `x went backwards at ${i}`)
+  }
+})
+
+test('thinning still respects the budget', () => {
+  const n = 1_200_000
+  const x = Array.from({ length: n }, (_, i) => i)
+  const y = Array.from({ length: n }, (_, i) => i % 97)
+  const d = downsampleXY(x, y, true, null)
+  assert.ok(d.x.length <= MAX_PLOT_POINTS, `${d.x.length} points`)
+  assert.equal(d.x.length, d.y.length)
+})
+
+test('the extremes of the whole record are on the chart', () => {
+  const n = 400_000
+  const x = Array.from({ length: n }, (_, i) => i)
+  const y = Array.from({ length: n }, (_, i) => Math.sin(i / 1000))
+  y[77_777] = 12.5
+  y[300_001] = -9.5
+  const d = downsampleXY(x, y, true, null)
+  assert.equal(Math.max(...d.y), 12.5)
+  assert.equal(Math.min(...d.y), -9.5)
+})

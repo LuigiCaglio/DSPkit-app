@@ -1,28 +1,50 @@
 # DSPkit-app — what's left
 
-State as of **2026-09-02**, at **v0.4.0**. Public, MIT, with a Zenodo DOI.
+State as of **2026-09-10**, at **v0.5.0**. Public, MIT, with a Zenodo DOI.
 
 Run the tests with `python tests/run_all.py` — no third-party packages needed.
-The library has its own suite (`pytest tests/` in the DSPkit repo, 285 passing)
+The library has its own suite (`pytest tests/` in the DSPkit repo, 306 passing)
 and its own `TODO.md` for anything algorithmic.
+
+## Direction — read before proposing work
+
+**No SHM-framed features for now.** Decided 2026-09-10. Damage detection,
+baseline-versus-current comparison, condition monitoring and anything else that
+frames the app as a structural-health tool are off the list until further
+notice. This is a scope decision, not a technical one — the pieces exist and
+some of them work; they are simply not what this app is for at the moment.
+
+What that rules out concretely: motivating a feature by "you could compare a
+healthy and a damaged record", building baseline distributions for the
+Mahalanobis view, and anything under `indicators` growing a reference dataset.
+Those analyses stay as they are — single-record, descriptive, no baseline.
+
+What it does *not* rule out: general multi-dataset support, which is built and
+described in §9. Comparing two files is an ordinary thing to want and stands on
+its own; it just should not be designed around, or sold as, a damage-detection
+workflow.
 
 ## Where to pick up
 
 Nothing here blocks day-to-day use. In rough order of value:
 
-1. **Verify the new tabs in a browser.** FRF, Random decrement, the Blackman-
+1. **§8.2, the bundled example file.** It reports 39% of a displacement as
+   unexplainable when the true answer is zero, at the default settings, on the
+   tab that ships with it. The library fix is `../DSPkit/TODO.md` §7.1; a longer
+   example record is the app-side half.
+2. **Verify the new tabs in a browser.** FRF, Random decrement, the Blackman-
    Tukey panel and the Envelope spectrum were all built and checked through the
    API, but only partly seen rendered. Two reactivity bugs this session got past
    a clean build *and* passing tests, because neither exercises a mounted
    component — see §3.7.
-2. **§3.7, the untested surface.** Anything needing a rendered DOM: drag
+3. **§3.7, the untested surface.** Anything needing a rendered DOM: drag
    resizing, plot scroll behaviour, parameter persistence across tab switches,
    whether auto-run fires on mount, and now the newer control panels.
-3. **§1.1, file formats.** Still CSV/TSV/TXT. Deliberately closed for your own
+4. **§1.1, file formats.** Still CSV/TSV/TXT. Deliberately closed for your own
    use; reopens the moment someone else's `.mat` or `.tdms` arrives.
-4. **§3.6, time-resolved mutual information.** App-side windowing over the
+5. **§3.6, time-resolved mutual information.** App-side windowing over the
    existing library call; watch the estimator bias as windows shorten.
-5. **Bundle size.** 5 MB, nearly all Plotly. Fine over localhost, not fine if
+6. **Bundle size.** 5 MB, nearly all Plotly. Fine over localhost, not fine if
    this is ever served remotely.
 
 ### Known rough edges
@@ -484,8 +506,33 @@ it can square and divide, but not integrate.
 
 ## Known-unverified
 
-The Chrome extension has never connected in this environment, so **layout and
-visual design remain unconfirmed** — nobody has looked at the app.
+**Updated 2026-09-10: the app has now been looked at.** Headless Chromium via
+Playwright renders it fully and screenshots it, which makes everything below
+about `--dump-dom` a fallback rather than the state of the art. The recipe, from
+a throwaway venv so nothing here gains a dependency:
+
+```
+python -m venv <shortpath>/pwenv          # NOT under a deep temp path: without
+<shortpath>/pwenv/Scripts/python -m pip install playwright    # Windows long-path
+<shortpath>/pwenv/Scripts/python -m playwright install chromium   # support, the
+                                          # sync API silently fails to unpack —
+                                          # `playwright.async_api` still works
+```
+
+Then drive it with `async_playwright`, `page.goto`, `set_input_files` on the
+real upload input, `get_by_text` for the tab groups (they nest: `Multi-Ch` then
+`Coherence (conditioned)`), and `page.screenshot`. Listen on `console` and
+`pageerror` — that is what caught §8.3, a race no assertion in either suite
+could see. Plotly renders properly in the screenshot, titles and all, which the
+`--dump-dom` route could never show.
+
+Seen and fine as of that date: the Overview tab with all three plots, the
+sidebar with channels and preprocessing, the Multi-Ch tab group, and the
+control strip on Coherence (conditioned). Layout holds at 1600×1000. Nobody has
+looked at the app at a narrow window, and items 1, 2, 5 and 6 below are still
+open — they need judgement or a click sequence nobody has written yet.
+
+The Chrome extension has never connected in this environment.
 
 *Behaviour*, however, is no longer unverified. The whole restore path was driven
 in a real browser on 2026-08-06 (headless Edge, recipe below) and checked by
@@ -508,9 +555,10 @@ Still needing eyes rather than assertions:
 1. Drag-resize feel — is an 11 px handle a comfortable target?
 2. Auto-run eagerness — if any tab is too keen, it's one line in the `AUTORUN`
    set in `frontend/src/lib/analyses.js`.
-3. Whether the sidebar is crowded now that Recent files sits in it — and now
-   that each channel row can carry a unit box. The box is deliberately
-   borderless until hovered, but nobody has looked at the result.
+3. ~~Whether the sidebar is crowded now that Recent files sits in it.~~ Looked
+   at 2026-09-10: it reads fine at 1600×1000 — Recent files, the detected-format
+   note, sample counts, channels and preprocessing all fit without scrolling.
+   The unit box was not exercised, since the example file declares no units.
 4. **Whether a unit actually reads well on a rendered axis.** The strings are
    asserted (`plotunits.test.mjs`), and the units reaching the *page* is
    confirmed — a session restored with units auto-opened the unit inputs on the
@@ -552,3 +600,360 @@ is how the restore path above was checked. Two gotchas:
   logs each `/api/` request line and form body, and run
   `uvicorn probe:app` against it. The request the app sends is the ground truth
   for what got restored, and it needs no changes to the app itself.
+
+---
+
+## 8. Error spectrum on the Predictability tab — done 2026-09-10
+
+A third mode on the existing tab rather than a new one: pick a target channel,
+the rest of the selection become predictors, and the plot shows the target's
+own spectrum against the part of it no linear model can reproduce. Library side
+is `dspkit.frf.error_spectrum` — see `../DSPkit/TODO.md` §7.
+
+Touched: `coherence_conditioned` in `main.py` (a `mode="error"` branch and a
+`target_col` field), `PredictabilityControls.svelte`, the `predictability`
+branch of `plotSpec.js`, a facts-and-caveats block in `PlotPanel.svelte`, and
+two new test files. 98 API checks and 185 frontend tests pass.
+
+### 8.1 The library is now installed editable — read this first
+
+`venv_dspkit` held a **copy** of dspkit dated 2026-09-02, so library changes
+never reached the app. It is now `pip install -e ../DSPkit`, which is what made
+this work at all. Consequences worth knowing:
+
+- Editing the library changes the app on the next **backend restart**. No
+  reinstall step any more.
+- A library edit can now break the app without anything in this repo changing.
+- If the app is ever moved or shipped without `../DSPkit` next to it, the
+  editable link dangles. Reinstall from the real package there.
+
+### 8.2 The bundled example is a live demonstration of a real defect
+
+`test_2dof.csv` is a 2DOF chain driven by `force1` and `force2`, so predicting
+`x1_disp` from both is a case where the true unexplained share is **zero**. It
+does not come out that way. The modes sit at 8.6 and 20.8 Hz with about 4.6%
+damping, so the sharpest half-power bandwidth is near 0.8 Hz, while the default
+nperseg of 1024 at fs = 1024 resolves about 1.5 Hz — roughly eight times coarser
+than the classical `Be/Br <= 1/4` criterion.
+
+| nperseg | Be/Br | reported unexplained | true |
+|---|---|---|---|
+| 1024 (default) | 1.88 | 38.9% | 0 |
+| 4096 | 0.47 | 9.0% | 0 |
+| 8192 | 0.24 | 1.4% | 0 |
+
+Worse, at the default the **wrong model wins**: `x2_disp` alone reports 8.3%
+against the true inputs' 38.9%, and the ordering only rights itself at 8192
+(1.4% against 5.8%). A user comparing sensor sets at the default would draw the
+opposite of the correct conclusion.
+
+This is `../DSPkit/TODO.md` §7.1 — the library's Welch guardrail only ever
+advises *shortening* nperseg — showing up on our own example data. The panel
+now warns in both directions and the `?` help carries the numbers above, but
+that is documentation covering for a library defect. Fix §7.1.
+
+The record is only 20 s, so resolving the modes costs nearly all the averages
+and the bias floor hits 0.5 at 8192. Both errors cannot be made small on this
+file; a longer example record would be the real fix, and would make a better
+demo besides.
+
+### 8.3 The auto-run race, and why the browser check caught it
+
+The first version auto-ran from `onMount`. The target channel is set by an
+`$effect`, which had not run yet, so a **restored session** that came back
+already in error mode posted `target_col: null` and the API refused it. Clean
+build, all tests passing, invisible — exactly the §3.7 blind spot: nothing in
+either suite mounts a component.
+
+It now gates on a `ready` derived value instead of on mount, so the run fires
+when the target resolves and the button stays disabled until then. Verified by
+reloading the app cold against a restored session: no console errors, no 422.
+
+Worth repeating the lesson rather than the fix: **the screenshot is the test**
+for anything with a lifecycle. This is the third reactivity bug in this repo to
+pass a green suite.
+
+### 8.4 Left open
+
+- **A longer example file**, per §8.2. The current one cannot demonstrate the
+  tab honestly at any single nperseg.
+- **A resolution-bandwidth hint in the panel.** The backend knows fs and could
+  ask `peaks.peak_bandwidth` for the sharpest peak, then say "your resolution is
+  1.5 Hz and the narrowest peak is 0.8 Hz wide" instead of explaining the
+  principle in the abstract. Blocked on nothing but §7.1 landing first, so the
+  rule lives in one place.
+- **Not verified in a browser:** the target dropdown's behaviour when the
+  selection changes while a run is in flight, and the tab's parameter
+  persistence across a switch away and back.
+
+---
+
+## 9. Comparing two datasets — done 2026-09-10
+
+Pin a second file as a reference and every comparable analysis runs against
+both, on one chart. Per the Direction note at the top, this is a general
+capability and is not framed as a damage-detection workflow.
+
+Touched: `_reopen`/`session_get` in `main.py` (a `touch` flag), `App.svelte`
+(the reference, the column mapping, `runComparison`), `FileUpload.svelte` (a
+pin control per recent entry), `plotSpec.js` (`buildComparison`),
+`analyses.js` (`COMPARABLE`), `PlotPanel.svelte` (routing and per-dataset
+failures), plus `app.css`. Two new test files; 98 API, 46 persistence and 195
+frontend checks pass.
+
+### 9.1 The backend was already multi-session
+
+This was the surprise, and it is why the feature was cheap:
+
+| | |
+|---|---|
+| `_SESSIONS` | parsed arrays in RAM, `_MAX_SESSIONS = 4` |
+| session records on disk | `_MAX_RECENT = 12`, pruned oldest-first |
+| every analysis endpoint | already takes `session_id` |
+
+So the only backend change needed was the `touch` flag below. Two datasets are
+held and analysed concurrently with **no new endpoint**: the same request is
+sent twice with the session-scoped fields swapped. `buildFormData` grew an
+`override` argument for exactly those five fields, and nothing else moved.
+
+Eviction is not a correctness problem — `get_session` rehydrates from disk —
+so a pinned reference that falls out of RAM costs a reparse, not an error. It
+was left that way rather than adding pinning to `_evict_ram`, since four slots
+comfortably holds two datasets.
+
+### 9.2 Pinning is not opening — the one real backend bug
+
+`GET /api/session/{id}` calls `_reopen`, which calls `_touch_session`, which
+stamps `opened_at`. Recents are ordered by that field and **the app reopens the
+top entry on launch**. So reading a session to compare against silently made it
+the file that came back next time, in place of the one actually being worked
+on. `?touch=false` fixes it; `test_persistence.py` pins both directions, since
+the default must keep promoting or the restore path breaks instead.
+
+### 9.3 Channels are matched by name, and it refuses rather than guesses
+
+Column *order* agreeing between two files is a coincidence. Comparing `acc1`
+against a differently-ordered `acc3` would produce a chart that looks right and
+means nothing, so a missing name is reported, never patched. It is checked
+twice: at pin time, so the reason is visible when the decision is made, and at
+run time, because the channel selection can change afterwards.
+
+Sample rates differing is **not** refused. A spectrum is in Hz either way and
+the comparison is still meaningful — it is just no longer like for like at a
+given nperseg, since the resolution and the Nyquist both move. That is a
+caveat in the banner, not a block. Record lengths differing by more than 25%
+gets the same treatment, because it changes the number of averages.
+
+### 9.4 Dash for the dataset, colour for the channel
+
+`buildComparison` has **no per-tab knowledge**: it builds each dataset with the
+ordinary `buildPlot` and merges the traces, so every axis title, log scale and
+unit the tab already gets right stays right, and a new tab becomes comparable
+by being named in `COMPARABLE`. Same trick `runFanout` uses on the request side.
+
+Datasets are told apart by dash. Colour is already spent on the channel, and
+matching `acc1` here to `acc1` there is the pairing the chart exists to show —
+recolouring by dataset destroys it. There is a test that says so.
+
+`COMPARABLE` deliberately excludes the surfaces (two heatmaps cannot share one
+pair of axes), the explorer, the grid, and raw time series — two records are
+almost never aligned in time, so an overlay would imply a correspondence that
+is not there. `buildComparison` also has a backstop: if any trace is not a
+line, it draws the active dataset alone rather than nonsense.
+
+### 9.5 Left open
+
+- **More than two datasets.** The merge already loops, but the channel-mapping
+  problem multiplies and the chart stops being readable. Two is where nearly
+  all the value is.
+- **Per-dataset preprocessing.** The active preprocessing is applied to both,
+  which is right for a comparison — comparing a filtered record against an
+  unfiltered one compares the filter — but it means a reference cannot carry
+  its own trim window.
+- **Comparing the dynamic-scope tabs** (`csd`, `coherence`, `cross_correlation`
+  in their pair-overlay form). Those produce `{overlay: {...}}` rather than a
+  plain result, so they need a merge of a different shape.
+- **A difference view.** Two curves invite a third: ratio or dB difference
+  against the reference. Cheap now that both results are in hand, and probably
+  the next thing worth doing here.
+- **Not verified in a browser:** changing the channel selection while a
+  comparison is pinned, and whether the reference survives a session restore
+  (it is deliberately *not* persisted in UI state, so it should not).
+
+---
+
+## 10. Performance — measured and fixed 2026-09-10
+
+Measured on a synthetic 20 kHz × 60 s file: 1.2M samples, 3 channels, 44 MB of
+CSV. Everything below is from that record against a local backend.
+
+### 10.1 What changed
+
+`decimate_xy` in `main.py` thins a series to a point budget before it is
+serialised, and `downsampleXY` in `plotSpec.js` was rewritten to match. Three
+endpoints take `max_points` (`timeseries`, `fft`, `autocorrelation`), the time
+series also takes `include_raw` and a `view_start`/`view_end` window, and the
+CSV export re-fetches with `max_points=0`.
+
+| response | before | after |
+|---|---|---|
+| timeseries | 95.0 MB / 8.4 s | **1.85 MB / 0.25 s** |
+| timeseries, resampled to 1 kHz | 52.4 MB / 4.7 s | **2.61 MB / 0.36 s** |
+| fft | 89.0 MB / 5.9 s | **3.51 MB / 0.75 s** |
+| autocorrelation | 99.5 MB / 6.3 s | **1.95 MB / 0.58 s** |
+
+25x to 50x smaller, 8x to 34x faster. PSD was already 0.18 MB and is untouched:
+its output is a spectrum at the chosen `nperseg` rather than something O(N),
+which is why it was the odd one out in the first place.
+
+### 10.2 Min and max per bin, never a stride — this was a correctness bug
+
+The old `downsampleXY` took every k-th sample, which *deletes* whatever falls
+between the samples it keeps. On the three-tone test file, thinning the 600,001
+bin spectrum down to ~23,700:
+
+| channel | true peak | min/max keeps | stride keeps |
+|---|---|---|---|
+| ch1 @ 137 Hz | 0.99966 | 0.99966 | 0.00227 |
+| ch2 @ 419 Hz | 0.99997 | 0.99997 | 0.00238 |
+| ch3 @ 1103 Hz | 0.99985 | 0.99985 | 0.00216 |
+
+Stride loses **99.8% of every peak** — the tones would simply not be on the
+chart, with nothing on screen to say so. This was live in the app before today
+for any spectrum over 50,000 bins. Both decimators now keep the argmin and the
+argmax of each bin, emitted in x order so the line still reads left to right.
+
+Channels share one index set, chosen from the union of what each wants to keep.
+Decimating them independently would put them on different x grids, and a chart
+drawing two channels against slightly different time bases lies about their
+relative timing. The cost is that `max_points` is a budget *per channel*: three
+noise channels at a budget of 8000 came back as 23,835 points. Erring large is
+the right way to be wrong here.
+
+For the FFT only the **amplitudes** choose the indices, via the `drivers`
+argument. Phase extremes are arbitrary and would spend the budget on noise;
+phase is then sampled wherever amplitude chose, which also keeps the two
+aligned — a phase read off a different bin from its magnitude is worse than
+useless.
+
+### 10.3 The response is now a picture, not the data
+
+This is the consequence to remember. **Anything that reads a statistic off one
+of these endpoints is now reading the thinned series and will be wrong.** It
+caught the detrend check in `test_api.py` immediately: the mean of a min/max
+thinned series is not the mean of the signal, because the thinning deliberately
+keeps the extremes. That test now passes `max_points: 0`, and any future check
+of a *value* rather than a *shape* must do the same.
+
+The CSV export had the same problem and it mattered more: it built its rows
+from the drawn arrays, so it would have written a picture of the data as
+numbers. It now re-fetches with the thinning off, verified in a browser — the
+export of the 1.2M-sample FFT came back with 600,001 rows while ~23,700 were on
+screen. It is not cached: an export is rare and can afford a round trip, where
+holding the full arrays against the chance of one gives back everything the
+thinning bought.
+
+### 10.4 Zoom asks the server now
+
+Thinning up front would have made zooming useless — magnifying a thinned curve
+just shows bigger steps — so `view_start`/`view_end` restrict the budget to the
+visible window and `onViewChange` re-fetches, debounced 250 ms, leaving the old
+chart up while the request is in flight. A 50 ms window of the 20 kHz record
+comes back as 1003 points at the full 5e-5 s sample interval, with `decimated`
+false. Verified by dragging in a real browser, not only through the API.
+
+### 10.5 The ghost trace is optional
+
+`include_raw` drops the untouched copy drawn behind the processed trace, with a
+"Show original behind" checkbox on the Time series tab. It only ever applied
+when preprocessing is on; with no preprocessing the raw arrays *are* the
+plotted trace and are always sent.
+
+### 10.6 Left open
+
+- ~~**`filter` and `instantaneous`**~~ — done in §11.3.
+- **`cross_correlation`, `csd`, `coherence`** return O(N) arrays too, though
+  the last two are usually short. Worth a look.
+- **Gzip.** Still not installed, and now much less interesting: at 2-3 MB the
+  2-3x it buys costs ~2 s of CPU. Revisit only alongside §6, serving remotely.
+- **`MAX_PLOT_POINTS = 50_000` in the frontend** is now a backstop rather than
+  the working limit, since the server sends ~8000. Worth lowering to match, but
+  it does no harm.
+- **Grid and overlay export do not re-fetch**, so they would write thinned rows
+  if they ever saw a thinned payload. They cannot today: all three thinned tabs
+  are `multi` scope, while the grid path is only reachable from `single` and the
+  overlay path only from `dynamic`. That is a coincidence of the scope table,
+  not a guarantee — thinning a `single` or `dynamic` endpoint later (see the
+  first bullet: `instantaneous` is `single`) makes it a live bug. Give those two
+  paths the same re-fetch before thinning anything outside `multi`.
+
+---
+
+## 11. AR spectra, nperseg advice, and the last of the thinning — done 2026-09-10
+
+Closes §10.6's first bullet and surfaces the two library additions from
+`../DSPkit/TODO.md` §8. 133 API checks, 46 persistence and 200 frontend tests
+pass.
+
+### 11.1 The PSD tab has a second method
+
+`Method: Welch (averaged) | AR model (Burg)`. The AR branch fits an all-pole
+model to the whole record instead of averaging segments, so it separates peaks
+Welch cannot on a short record. Order 0 means "choose one" by AIC or BIC;
+Yule-Walker is available for comparison.
+
+**The order is named in the legend, and that is not decoration.** Two AR curves
+at different orders are different claims about the same record and are otherwise
+indistinguishable, so each trace reads `x1_disp (AR 95)`. On `test_2dof.csv` the
+criterion picks 95 and 97 for the two displacement channels and 1 and 2 for the
+white-noise force channels — the right answer in both cases, and a good sanity
+check if this ever looks wrong.
+
+The panel says plainly what the method costs: too low an order merges peaks, too
+high invents them, notches come out too shallow because an all-pole model
+represents resonances exactly and antiresonances only by cancellation, and any
+peak only this method shows should be checked against Welch.
+
+### 11.2 "Check nperseg" answers the question in both directions
+
+A button on the Welch branch calls `/api/spectral/segment_advice`, which returns
+a verdict and a sentence. On the bundled example at the default it says:
+
+> **Record too short** — This record cannot satisfy both. Resolving the peak at
+> 10 Hz needs nperseg>=3745, which leaves 9 segment(s) of the 20480 samples
+> available. About 38.4 s of record would give both, against the 20 s you have.
+
+That is §8.2's problem stated by the app instead of by this file. It is a check,
+not an analysis, so it returns to the panel rather than touching `plotData` —
+running it does not wipe the plot you are comparing against — and the verdict is
+cleared whenever a parameter changes, because a stale one is worse than none.
+
+### 11.3 The last two O(N) endpoints are thinned
+
+`filter/apply` and `instantaneous` now take `max_points` like the other three.
+For the instantaneous attributes only the signal and its envelope choose the
+sample points; phase and instantaneous frequency ride along on the same ones,
+since a phase ramp's extremes are its wrap points and an instantaneous frequency
+read at a different instant from its signal is meaningless.
+
+### 11.4 Export integrity, now that a `single`-scope tab is thinned
+
+§10.6 flagged that grid and overlay export do not re-fetch and were safe only
+because no thinned tab was reachable from them. `instantaneous` is `single`
+scope, so thinning it made that live. Both paths are handled:
+
+- **Grid export** re-runs the fan-out with `max_points=0`, one call per channel.
+- **Overlay export** cannot re-fetch yet, so it has a tripwire: if it ever sees
+  a thinned response it refuses with an explanation instead of writing a picture
+  of the data as numbers. No overlay tab is thinned today, so it never fires.
+
+### 11.5 Left open
+
+- **`cross_correlation`, `csd`, `coherence`** still return everything. They are
+  usually short, and thinning them means giving the overlay export a re-fetch
+  first (§11.4) — do them together.
+- **The AR tab has no order sweep.** Choosing an order by eye means running it
+  several times. A small multiples view over a few orders would answer the
+  "is this peak real" question directly.
+- **Not verified in a browser:** the AR tab on a long record, and the grid
+  export re-fetch.

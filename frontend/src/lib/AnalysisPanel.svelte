@@ -35,6 +35,7 @@
     activeTab, dualSignal, columnNames = [], selected = [],
     focusChannel = $bindable(null), pairX = $bindable(null), pairY = $bindable(null),
     loading, plotError, runAnalysis, runOverview, runPairOverlay, runExplorer,
+    checkSegments = null,
     lastBandSweep = [],
   } = $props()
 
@@ -66,7 +67,7 @@
   {:else if activeTab === 'fft'}
     <FftControls {autoRun} {loading} {runAnalysis} />
   {:else if activeTab === 'psd'}
-    <PsdControls {autoRun} {loading} {runAnalysis} />
+    <PsdControls {autoRun} {loading} {runAnalysis} {checkSegments} />
   {:else if activeTab === 'autocorrelation'}
     <AutocorrControls {autoRun} {loading} {runAnalysis} />
   {:else if activeTab === 'cross_correlation'}
@@ -122,7 +123,8 @@
   {:else if activeTab === 'multisensor'}
     <MultisensorControls {autoRun} {loading} {runAnalysis} {dualSignal} />
   {:else if activeTab === 'predictability'}
-    <PredictabilityControls {autoRun} {loading} {runAnalysis} {dualSignal} nSelected={selected.length} />
+    <PredictabilityControls {autoRun} {loading} {runAnalysis} {dualSignal}
+                            {columnNames} {selected} nSelected={selected.length} />
   {:else if activeTab === 'fdd'}
     <FddControls {autoRun} {loading} {runAnalysis} {dualSignal} />
   {:else if activeTab === 'statistics'}
