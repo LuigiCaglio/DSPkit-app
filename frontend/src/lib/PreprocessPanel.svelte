@@ -11,6 +11,13 @@
 
   /** Re-run the current analysis when a setting actually changes. */
   const touched = () => onchange?.()
+
+  /**
+   * For a step's checkbox: re-run only if the step has a value to act on.
+   * Ticking an empty step just reveals its field, so nothing changes until
+   * a number is typed — and unticking it then changes nothing either.
+   */
+  const toggled = (value) => { if (value !== null && value !== undefined && value !== '') touched() }
 </script>
 
 <hr />
@@ -53,12 +60,13 @@
          high-pass ring at the edges of the record. -->
     <div>
       <div class="checkbox-row" style="margin-bottom:5px">
-        <input type="checkbox" id="dt-en" bind:checked={preproc.detrendEnabled} onchange={touched} />
+        <input type="checkbox" id="dt-en" bind:checked={preproc.detrendEnabled} onchange={() => toggled(preproc.detrendOrder)} />
         <label for="dt-en" style="margin:0;font-size:12px;color:var(--text-secondary)">Detrend</label>
       </div>
       {#if preproc.detrendEnabled}
         <select bind:value={preproc.detrendOrder} onchange={touched}
                 style="width:100%;font-size:12px">
+          <option value={null} disabled>choose…</option>
           <option value={0}>Remove mean (DC)</option>
           <option value={1}>Remove linear trend</option>
           <option value={2}>Remove quadratic trend</option>
@@ -70,13 +78,13 @@
     <!-- High-pass -->
     <div>
       <div class="checkbox-row" style="margin-bottom:5px">
-        <input type="checkbox" id="hp-en" bind:checked={preproc.hpEnabled} onchange={touched} />
+        <input type="checkbox" id="hp-en" bind:checked={preproc.hpEnabled} onchange={() => toggled(preproc.hpCutoff)} />
         <label for="hp-en" style="margin:0;font-size:12px;color:var(--text-secondary)">High-pass filter</label>
       </div>
       {#if preproc.hpEnabled}
         <div style="display:flex;align-items:center;gap:6px">
           <input type="number" bind:value={preproc.hpCutoff} onchange={touched}
-                 min="0.01" step="1" style="width:72px;font-size:12px" />
+                 min="0.01" step="1" placeholder="cutoff" style="width:72px;font-size:12px" />
           <span style="color:var(--text-muted);font-size:11px">Hz</span>
           <select bind:value={preproc.hpOrder} onchange={touched}
                   style="margin-left:auto;font-size:11px;padding:3px 5px" title="Filter order">
@@ -89,13 +97,13 @@
     <!-- Low-pass -->
     <div>
       <div class="checkbox-row" style="margin-bottom:5px">
-        <input type="checkbox" id="lp-en" bind:checked={preproc.lpEnabled} onchange={touched} />
+        <input type="checkbox" id="lp-en" bind:checked={preproc.lpEnabled} onchange={() => toggled(preproc.lpCutoff)} />
         <label for="lp-en" style="margin:0;font-size:12px;color:var(--text-secondary)">Low-pass filter</label>
       </div>
       {#if preproc.lpEnabled}
         <div style="display:flex;align-items:center;gap:6px">
           <input type="number" bind:value={preproc.lpCutoff} onchange={touched}
-                 min="0.01" step="1" style="width:72px;font-size:12px" />
+                 min="0.01" step="1" placeholder="cutoff" style="width:72px;font-size:12px" />
           <span style="color:var(--text-muted);font-size:11px">Hz</span>
           <select bind:value={preproc.lpOrder} onchange={touched}
                   style="margin-left:auto;font-size:11px;padding:3px 5px" title="Filter order">
@@ -108,13 +116,13 @@
     <!-- Notch — mains hum is 50 Hz here, 60 Hz in the Americas. -->
     <div>
       <div class="checkbox-row" style="margin-bottom:5px">
-        <input type="checkbox" id="notch-en" bind:checked={preproc.notchEnabled} onchange={touched} />
+        <input type="checkbox" id="notch-en" bind:checked={preproc.notchEnabled} onchange={() => toggled(preproc.notchFreq)} />
         <label for="notch-en" style="margin:0;font-size:12px;color:var(--text-secondary)">Notch</label>
       </div>
       {#if preproc.notchEnabled}
         <div style="display:flex;align-items:center;gap:6px">
           <input type="number" bind:value={preproc.notchFreq} onchange={touched}
-                 min="0.01" step="1" style="width:72px;font-size:12px" />
+                 min="0.01" step="1" placeholder="e.g. 50" style="width:72px;font-size:12px" />
           <span style="color:var(--text-muted);font-size:11px">Hz</span>
           <input type="number" bind:value={preproc.notchQ} onchange={touched}
                  min="1" step="1" style="width:56px;font-size:12px;margin-left:auto"
@@ -148,12 +156,13 @@
     <!-- Integrate / differentiate -->
     <div>
       <div class="checkbox-row" style="margin-bottom:5px">
-        <input type="checkbox" id="cal-en" bind:checked={preproc.calculusEnabled} onchange={touched} />
+        <input type="checkbox" id="cal-en" bind:checked={preproc.calculusEnabled} onchange={() => toggled(preproc.calculusOrder)} />
         <label for="cal-en" style="margin:0;font-size:12px;color:var(--text-secondary)">Integrate / differentiate</label>
       </div>
       {#if preproc.calculusEnabled}
         <select bind:value={preproc.calculusOrder} onchange={touched}
                 style="width:100%;font-size:12px;margin-bottom:5px">
+          <option value={null} disabled>choose…</option>
           <option value={-1}>Integrate once (accel → velocity)</option>
           <option value={-2}>Integrate twice (accel → displacement)</option>
           <option value={1}>Differentiate once (displ → velocity)</option>
@@ -177,6 +186,7 @@
                  min="0" max="0.2" step="0.005" style="width:70px;font-size:12px" />
           <span style="color:var(--text-muted);font-size:11px">of each end</span>
         </div>
+        {#if preproc.calculusOrder}
         <div class="detect-note" style="margin-top:4px">
           {#if preproc.calculusOrder < 0}
             Dividing by ω grows without bound towards DC, so drift just above
@@ -199,6 +209,7 @@
             the ends anyway.
           {/if}
         </div>
+        {/if}
       {/if}
     </div>
 
@@ -208,7 +219,7 @@
         <!-- Ticking only reveals the field: with no rate typed there is nothing
              to resample to, so nothing re-runs until one is. -->
         <input type="checkbox" id="rs-en" bind:checked={preproc.resampleEnabled}
-               onchange={() => { if (preproc.targetFs) touched() }} />
+               onchange={() => toggled(preproc.targetFs)} />
         <label for="rs-en" style="margin:0;font-size:12px;color:var(--text-secondary)">Resample</label>
       </div>
       {#if preproc.resampleEnabled}
@@ -220,6 +231,13 @@
         </div>
         {#if !preproc.targetFs}
           <div class="detect-note">Type the new sample rate and press Enter.</div>
+        {:else if fs && preproc.targetFs < fs}
+          <!-- Same 0.4 x rate as anti_alias_cutoff in the backend. -->
+          <div class="detect-note">
+            Low-passed at {+(0.4 * preproc.targetFs).toFixed(2)} Hz first, so content above
+            the new Nyquist ({+(preproc.targetFs / 2).toFixed(2)} Hz) is removed rather
+            than folded into the band.
+          </div>
         {/if}
       {/if}
     </div>

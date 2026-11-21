@@ -9,6 +9,22 @@ import { withUnit, psdUnit, csdUnit, densityUnit, squared, product,
 
 export const MAX_PLOT_POINTS = 50_000
 
+/**
+ * Above this many points a line is drawn with WebGL rather than SVG.
+ *
+ * SVG makes one path the browser re-lays-out on every pan and zoom; past a few
+ * tens of thousands of points in a chart that is what made the KW51 records
+ * crawl. WebGL draws the same line in a fraction of the time. It is kept to
+ * full-size charts: browsers cap a page at about 16 WebGL contexts, and a
+ * small-multiples grid would spend one per cell.
+ */
+export const GL_MIN_POINTS = 2000
+
+/** 'scattergl' for a long line in a full-size chart, 'scatter' otherwise. */
+export function lineType(nPoints, cell = false) {
+  return !cell && nPoints > GL_MIN_POINTS ? 'scattergl' : 'scatter'
+}
+
 /** First index with x[i] >= v, assuming x ascending. */
 function lowerBound(x, v) {
   let lo = 0, hi = x.length
@@ -392,13 +408,13 @@ export function buildPlot(tab, d, opts) {
       const color = colors[i % colors.length]
       if (hasRaw) {
         const dr = ds(d.times_raw, norm(sig.signal_raw))
-        traces.push({ x: dr.x, y: dr.y, type: 'scatter', mode: 'lines',
+        traces.push({ x: dr.x, y: dr.y, type: lineType(dr.x.length, cell), mode: 'lines',
                       name: `${sig.name} (raw)`, opacity: 0.35, line: { color, dash: 'dot' } })
       }
       const proc = sig.signal_proc ?? sig.signal_raw
       const times = d.times_proc ?? d.times_raw
       const dp = ds(times, norm(proc))
-      traces.push({ x: dp.x, y: dp.y, type: 'scatter', mode: 'lines',
+      traces.push({ x: dp.x, y: dp.y, type: lineType(dp.x.length, cell), mode: 'lines',
                     name: sig.name, line: { color } })
     })
     const dsLabel = isDownsampledFor(tab, d) ? '  (thinned for display)' : ''
@@ -576,8 +592,8 @@ export function buildPlot(tab, d, opts) {
     const dr = ds(d.times, d.signal_raw)
     const df = ds(d.times, d.signal_filtered)
     return { traces: [
-      line(dr.x, dr.y, 'Raw', 'dash', 'y', colors[0]),
-      line(df.x, df.y, 'Filtered', 'solid', 'y', colors[1]),
+      { ...line(dr.x, dr.y, 'Raw', 'dash', 'y', colors[0]), type: lineType(dr.x.length, cell) },
+      { ...line(df.x, df.y, 'Filtered', 'solid', 'y', colors[1]), type: lineType(df.x.length, cell) },
     ], layout: merge(L, titled({
       xaxis: { ...L.xaxis, title: 'Time [s]', ...xAxisRange },
       yaxis: { ...L.yaxis, title: withUnit('Amplitude', oneUnit) },

@@ -405,7 +405,7 @@ def test_surface_decimation_and_clock(base, sess, r):
     st2, w_tf = post(base, "/api/timefreq/stft" + win,
                      {**tf, "window": "hann", "nperseg": 256})
     if st == 200 and st2 == 200:
-        t_ts = w_ts["times_proc"] if w_ts.get("preprocessed") else w_ts["times_raw"]
+        t_ts = w_ts["times_proc"]
         r.check(abs(t_ts[0] - w_tf["times"][0]) < 0.01,
                 "the surface and the time series start at the same instant",
                 f"ts {t_ts[0]:.3f} vs stft {w_tf['times'][0]:.3f}")
@@ -604,6 +604,21 @@ def test_display_thinning(base, sess, r):
                 f"channel {i}: the extremes survive thinning",
                 f"max {max(a):.6g} vs {max(b):.6g}")
 
+    # The budget is for the whole chart, not per channel: four channels whose
+    # extremes fall in different places used to come back at up to 4x it.
+    st, many = post(base, "/api/signal/timeseries", base_fields(sess, [1, 2, 3, 4]))
+    if st == 200:
+        r.check(len(many["times_proc"]) <= 8000,
+                "several channels share one point budget",
+                f"{len(many['times_proc'])} points per channel for 4 channels")
+        for i in range(4):
+            a = many["signals"][i]["signal_proc"]
+            st_f, one = post(base, "/api/signal/timeseries",
+                             {**base_fields(sess, [i + 1]), "max_points": 0})
+            b = one["signals"][0]["signal_proc"]
+            r.check(abs(max(a) - max(b)) < 1e-9 and abs(min(a) - min(b)) < 1e-9,
+                    f"and channel {i + 1} still keeps its extremes")
+
     # x must stay ascending or the line doubles back on itself.
     t = thin["times_proc"]
     r.check(all(t[i] <= t[i + 1] for i in range(len(t) - 1)),
@@ -648,11 +663,13 @@ def test_show_original_toggle(base, sess, r):
     r.check(off["signals"][0]["signal_proc"] == on["signals"][0]["signal_proc"],
             "and the processed trace is untouched by the toggle")
 
-    # Without preprocessing there is no ghost to drop, and the chart reads the
-    # raw names — so they must still be populated whatever the flag says.
-    st, plain = post(base, "/api/signal/timeseries", {**f, "include_raw": "false"})
-    r.check(st == 200 and plain["times_raw"] is not None,
-            "with no preprocessing the raw arrays are still the plotted trace")
+    # Without preprocessing there is no ghost: the plotted trace goes once,
+    # under the processed names, rather than twice under both.
+    st, plain = post(base, "/api/signal/timeseries", {**f, "include_raw": "true"})
+    r.check(st == 200 and plain["times_raw"] is None
+            and plain["signals"][0]["signal_raw"] is None
+            and plain["signals"][0]["signal_proc"] is not None,
+            "with no preprocessing the trace is sent once, not twice")
 
 
 def test_zoom_window_buys_resolution(base, sess, r):
@@ -799,6 +816,36 @@ def test_mat_file(base, sess, r):
     r.check(st == 422 and "-v7" in str(bad), "a v7.3 file is refused with advice", str(st))
 
 
+def test_resample_anti_alias(base, r):
+    """Resampling down removes what would fold into the band, not just thins it."""
+    import io as _io
+
+    import numpy as np
+    import scipy.io as sio
+
+    r.section("Resample anti-aliasing")
+    fs = 1024.0
+    t = np.arange(int(20 * fs)) / fs
+    # A 2 Hz signal under a strong 330 Hz line. At 100 Hz, 330 folds to 30 Hz.
+    x = np.sin(2 * np.pi * 2 * t) + 5 * np.sin(2 * np.pi * 330 * t)
+    buf = _io.BytesIO()
+    sio.savemat(buf, {"data": np.c_[x, x], "fs": fs})
+    st, m = post(base, "/api/session/create", {}, {"file": ("tone.mat", buf.getvalue())})
+    if not r.check(st == 200, "session from a synthetic record"):
+        return
+
+    st, psd = post(base, "/api/spectral/psd?target_fs=100",
+                   {**base_fields(m, [0]), "window": "hann", "nperseg": 512,
+                    "scaling": "density"})
+    if not r.check(st == 200, "psd after resampling to 100 Hz responds", str(st)):
+        return
+    f, p = psd["freqs"], psd["signals"][0]["Pxx"]
+    at = lambda f0: max(p[i] for i in range(len(f)) if abs(f[i] - f0) < 1.0)  # noqa: E731
+    r.check(at(30) < 1e-4 * at(2),
+            "the 330 Hz line does not fold to 30 Hz",
+            f"30 Hz / 2 Hz power ratio {at(30) / at(2):.2e}")
+
+
 def main(base):
     r = Results()
     print(f"API tests against {base}")
@@ -820,6 +867,7 @@ def main(base):
     test_ar_spectrum(base, sess, r)
     test_segment_advice(base, sess, r)
     test_mat_file(base, sess, r)
+    test_resample_anti_alias(base, r)
     test_session_errors(base, sess, r)
     return r.report()
 

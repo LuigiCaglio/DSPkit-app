@@ -295,6 +295,7 @@ def to_list(arr) -> list:
 # screen to say so.
 
 DEFAULT_MAX_POINTS = 8000
+_MIN_POINTS_PER_CHANNEL = 1000
 
 
 def _decimate_indices(n: int, max_points: int) -> Optional[np.ndarray]:
@@ -328,18 +329,16 @@ def decimate_xy(
     on different x grids, and a chart that draws two channels against slightly
     different time bases is quietly lying about their relative timing.
 
-    The cost is that ``max_points`` is a budget per channel, not a total: with
-    ``k`` channels whose extremes land in different places the output can reach
-    ``k * max_points`` before it is bounded by ``n``. Measured on three
-    independent noise channels, 1.2M samples at a budget of 8000 came back as
-    23,835 points — 3x the budget, still 50x smaller than the input. Erring
-    large here is the right way to be wrong; the alternative misaligns channels.
+    ``max_points`` is a budget for the *union*, so it is split between the
+    channels that choose indices: each gets ``max_points / k`` of its own
+    extremes, and is drawn at everyone's. Giving each channel the whole budget
+    let the union reach ``k * max_points`` -- six independent noise channels of
+    247k samples came back as 40,025 points each, 240k in all, which the
+    browser could not pan or zoom smoothly. Splitting still cannot lose a peak
+    (every bin keeps its extremes), it only widens the bins; a floor keeps them
+    from getting so wide that a many-channel plot turns to blocks.
     """
     n = len(x)
-    edges = _decimate_indices(n, max_points)
-    if edges is None:
-        return x, ys, False
-
     # `drivers` names the series whose extremes are worth keeping. A spectrum's
     # amplitude qualifies — its peaks are the reason the chart exists. Its phase
     # does not: phase extremes are arbitrary, and letting them choose indices
@@ -347,6 +346,11 @@ def decimate_xy(
     # chose, which also keeps the two aligned, as a phase read off a different
     # bin from its magnitude is worse than useless.
     chosen = ys if drivers is None else [ys[i] for i in drivers]
+    if max_points <= 0 or n <= max_points:
+        return x, ys, False
+    per_channel = max(_MIN_POINTS_PER_CHANNEL, max_points // max(1, len(chosen)))
+    edges = _decimate_indices(n, min(max_points, per_channel))
+
     keep = set()
     for y in chosen:
         a = np.asarray(y)
@@ -1013,6 +1017,11 @@ class PreprocParams:
         self.target_fs = target_fs
 
 
+def anti_alias_cutoff(target_fs: float) -> float:
+    """Low-pass cutoff applied before resampling down to `target_fs`."""
+    return 0.4 * float(target_fs)
+
+
 def apply_preprocessing(
     x: np.ndarray,
     fs: float,
@@ -1084,8 +1093,18 @@ def apply_preprocessing(
                                       hp_cutoff=pp.calculus_hp, lp_cutoff=pp.calculus_lp,
                                       taper_fraction=pp.calculus_taper)
 
-    # 7. Resample — use linear interpolation to avoid group-delay time shift
+    # 7. Resample — use linear interpolation to avoid group-delay time shift.
+    #
+    # Going down, low-pass first: interpolation alone keeps everything above the
+    # new Nyquist and folds it into the band. On KW51 a 300 Hz mains line 55 dB
+    # over the floor would land among the modes. The cutoff is 0.4 x the new
+    # rate (the sidebar quotes the same figure); order 8,
+    # zero-phase (so 16 in effect) is about 56 dB down by the frequencies that
+    # would fold onto the pass band. Always zero-phase whatever the filter
+    # setting: an anti-alias filter must not shift the signal in time.
     if pp.target_fs is not None and abs(pp.target_fs - fs) > 0.01:
+        if pp.target_fs < fs:
+            x = dsp.lowpass(x, fs, anti_alias_cutoff(pp.target_fs), order=8, zero_phase=True)
         n_new = round(len(x) * pp.target_fs / fs)
         t_new = np.linspace(times[0], times[-1], n_new)
         x     = np.interp(t_new, times, x)
@@ -1658,24 +1677,17 @@ async def signal_timeseries(
                 for i in range(len(cols))
             ]
         else:
-            # Not preprocessed: the "raw" arrays *are* the plotted trace, and
-            # the chart reads them under their raw names. Point both at the same
-            # thinned series rather than sending it twice.
-            if not preprocessed:
-                result["times_raw"] = result["times_proc"]
-                result["signals"] = [
-                    {"name": names[i],
-                     "signal_raw": to_list(proc_d[i]),
-                     "signal_proc": to_list(proc_d[i])}
-                    for i in range(len(cols))
-                ]
-            else:
-                result["times_raw"] = None
-                result["signals"] = [
-                    {"name": names[i], "signal_raw": None,
-                     "signal_proc": to_list(proc_d[i])}
-                    for i in range(len(cols))
-                ]
+            # No ghost trace: either it was switched off, or there is no
+            # preprocessing and so nothing for it to differ from. The plotted
+            # trace goes once, under the processed names. Filling the raw names
+            # with the same series used to send every number twice -- half of
+            # a 12 MB response on a six-channel record.
+            result["times_raw"] = None
+            result["signals"] = [
+                {"name": names[i], "signal_raw": None,
+                 "signal_proc": to_list(proc_d[i])}
+                for i in range(len(cols))
+            ]
         return result
     except HTTPException:
         raise

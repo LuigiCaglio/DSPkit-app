@@ -20,7 +20,15 @@ import { sanitizeUnits } from './units.js'
  */
 export const STATE_VERSION = 1
 
-/** The preprocessing chain in its off position — one definition, shared. */
+/**
+ * The preprocessing chain in its off position — one definition, shared.
+ *
+ * The value each step acts on (a cutoff, a rate, a detrend order) starts
+ * empty, so ticking a step only reveals its field and nothing changes until
+ * the user says what they want. A pre-filled default used to apply the moment
+ * the box was ticked — resampling to 512 Hz, high-passing at 10 Hz — before
+ * anyone had chosen that number.
+ */
 export function defaultPreproc() {
   return {
     windowEnabled:   false,
@@ -28,24 +36,24 @@ export function defaultPreproc() {
     winStart:        null,
     winEnd:          null,
     detrendEnabled:  false,
-    detrendOrder:    0,
+    detrendOrder:    null,
     hpEnabled:       false,
-    hpCutoff:        10,
+    hpCutoff:        null,
     hpOrder:         4,
     lpEnabled:       false,
-    lpCutoff:        500,
+    lpCutoff:        null,
     lpOrder:         4,
     notchEnabled:    false,
-    notchFreq:       50,      // mains hum in Europe
+    notchFreq:       null,
     notchQ:          30,
     zeroPhase:       true,    // offline analysis: no phase distortion
     calculusEnabled: false,
-    calculusOrder:   -1,        // -1/-2 integrate, +1/+2 differentiate
+    calculusOrder:   null,      // -1/-2 integrate, +1/+2 differentiate
     calculusHp:      0.5,
     calculusLp:      null,
     calculusTaper:   0,        // fraction of the record tapered at each end
     resampleEnabled: false,
-    targetFs:        null,    // no default: resampling waits for a rate to be typed
+    targetFs:        null,
   }
 }
 

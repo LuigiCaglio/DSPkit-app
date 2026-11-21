@@ -219,7 +219,11 @@
         ? `${(preproc.calculusTaper * 100).toFixed(1)}% edge taper` : null].filter(Boolean).join(', ')
       bits.push(extras ? `${verb} (${extras})` : verb)
     }
-    if (preproc.resampleEnabled && preproc.targetFs) bits.push(`resampled to ${preproc.targetFs} Hz`)
+    if (preproc.resampleEnabled && preproc.targetFs) {
+      const down = preproc.targetFs < (session?.fs ?? fsManual)
+      bits.push(`resampled to ${preproc.targetFs} Hz` +
+        (down ? ` (anti-alias low-pass ${+(0.4 * preproc.targetFs).toFixed(2)} Hz)` : ''))
+    }
     return bits
   })
 
@@ -999,6 +1003,7 @@
    */
   let viewTimer = null
   function onViewChange(range) {
+    if (lastRun?.kind === 'overview') return overviewViewChange(range)
     if (!lastRun || lastRun.kind !== 'single') return
     if (lastRun.endpoint !== '/api/signal/timeseries') return
     clearTimeout(viewTimer)
@@ -1011,6 +1016,24 @@
       })
       if (seq !== runSeq) return
       if (!error && data) plotData = data
+    }, 250)
+  }
+
+  /**
+   * The same for the Overview's time series: only that panel is re-fetched,
+   * the PSD and FDD beside it stay as they are. The response echoes the window
+   * as `view`, which is what the chart pins its axis to.
+   */
+  function overviewViewChange(range) {
+    clearTimeout(viewTimer)
+    viewTimer = setTimeout(async () => {
+      const seq = ++runSeq
+      const res = await post('/api/signal/timeseries', {
+        view_start: range?.[0] ?? null,
+        view_end: range?.[1] ?? null,
+      })
+      if (seq !== runSeq || !plotData?.overview) return
+      if (!res.error && res.data) plotData = { overview: { ...plotData.overview, ts: res } }
     }, 250)
   }
 
@@ -1102,8 +1125,8 @@
         transform,
         tf: { times: tf.data.times, freqs: tf.data.freqs, z },
         ts: tsSig
-          ? { times: ts.data.preprocessed ? ts.data.times_proc : ts.data.times_raw,
-              values: ts.data.preprocessed ? tsSig.signal_proc : tsSig.signal_raw,
+          ? { times: ts.data.times_proc ?? ts.data.times_raw,
+              values: tsSig.signal_proc ?? tsSig.signal_raw,
               name: tsSig.name }
           : null,
         psd: psd.data?.signals?.[0]

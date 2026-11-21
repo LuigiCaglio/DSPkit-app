@@ -420,6 +420,25 @@
     onViewChange?.(xRange)
   }
 
+  /**
+   * Zoom on the Overview's time series. Like the Time series tab, it has to ask
+   * the server for the window: what is on screen is thinned to a point budget,
+   * and magnifying it only shows the thinning.
+   */
+  function onOverviewTsRelayout(e) {
+    if (!e) return
+    if (e['xaxis.autorange'] || e.autosize) {
+      if (overview?.ts?.data?.view) onViewChange?.(null)
+      return
+    }
+    const lo = e['xaxis.range[0]'] ?? e['xaxis.range']?.[0]
+    const hi = e['xaxis.range[1]'] ?? e['xaxis.range']?.[1]
+    if (lo == null || hi == null) return
+    const cur = overview?.ts?.data?.view
+    if (cur && Math.abs(cur[0] - lo) < 1e-12 && Math.abs(cur[1] - hi) < 1e-12) return
+    onViewChange?.([lo, hi])
+  }
+
   /** Points actually drawn for the first series, so the gain is visible. */
   let drawnPoints = $derived.by(() => {
     if (!mainSpec?.traces?.length) return 0
@@ -519,7 +538,10 @@
     if (!overview) return null
     const { ts, psd, fdd } = overview
     return {
-      ts:  ts.data  ? buildPlot('timeseries', ts.data, { ...baseOpts, title: 'Time series' }) : null,
+      // Pinned to the window the data was fetched for, so a zoom that brought
+      // back finer data stays zoomed; a fresh run has no window and autoranges.
+      ts:  ts.data  ? buildPlot('timeseries', ts.data, {
+             ...baseOpts, title: 'Time series', xRange: ts.data.view ?? null }) : null,
       psd: psd.data ? buildPlot('psd', psd.data, { ...baseOpts, title: 'Power spectral density' }) : null,
       fdd: fdd.data
         ? buildPlot('fdd', ovShowPeaks ? fdd.data : { ...fdd.data, peak_freqs: [] }, {
@@ -560,9 +582,11 @@
     let headers = [], rows = []
 
     if (tab === 'timeseries') {
-      const times = d.preprocessed ? d.times_proc : d.times_raw
+      // The plotted trace travels under the processed names whether or not any
+      // preprocessing is on; raw is only the optional ghost.
+      const times = d.times_proc ?? d.times_raw
       headers = ['time_s', ...d.signals.map(s => uName(s.name))]
-      const arr = d.preprocessed ? d.signals.map(s => s.signal_proc) : d.signals.map(s => s.signal_raw)
+      const arr = d.signals.map(s => s.signal_proc ?? s.signal_raw)
       for (let i = 0; i < times.length; i++) rows.push([times[i], ...arr.map(a => a[i])])
 
     } else if (tab === 'fft') {
@@ -957,7 +981,8 @@
       <section class="ov-block">
         {#if overviewSpecs.ts}
           <ResizablePane id="ov-ts" initial={300} label="Resize time series panel">
-            {#snippet children()}<PlotCanvas spec={overviewSpecs.ts} height="100%" />{/snippet}
+            {#snippet children()}<PlotCanvas spec={overviewSpecs.ts} height="100%"
+                                              onRelayout={onOverviewTsRelayout} />{/snippet}
           </ResizablePane>
         {:else}
           <div class="ov-fail">Time series unavailable: {overviewSpecs.tsError}</div>

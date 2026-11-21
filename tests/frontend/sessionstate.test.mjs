@@ -115,7 +115,8 @@ test('a partial preprocessing chain is filled in from the defaults', () => {
   assert.equal(out.preproc.hpCutoff, 3)
   assert.equal(out.preproc.notchEnabled, false)
   assert.equal(out.preproc.zeroPhase, true)
-  assert.equal(out.preproc.detrendOrder, 0)
+  // Filled in, but empty: a step's value is never pre-chosen for the user.
+  assert.equal(out.preproc.detrendOrder, null)
 })
 
 test('a junk params blob does not become the params object', () => {
