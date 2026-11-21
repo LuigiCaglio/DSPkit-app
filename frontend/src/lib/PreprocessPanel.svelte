@@ -1,5 +1,5 @@
 <script>
-  let { preproc, onchange = null } = $props()
+  let { preproc, fs = null, onchange = null } = $props()
   let open = $state(true)
 
   // filtfilt runs the filter forwards and backwards, so the order you asked for
@@ -205,14 +205,22 @@
     <!-- Resample -->
     <div>
       <div class="checkbox-row" style="margin-bottom:5px">
-        <input type="checkbox" id="rs-en" bind:checked={preproc.resampleEnabled} onchange={touched} />
+        <!-- Ticking only reveals the field: with no rate typed there is nothing
+             to resample to, so nothing re-runs until one is. -->
+        <input type="checkbox" id="rs-en" bind:checked={preproc.resampleEnabled}
+               onchange={() => { if (preproc.targetFs) touched() }} />
         <label for="rs-en" style="margin:0;font-size:12px;color:var(--text-secondary)">Resample</label>
       </div>
       {#if preproc.resampleEnabled}
         <div style="display:flex;align-items:center;gap:6px">
-          <input type="number" bind:value={preproc.targetFs} onchange={touched} min="1" step="1" style="width:80px;font-size:12px" />
+          <input type="number" bind:value={preproc.targetFs} onchange={touched} min="1" step="1"
+                 placeholder={fs ? `now ${+fs.toFixed(1)}` : 'rate'}
+                 style="width:80px;font-size:12px" />
           <span style="color:var(--text-muted);font-size:11px">Hz</span>
         </div>
+        {#if !preproc.targetFs}
+          <div class="detect-note">Type the new sample rate and press Enter.</div>
+        {/if}
       {/if}
     </div>
 

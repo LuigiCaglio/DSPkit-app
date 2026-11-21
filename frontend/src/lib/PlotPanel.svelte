@@ -510,6 +510,11 @@
       : []
   )
 
+  // The overview's automatic peak picking runs on default thresholds nobody
+  // chose, and too often marks noise or misses a mode. Off unless asked for;
+  // the FDD tab is where picking is done with intent.
+  let ovShowPeaks = $state(false)
+
   let overviewSpecs = $derived.by(() => {
     if (!overview) return null
     const { ts, psd, fdd } = overview
@@ -517,7 +522,7 @@
       ts:  ts.data  ? buildPlot('timeseries', ts.data, { ...baseOpts, title: 'Time series' }) : null,
       psd: psd.data ? buildPlot('psd', psd.data, { ...baseOpts, title: 'Power spectral density' }) : null,
       fdd: fdd.data
-        ? buildPlot('fdd', fdd.data, {
+        ? buildPlot('fdd', ovShowPeaks ? fdd.data : { ...fdd.data, peak_freqs: [] }, {
             ...baseOpts,
             title: `FDD — Singular Values (${fdd.data.labels.length} ch: ${fdd.data.labels.join(', ')})`,
           })
@@ -985,7 +990,14 @@
             If any of those are excitation/force inputs, deselect them in the
             sidebar — the mode estimates will change.
           </div>
-          {#if overviewSpecs.fddData?.peak_freqs?.length}
+          <label class="ov-peaks-toggle"
+                 title="First-pass peak picking on default thresholds. Often marks noise or misses close modes — use the FDD tab to pick modes properly.">
+            <input type="checkbox" bind:checked={ovShowPeaks} />
+            Show automatic peak picks (rough first pass)
+          </label>
+          {#if !ovShowPeaks}
+            <!-- nothing: the picks are opt-in -->
+          {:else if overviewSpecs.fddData?.peak_freqs?.length}
             <div class="ov-table-head">
               <span>Candidate modes — first-pass FDD peak picking</span>
               <button class="btn-ghost btn-csv"
@@ -1590,6 +1602,11 @@
     color: var(--text-muted);
   }
   .ov-fail { color: var(--danger); }
+  .ov-peaks-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--text-secondary);
+    margin: 0 10px 6px; cursor: pointer;
+  }
 
   /* The bar a mode table was held to. Deliberately attached to the table
      rather than hidden in a settings panel: a list of modes is unreadable

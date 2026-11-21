@@ -884,3 +884,14 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 }
 .frf-chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
 .frf-chip.unsafe { background: var(--warning); border-color: var(--warning); color: #1a1a1a; }
+
+/* ── .mat file: the variables it was read from ── */
+.mat-role { font-size: 11px; color: var(--text-muted); }
+.mat-var {
+  font-size: 11px;
+  color: var(--accent-text);
+  background: var(--bg-raised);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  overflow-wrap: anywhere;
+}

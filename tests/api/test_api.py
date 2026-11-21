@@ -761,6 +761,44 @@ def test_segment_advice(base, sess, r):
             f"{flat['resolution_bw']:.3g} vs {hann['resolution_bw']:.3g} Hz")
 
 
+def test_mat_file(base, sess, r):
+    """A .mat upload: rate, names and axis come from the file, not from guessing."""
+    import io as _io
+
+    import numpy as np
+    import scipy.io as sio
+
+    r.section(".mat files")
+    rows = [l.split(",") for l in CSV.read_text().splitlines()[1:] if l.strip()]
+    data = np.array(rows, dtype=float)[:, 1:3]  # x1_disp, x2_disp; samples down
+    buf = _io.BytesIO()
+    sio.savemat(buf, {"data": data, "fs": 1024.0,
+                      "labels": np.array(["x1_disp", "x2_disp"], dtype=object),
+                      "t0": "2019-01-01T00:00:00"})
+    st, m = post(base, "/api/session/create", {}, {"file": ("rec.mat", buf.getvalue())})
+    r.check(st == 200, "session/create accepts a .mat file", str(st) if st != 200 else "")
+    if st != 200:
+        return
+    r.check(m["column_names"] == ["x1_disp", "x2_disp"], "channel names come from labels",
+            str(m["column_names"]))
+    r.check(m["n_samples"] == 20480 and m["n_columns"] == 2,
+            "samples run along the long axis", f"{m['n_columns']} x {m['n_samples']}")
+    r.check(m["time_col"] == -1 and abs(m["fs"] - 1024) < 1e-6,
+            "fs is read from the file, with no time column", str(m.get("fs")))
+    det = m["detected"]
+    r.check(det["format"] == "mat" and det["t0"] == "2019-01-01T00:00:00"
+            and det["mat_sources"]["fs"] == "fs",
+            "detection reports the format, start time and variables used", str(det))
+
+    f = {**base_fields(m, [0, 1]), "window": "hann", "nperseg": 1024, "scaling": "density"}
+    st, psd = post(base, "/api/spectral/psd", f)
+    r.check(st == 200 and len(psd.get("signals", [])) == 2, "analyses run on a .mat session")
+
+    st, bad = post(base, "/api/session/create", {},
+                   {"file": ("bad.mat", b"MATLAB 7.3 MAT-file".ljust(512) + bytes([0x89]) + b"HDF" + bytes([13, 10, 26, 10]))})
+    r.check(st == 422 and "-v7" in str(bad), "a v7.3 file is refused with advice", str(st))
+
+
 def main(base):
     r = Results()
     print(f"API tests against {base}")
@@ -781,6 +819,7 @@ def main(base):
     test_zoom_window_buys_resolution(base, sess, r)
     test_ar_spectrum(base, sess, r)
     test_segment_advice(base, sess, r)
+    test_mat_file(base, sess, r)
     test_session_errors(base, sess, r)
     return r.report()
 

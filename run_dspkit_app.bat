@@ -2,6 +2,19 @@
 setlocal
 cd /d "%~dp0"
 
+REM ---- versions: the app's from manifest.json, the library's from the bundled
+REM      wheel's filename, so neither needs Python and neither can go stale.
+set "APP_VER=?"
+for /f "tokens=2 delims=:," %%v in ('findstr /c:"\"version\"" manifest.json') do set "APP_VER=%%v"
+set "APP_VER=%APP_VER: =%"
+set "APP_VER=%APP_VER:"=%"
+set "DSP_VER=?"
+set "DSP_WHL="
+for %%w in ("vendor\dspkit-*.whl") do (
+    set "DSP_WHL=%%~fw"
+    for /f "tokens=2 delims=-" %%n in ("%%~nw") do set "DSP_VER=%%n"
+)
+
 echo.
 echo    .-.   .-.   .-.                    _
 echo __/   \_/   \_/   \__    ---:      _ [ ] _
@@ -9,6 +22,12 @@ echo                                  [ ] [ ] [ ]
 echo.
 echo    D S P k i t
 echo    Exploratory signal analysis for vibration data
+echo.
+echo    Version   %APP_VER%  (DSPkit library %DSP_VER%)
+echo    Author    Luigi Caglio
+echo    License   MIT
+echo    Cite      https://doi.org/10.5281/zenodo.22257120
+echo    Source    https://github.com/LuigiCaglio/DSPkit-app
 echo.
 
 REM ---- locate Python ---------------------------------------------------------
@@ -55,6 +74,19 @@ if not exist "venv_dspkit\Scripts\python.exe" (
     echo.
     echo   Setup complete.
     echo.
+)
+
+REM ---- keep the library in step with the bundled wheel -------------------------
+REM An environment is only built once, so a newer wheel shipped with an update
+REM would otherwise never reach it: the app would run the old library while
+REM reporting the new version.
+if defined DSP_WHL (
+    "venv_dspkit\Scripts\python.exe" -c "import sys, dspkit; sys.exit(dspkit.__version__ != '%DSP_VER%')" >nul 2>&1
+    if errorlevel 1 (
+        echo   Updating the DSPkit library to %DSP_VER%...
+        "venv_dspkit\Scripts\python.exe" -m pip install --no-deps --force-reinstall --quiet "%DSP_WHL%"
+        echo.
+    )
 )
 
 REM ---- the interface must be built -------------------------------------------

@@ -371,9 +371,35 @@ def detect_delimiter(sample: str) -> str:
         return ","
 
 
+def _is_mat(content: bytes) -> bool:
+    """MATLAB v5-v7.3 files all open with this text header, whatever they're named."""
+    return content[:6] == b"MATLAB"
+
+
+def _parse_mat(content: bytes) -> dict:
+    """
+    A .mat file, read by dspkit.load_mat.
+
+    The file says which axis is time and usually the sample rate and channel
+    names, so none of the delimited-text guessing applies -- orientation and
+    header row are ignored. The rate travels with the parse so autodetect can
+    hand it on as if a time column had been found.
+    """
+    rec = dsp.load_mat(content)
+    return {
+        "column_names": [str(n) for n in rec.channel_names],
+        "data": rec.data,
+        "n_samples": rec.n_samples,
+        "n_columns": rec.n_channels,
+        "fs": rec.fs,
+        "t0": rec.t0,
+        "mat_sources": rec.sources,
+    }
+
+
 def parse_file(content: bytes, orientation: str = "columns", header_row: int = -1) -> dict:
     """
-    Parse CSV / TSV / TXT content.
+    Parse CSV / TSV / TXT content, or a MATLAB .mat file.
 
     orientation : "columns"      each column is a signal (default)
                   "rows"         each row is a signal
@@ -385,6 +411,9 @@ def parse_file(content: bytes, orientation: str = "columns", header_row: int = -
                   (all rows before it are skipped as metadata/comments)
     Returns dict with column_names, data (n_signals, n_samples), n_samples, n_columns.
     """
+    if _is_mat(content):
+        return _parse_mat(content)
+
     text = content.decode("utf-8-sig")
     lines = [l for l in text.splitlines() if l.strip()]
     if not lines:
@@ -589,6 +618,21 @@ def autodetect(content: bytes) -> dict:
     Returns {orientation, header_row, time_col, fs, delimiter}. Every value is
     a starting point the user can override in the UI — nothing here is binding.
     """
+    if _is_mat(content):
+        parsed = _parse_mat(content)
+        return {
+            "format": "mat",
+            "orientation": "columns",
+            "header_row": -1,
+            "delimiter": None,
+            "time_col": -1,
+            "fs": round(parsed["fs"], 6) if parsed["fs"] else None,
+            "time_col_rejected": None,
+            "t0": parsed["t0"],
+            # Which variable supplied what, so the UI can show its working.
+            "mat_sources": parsed["mat_sources"],
+        }
+
     text = content.decode("utf-8-sig", errors="replace")
     lines = [l for l in text.splitlines() if l.strip()]
     if not lines:

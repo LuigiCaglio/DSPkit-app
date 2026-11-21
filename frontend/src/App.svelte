@@ -36,6 +36,9 @@
   let layoutOpen  = $state(false)   // the override panel stays shut unless needed
   let aboutOpen   = $state(false)
 
+  let isMat = $derived(session?.detected?.format === 'mat')
+  const MAT_ROLES = { data: 'Data', fs: 'Sample rate', channel_names: 'Channel names', t0: 'Start time' }
+
   // ── channel selection ──────────────────────────────────────────────────────
   // signalCols is the single source of truth. focusChannel and pairX/pairY are
   // views onto it for analyses that take fewer channels than are selected; they
@@ -1185,6 +1188,11 @@
       <!-- Say so when the settings on screen were restored rather than chosen
            now — otherwise a filter left on last week silently shapes today's
            results. -->
+      {#if session.detected?.t0}
+        <span class="status-chip" title="Start time of the record, as written in the file">
+          <span class="dot"></span>start {session.detected.t0}
+        </span>
+      {/if}
       {#if restored}
         <span class="status-chip" title="Channels, preprocessing and analysis
 settings were restored from the last time this file was open.">
@@ -1196,7 +1204,16 @@ settings were restored from the last time this file was open.">
 
   <span style="flex:1"></span>
   <button class="topbar-icon-btn" onclick={() => aboutOpen = true}
-          title="About DSPkit GUI" aria-label="About DSPkit GUI">ⓘ</button>
+          title="About DSPkit GUI" aria-label="About DSPkit GUI">
+    <!-- Drawn rather than the ⓘ glyph, which most system fonts render thin
+         and off-centre at this size. -->
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.6" />
+      <line x1="12" y1="11" x2="12" y2="16.5" stroke="currentColor"
+            stroke-width="1.9" stroke-linecap="round" />
+      <circle cx="12" cy="7.6" r="1.2" fill="currentColor" />
+    </svg>
+  </button>
   <button class="topbar-icon-btn" onclick={() => rightOpen = !rightOpen}
           title={rightOpen ? 'Close settings' : 'Open settings'}>
     {rightOpen ? '✕' : '⚙'}
@@ -1314,7 +1331,25 @@ settings were restored from the last time this file was open.">
           <span>{layoutOpen ? '▲' : '▼'}</span>
         </button>
       </div>
-      {#if layoutOpen}
+      {#if layoutOpen && isMat}
+        <!-- A .mat file names its own axes, rate and channels, so there is no
+             layout to override — only the variables it was read from to show. -->
+        <div class="parse-opts">
+          <div class="detect-note">Read from a MATLAB file. Variables used:</div>
+          {#each Object.entries(session.detected.mat_sources ?? {}) as [role, v]}
+            <div class="field">
+              <span class="mat-role">{MAT_ROLES[role] ?? role}</span>
+              <code class="mat-var">{Array.isArray(v) ? v.join(', ') : v}</code>
+            </div>
+          {/each}
+          {#if !session.detected.fs}
+            <div class="field">
+              <label for="fs-man">Sample rate (Hz) — not in the file</label>
+              <input id="fs-man" type="number" bind:value={fsManual} min="0.001" step="1" />
+            </div>
+          {/if}
+        </div>
+      {:else if layoutOpen}
         <div class="parse-opts">
           <div class="detect-note">Only change these if the preview looks wrong.</div>
           <div class="field">
@@ -1348,7 +1383,7 @@ settings were restored from the last time this file was open.">
         </div>
       {/if}
 
-      <PreprocessPanel {preproc} onchange={rerunActive} />
+      <PreprocessPanel {preproc} fs={session?.fs ?? fsManual} onchange={rerunActive} />
     {/if}
   </aside>
 

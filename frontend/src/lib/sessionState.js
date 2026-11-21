@@ -45,7 +45,7 @@ export function defaultPreproc() {
     calculusLp:      null,
     calculusTaper:   0,        // fraction of the record tapered at each end
     resampleEnabled: false,
-    targetFs:        512,
+    targetFs:        null,    // no default: resampling waits for a rate to be typed
   }
 }
 

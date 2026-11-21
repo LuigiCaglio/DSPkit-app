@@ -97,7 +97,7 @@
   <input
     id="file-input"
     type="file"
-    accept=".csv,.txt,.tsv"
+    accept=".csv,.txt,.tsv,.mat"
     onchange={(e) => handleFile(e.target.files?.[0])}
   />
   {#if hasFile}
@@ -109,7 +109,7 @@
   {:else}
     <div class="upload-icon">📂</div>
     <div class="upload-title">Drop a file or click</div>
-    <div class="upload-label">CSV · TSV · TXT</div>
+    <div class="upload-label">CSV · TSV · TXT · MAT</div>
   {/if}
 </div>
 
