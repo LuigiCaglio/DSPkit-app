@@ -375,11 +375,16 @@ export function buildPlot(tab, d, opts) {
    * the part you cannot guess from an order number — especially under
    * zero-phase filtering, where the real -3 dB point sits inside the cutoff.
    */
-  const responseTrace = () => {
+  // Clipped to the spectrum it sits on. The filters run at the original rate,
+  // so the response spans the original Nyquist; on a resampled record that
+  // stretched the axis far past the last bin, leaving most of the chart empty.
+  const responseTrace = (fMax = Infinity) => {
     if (!response?.freqs?.length) return null
+    const keep = response.freqs.map((f, i) => i).filter(i => response.freqs[i] <= fMax)
+    if (!keep.length) return null
     return {
       trace: {
-        x: response.freqs, y: response.magnitude,
+        x: keep.map(i => response.freqs[i]), y: keep.map(i => response.magnitude[i]),
         type: 'scatter', mode: 'lines', name: 'filter response',
         yaxis: 'y2', hovertemplate: '%{x:.4g} Hz — gain %{y:.3f}<extra></extra>',
         line: { color: T.danger, width: 1.5, dash: 'dot' },
@@ -433,7 +438,7 @@ export function buildPlot(tab, d, opts) {
   if (tab === 'fft') {
     const traces = d.signals.map((sig, i) =>
       line(d.freqs, norm(sig.amplitude), sig.name, 'solid', 'y', colors[i % colors.length]))
-    const rf = responseTrace()
+    const rf = responseTrace(d.freqs[d.freqs.length - 1])
     if (rf) traces.push(rf.trace)
     return { traces, layout: merge(L, titled({
       ...bandShapes(d.freqs),
@@ -456,7 +461,7 @@ export function buildPlot(tab, d, opts) {
       line(d.freqs, norm(sig.Pxx),
            isAr && sig.order != null ? `${sig.name} (AR ${sig.order})` : sig.name,
            'solid', 'y', colors[i % colors.length]))
-    const rp = responseTrace()
+    const rp = responseTrace(d.freqs[d.freqs.length - 1])
     if (rp) traces.push(rp.trace)
     const xr = (psd.xMin !== '' && psd.xMin != null && psd.xMax !== '' && psd.xMax != null)
       ? [parseFloat(psd.xMin), parseFloat(psd.xMax)] : undefined
