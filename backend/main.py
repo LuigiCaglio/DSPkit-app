@@ -311,6 +311,18 @@ def _decimate_indices(n: int, max_points: int) -> Optional[np.ndarray]:
     return edges
 
 
+def _view_window(x, series, start, end):
+    """Cut a sorted axis and its series to [start, end], plus one point either
+    side so the line runs to the edge of the chart. None means unbounded."""
+    if start is None and end is None:
+        return x, series
+    lo = 0 if start is None else int(np.searchsorted(x, start, "left"))
+    hi = len(x) if end is None else int(np.searchsorted(x, end, "right"))
+    lo = max(0, min(lo - 1, len(x) - 1))
+    hi = max(lo + 1, min(hi + 1, len(x)))
+    return x[lo:hi], [s[lo:hi] for s in series]
+
+
 def decimate_xy(
     x: np.ndarray,
     ys: "list[np.ndarray]",
@@ -1642,13 +1654,7 @@ async def signal_timeseries(
         # what is on screen. Both axes are cut to the same span in seconds; they
         # have different sample counts once the record has been resampled.
         def window(t, series):
-            if view_start is None and view_end is None:
-                return t, series
-            lo = 0 if view_start is None else int(np.searchsorted(t, view_start, "left"))
-            hi = len(t) if view_end is None else int(np.searchsorted(t, view_end, "right"))
-            lo = max(0, min(lo - 1, len(t) - 1))
-            hi = max(lo + 1, min(hi + 1, len(t)))
-            return t[lo:hi], [s[lo:hi] for s in series]
+            return _view_window(t, series, view_start, view_end)
 
         t_proc_v, proc_v = window(t_proc, proc_series)
         t_proc_d, proc_d, dec_proc = decimate_xy(t_proc_v, proc_v, max_points)
@@ -1712,8 +1718,16 @@ async def spectral_fft(
     window: str = Form("hann"),
     scaling: str = Form("amplitude"),
     max_points: int = Form(DEFAULT_MAX_POINTS),
+    view_start: Optional[float] = Form(None),   # Hz, the visible window
+    view_end: Optional[float] = Form(None),
     pp: PreprocParams = Depends(),
 ):
+    """Amplitude and phase spectra of whole records.
+
+    ``view_start`` and ``view_end`` restrict the point budget to the visible
+    band, so zooming shows the real bin spacing (1 / duration) instead of the
+    thinned overview.
+    """
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
@@ -1734,12 +1748,16 @@ async def spectral_fft(
         # can draw. Thin here so the bins are never serialised, with only the
         # amplitudes choosing which bins survive.
         n_amp = len(amps)
+        f_v, series = _view_window(freqs, amps + phases, view_start, view_end)
         f_d, series, decimated = decimate_xy(
-            freqs, amps + phases, max_points, drivers=list(range(n_amp)))
+            f_v, series, max_points, drivers=list(range(n_amp)))
         return {
             "freqs": to_list(f_d),
             "n_bins": len(freqs),
+            "df": float(freqs[1] - freqs[0]) if len(freqs) > 1 else None,
             "decimated": bool(decimated),
+            "view": None if view_start is None and view_end is None
+                    else [view_start, view_end],
             "signals": [{"name": names[i],
                          "amplitude": to_list(series[i]),
                          "phase": to_list(series[n_amp + i])}

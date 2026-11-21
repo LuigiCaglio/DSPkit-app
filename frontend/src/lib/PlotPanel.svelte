@@ -901,6 +901,14 @@
         </span>
         <button class="btn-ghost" onclick={() => xRange = null}>Reset zoom</button>
       {/if}
+      {#if activeTab === 'fft' && single?.df}
+        <span class="plot-toolbar-sep"></span>
+        <span class="zoom-chip" class:full={!single.decimated}
+              title="Bin spacing of the full-length FFT: 1 / record duration. Zoom in to see every bin.">
+          Δf = {single.df.toPrecision(3)} Hz ·
+          {single.decimated ? 'thinned, zoom for every bin' : 'every bin shown'}
+        </span>
+      {/if}
       {#if activeTab === 'psd' || overview}
         <span class="plot-toolbar-sep"></span>
         <label><input type="checkbox" bind:checked={psdYLog} /> PSD log Y</label>
@@ -1147,7 +1155,7 @@
           {/if}
           <PlotCanvas
             spec={mainSpec}
-            onRelayout={zoomable ? onRelayout : null}
+            onRelayout={zoomable || activeTab === 'fft' ? onRelayout : null}
             onSelected={bandPick ? onSelected : null}
             onClick={activeTab === 'fdd' ? onFddPlotClick : null}
           />

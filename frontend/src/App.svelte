@@ -1002,10 +1002,13 @@
    * drag emits a relayout per frame.
    */
   let viewTimer = null
+  // Endpoints that accept view_start / view_end (seconds for the time series,
+  // Hz for the FFT, whose full-length spectrum is thinned the same way).
+  const VIEW_ENDPOINTS = new Set(['/api/signal/timeseries', '/api/spectral/fft'])
   function onViewChange(range) {
     if (lastRun?.kind === 'overview') return overviewViewChange(range)
     if (!lastRun || lastRun.kind !== 'single') return
-    if (lastRun.endpoint !== '/api/signal/timeseries') return
+    if (!VIEW_ENDPOINTS.has(lastRun.endpoint)) return
     clearTimeout(viewTimer)
     viewTimer = setTimeout(async () => {
       const seq = ++runSeq

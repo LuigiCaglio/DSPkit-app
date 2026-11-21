@@ -816,6 +816,33 @@ def test_mat_file(base, sess, r):
     r.check(st == 422 and "-v7" in str(bad), "a v7.3 file is refused with advice", str(st))
 
 
+def test_fft_zoom_window(base, sess, r):
+    """Zooming the FFT re-spends the budget on the band: every bin, at 1/T."""
+    r.section("FFT zoom window")
+    f = {**base_fields(sess, [1, 2]), "window": "hann", "scaling": "amplitude",
+         "max_points": 2000}
+    st, full = post(base, "/api/spectral/fft", f)
+    if not r.check(st == 200, "fft responds", str(st)):
+        return
+    T = sess["n_samples"] / sess["fs"]
+    r.check(abs(full["df"] - 1 / T) < 1e-9, "df is 1 / duration",
+            f"{full['df']:.6f} vs {1 / T:.6f}")
+    r.check(full["decimated"] and full["view"] is None,
+            "the whole band is thinned and has no view")
+
+    st, z = post(base, "/api/spectral/fft", {**f, "view_start": 10, "view_end": 20})
+    if not r.check(st == 200, "windowed fft responds", str(st)):
+        return
+    fr = z["freqs"]
+    steps = [b - a for a, b in zip(fr, fr[1:])]
+    r.check(not z["decimated"] and z["view"] == [10, 20],
+            "a 10 Hz window fits the budget and echoes the view")
+    r.check(fr[0] <= 10 and fr[-1] >= 20 and fr[1] > 10 and fr[-2] < 20,
+            "the window spans the band, one bin past each edge")
+    r.check(max(abs(d - full["df"]) for d in steps) < 1e-9,
+            "every bin in the window is sent", f"{len(fr)} bins")
+
+
 def test_resample_anti_alias(base, r):
     """Resampling down removes what would fold into the band, not just thins it."""
     import io as _io
@@ -851,6 +878,7 @@ def main(base):
     print(f"API tests against {base}")
     sess = make_session(base, r)
     test_overview(base, sess, r)
+    test_fft_zoom_window(base, sess, r)
     test_fdd_needs_response_channels(base, sess, r)
     test_fanout(base, sess, r)
     test_single_channel(base, sess, r)

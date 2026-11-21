@@ -436,7 +436,9 @@ export function buildPlot(tab, d, opts) {
       ...bandShapes(d.freqs),
       ...dragOpts,
       ...(rf ? rf.axis : {}),
-      xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
+      // A zoom re-fetches the window at full bin resolution; hold the axis on it.
+      xaxis: { ...L.xaxis, title: 'Frequency [Hz]',
+               ...(d.view ? { range: d.view, autorange: false } : {}) },
       yaxis: { ...L.yaxis, title: ampTitle(), type: yType },
     }))}
   }
