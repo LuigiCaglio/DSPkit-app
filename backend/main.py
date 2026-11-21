@@ -218,6 +218,33 @@ async def health():
     return {"app": "dspkit-app", "ok": True}
 
 
+# ─── about ────────────────────────────────────────────────────────────────────
+_MANIFEST = Path(__file__).parent.parent / "manifest.json"
+
+
+@app.get("/api/about")
+async def about():
+    """
+    Versions as they are at runtime, for the About dialog. The library version
+    is read from the dspkit actually imported rather than written down
+    anywhere, so a stale venv shows up as a stale version instead of hiding.
+    """
+    import platform
+    import scipy
+
+    try:
+        app_version = json.loads(_MANIFEST.read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError):
+        app_version = None
+    return {
+        "app_version": app_version,
+        "dspkit_version": getattr(dsp, "__version__", None),
+        "python_version": platform.python_version(),
+        "numpy_version": np.__version__,
+        "scipy_version": scipy.__version__,
+    }
+
+
 # ─── example data ─────────────────────────────────────────────────────────────
 _EXAMPLE_FILE = Path(__file__).parent.parent / "example_data" / "2dof_vibration.csv"
 

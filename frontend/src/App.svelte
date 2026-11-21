@@ -1,5 +1,6 @@
 <script>
   import DspkitLogo        from './lib/DspkitLogo.svelte'
+  import AboutDialog       from './lib/AboutDialog.svelte'
   import FileUpload        from './lib/FileUpload.svelte'
   import AnalysisPanel     from './lib/AnalysisPanel.svelte'
   import PlotPanel         from './lib/PlotPanel.svelte'
@@ -33,6 +34,7 @@
   let timeCol     = $state(-1)
   let fsManual    = $state(1000)
   let layoutOpen  = $state(false)   // the override panel stays shut unless needed
+  let aboutOpen   = $state(false)
 
   // ── channel selection ──────────────────────────────────────────────────────
   // signalCols is the single source of truth. focusChannel and pairX/pairY are
@@ -1193,11 +1195,17 @@ settings were restored from the last time this file was open.">
   {/if}
 
   <span style="flex:1"></span>
+  <button class="topbar-icon-btn" onclick={() => aboutOpen = true}
+          title="About DSPkit GUI" aria-label="About DSPkit GUI">ⓘ</button>
   <button class="topbar-icon-btn" onclick={() => rightOpen = !rightOpen}
           title={rightOpen ? 'Close settings' : 'Open settings'}>
     {rightOpen ? '✕' : '⚙'}
   </button>
 </div>
+
+{#if aboutOpen}
+  <AboutDialog onclose={() => aboutOpen = false} />
+{/if}
 
 <div class="layout" class:right-open={rightOpen}>
   <!-- ── sidebar (data setup only) ── -->
