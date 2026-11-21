@@ -1706,6 +1706,37 @@ async def signal_timeseries(
 # ─── spectral ────────────────────────────────────────────────────────────────
 
 
+_FFT_CACHE: dict = {}
+_ACF_CACHE: dict = {}
+_FFT_CACHE_SIZE = 4
+
+
+def _fft_spectra(parsed, cols, time_col, fs, pp, window, scaling):
+    """Amplitude and phase spectra, one FFT per channel.
+
+    The amplitude is ``dsp.fft_spectrum``'s (window amplitude-corrected, single
+    sided), computed here from the same transform as the phase instead of
+    transforming every channel twice.
+    """
+    names, amps, phases = [], [], []
+    freqs = None
+    for col in cols:
+        x, fs_, _ = get_preprocessed(parsed, time_col, col, fs, pp)
+        n = len(x)
+        win = get_window(window, n)
+        X = np.fft.rfft(x * win)
+        amp = np.abs(X) * (n / win.sum()) / n
+        amp[1:-1] *= 2.0
+        if scaling == "rms":
+            amp /= np.sqrt(2.0)
+        if freqs is None:
+            freqs = np.fft.rfftfreq(n, d=1.0 / fs_)
+        names.append(parsed["column_names"][col])
+        amps.append(amp)
+        phases.append(np.angle(X, deg=True))
+    return freqs, names, amps, phases
+
+
 @app.post("/api/spectral/fft")
 async def spectral_fft(
     file: Optional[UploadFile] = None,
@@ -1733,16 +1764,24 @@ async def spectral_fft(
         if not cols:
             raise ValueError("No channels are selected. Tick at least one in the sidebar.")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, pp)
-        freqs, _ = dsp.fft_spectrum(x0, fs_, window=window, scaling=scaling)
-        names, amps, phases = [], [], []
-        for col in cols:
-            x, _, _ = get_preprocessed(parsed, time_col, col, fs, pp)
-            _, amp = dsp.fft_spectrum(x, fs_, window=window, scaling=scaling)
-            win_arr = get_window(window, len(x))
-            names.append(parsed["column_names"][col])
-            amps.append(amp)
-            phases.append(np.angle(np.fft.rfft(x * win_arr), deg=True))
+        # A zoom asks for the same spectra again with only the window changed,
+        # so they are kept for the session: recomputing meant one or two full
+        # FFTs per channel per zoom, which on a long record of awkward length
+        # (KW51: 247,742 samples) was ~2 s for six channels.
+        if scaling not in ("amplitude", "rms"):
+            raise ValueError(f"{scaling!r} is not an FFT scaling; use 'amplitude' or 'rms'.")
+        # id(parsed) changes when the session is re-parsed with a new layout.
+        key = (session_id, id(parsed), orientation, header_row, tuple(cols),
+               time_col, fs, window, scaling,
+               tuple(sorted(vars(pp).items()))) if session_id else None
+        hit = _FFT_CACHE.get(key) if key else None
+        if hit is None:
+            hit = _fft_spectra(parsed, cols, time_col, fs, pp, window, scaling)
+            if key:
+                _FFT_CACHE[key] = hit
+                while len(_FFT_CACHE) > _FFT_CACHE_SIZE:
+                    _FFT_CACHE.pop(next(iter(_FFT_CACHE)))
+        freqs, names, amps, phases = hit
 
         # A full-length FFT has one bin per two samples, far more than a chart
         # can draw. Thin here so the bins are never serialised, with only the
@@ -1891,6 +1930,8 @@ async def spectral_autocorrelation(
     bt_lag_unit: str = Form("samples"),   # "samples" | "seconds"
     bt_decay: float = Form(3.0),
     max_points: int = Form(DEFAULT_MAX_POINTS),
+    view_start: Optional[float] = Form(None),   # the visible window, x-axis units
+    view_end: Optional[float] = Form(None),
     pp: PreprocParams = Depends(),
 ):
     try:
@@ -1898,18 +1939,30 @@ async def spectral_autocorrelation(
         if not cols:
             raise ValueError("No channels are selected. Tick at least one in the sidebar.")
         parsed = await resolve_parsed(file, session_id, orientation, header_row)
-        x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, pp)
-        lags, _ = dsp.autocorrelation(x0, fs=fs_, normalize=normalize, max_lag=max_lag)
-        names, acfs = [], []
-        for col in cols:
-            x, _, _ = get_preprocessed(parsed, time_col, col, fs, pp)
-            _, acf = dsp.autocorrelation(x, fs=fs_, normalize=normalize, max_lag=max_lag)
-            names.append(parsed["column_names"][col])
-            acfs.append(acf)
+        # Kept per session like the FFT: a zoom only changes the window, and
+        # each ACF is a 2N-point transform pair (~0.5 s per channel on KW51).
+        key = (session_id, id(parsed), orientation, header_row, tuple(cols),
+               time_col, fs, normalize, max_lag,
+               tuple(sorted(vars(pp).items()))) if session_id else None
+        hit = _ACF_CACHE.get(key) if key else None
+        if hit is None:
+            names, acfs, lags, fs_ = [], [], None, None
+            for col in cols:
+                x, fs_, _ = get_preprocessed(parsed, time_col, col, fs, pp)
+                lags, acf = dsp.autocorrelation(x, fs=fs_, normalize=normalize, max_lag=max_lag)
+                names.append(parsed["column_names"][col])
+                acfs.append(acf)
+            hit = (lags, names, acfs, fs_)
+            if key:
+                _ACF_CACHE[key] = hit
+                while len(_ACF_CACHE) > _FFT_CACHE_SIZE:
+                    _ACF_CACHE.pop(next(iter(_ACF_CACHE)))
+        lags, names, acfs, fs_ = hit
         # One lag per sample without a cap, which is the same O(N) payload the
         # time series had. Thinning keeps the extremes, so a sharp peak at a
         # periodicity still lands on the chart.
-        lags_d, acfs_d, acf_decimated = decimate_xy(lags, acfs, max_points)
+        lags_v, acfs_v = _view_window(lags, acfs, view_start, view_end)
+        lags_d, acfs_d, acf_decimated = decimate_xy(lags_v, acfs_v, max_points)
         signals = [{"name": names[i], "acf": to_list(acfs_d[i])}
                    for i in range(len(names))]
 
@@ -1950,8 +2003,10 @@ async def spectral_autocorrelation(
                 m = bt_lags if bt_lags else max(8, len(x) // 10)
                 m = max(4, min(m, len(x) - 1))
                 win = dsp.lag_window(w, m, decay=float(bt_decay))
-                full = np.correlate(x - x.mean(), x - x.mean(), mode="full") / len(x)
-                acf_raw = full[len(x) - 1: len(x) - 1 + m]
+                # Biased ACF of the demeaned record, first m lags. Through the
+                # FFT: np.correlate(mode="full") is O(N^2), minutes on a long
+                # record, and gives the same sum(x[n] x[n+k]) / N.
+                acf_raw = dsp.autocorrelation(x - x.mean(), normalize=False)[1][:m]
                 scale = np.max(np.abs(acf_raw)) or 1.0
                 curves.append({
                     "window": w,
@@ -1976,6 +2031,8 @@ async def spectral_autocorrelation(
         # dimensionless ratio, an unnormalized one is in the signal's unit squared.
         return {"lags": to_list(lags_d), "signals": signals, "normalized": normalize,
                 "n_lags": len(lags), "decimated": bool(acf_decimated),
+                "view": None if view_start is None and view_end is None
+                        else [view_start, view_end],
                 "blackman_tukey": bt}
     except HTTPException:
         raise
@@ -1997,6 +2054,9 @@ async def spectral_cross_correlation(
     fs: Optional[float] = Form(None),
     normalize: bool = Form(True),
     max_lag: Optional[float] = Form(None),
+    max_points: int = Form(DEFAULT_MAX_POINTS),
+    view_start: Optional[float] = Form(None),   # lag window, seconds
+    view_end: Optional[float] = Form(None),
     pp: PreprocParams = Depends(),
 ):
     try:
@@ -2010,7 +2070,15 @@ async def spectral_cross_correlation(
         # delayed copy and x leads. That convention is easy to state backwards --
         # dspkit's own docstring had it inverted until 2026-09-02 -- so the app
         # spells the direction out rather than leaving it to be inferred.
+        # 2N - 1 lags uncapped (495k on a KW51 record, ~10 MB of JSON):
+        # thinned like the ACF, and a zoom re-fetches the lag window.
+        n_lags = len(lags)
+        lags_v, (ccf_v,) = _view_window(lags, [ccf], view_start, view_end)
+        lags, (ccf,), dec = decimate_xy(lags_v, [ccf_v], max_points)
         return {"lags": to_list(lags), "ccf": to_list(ccf), "normalized": normalize,
+                "n_lags": n_lags, "decimated": bool(dec),
+                "view": None if view_start is None and view_end is None
+                        else [view_start, view_end],
                 "x_label": parsed["column_names"][signal_col_x],
                 "y_label": parsed["column_names"][signal_col_y]}
     except HTTPException:
@@ -2100,6 +2168,8 @@ async def filter_apply(
     order: int = Form(4),
     zero_phase: bool = Form(True),
     max_points: int = Form(DEFAULT_MAX_POINTS),
+    view_start: Optional[float] = Form(None),   # the visible window, x-axis units
+    view_end: Optional[float] = Form(None),
     pp: PreprocParams = Depends(),
 ):
     try:
@@ -2125,10 +2195,14 @@ async def filter_apply(
         else:
             raise ValueError(f"{filter_type!r} is not a filter type this app knows.")
 
-        t_d, (x_d, y_d), dec = decimate_xy(t, [x, y], max_points)
+        # Filtered over the whole record, then cut: filtering only the window
+        # would add edge transients that are not in the real result.
+        t_v, xy_v = _view_window(t, [x, y], view_start, view_end)
+        t_d, (x_d, y_d), dec = decimate_xy(t_v, xy_v, max_points)
         return {"times": to_list(t_d), "signal_raw": to_list(x_d),
                 "signal_filtered": to_list(y_d),
-                "n_total": len(t), "decimated": bool(dec)}
+                "n_total": len(t), "decimated": bool(dec),
+                "view": None if view_start is None and view_end is None else [view_start, view_end],}
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
@@ -2464,6 +2538,8 @@ async def instantaneous(
     signal_col: int = Form(...),
     fs: Optional[float] = Form(None),
     max_points: int = Form(DEFAULT_MAX_POINTS),
+    view_start: Optional[float] = Form(None),   # the visible window, x-axis units
+    view_end: Optional[float] = Form(None),
     pp: PreprocParams = Depends(),
 ):
     try:
@@ -2475,8 +2551,9 @@ async def instantaneous(
         # ramp's extremes pick indices would spend the budget on the wrap
         # points, and an instantaneous frequency is meaningless read at a
         # different instant from the signal it belongs to.
-        t_d, series, dec = decimate_xy(
-            t, [x, envelope, phase, inst_freq], max_points, drivers=[0, 1])
+        t_v, series = _view_window(t, [x, envelope, phase, inst_freq],
+                                   view_start, view_end)
+        t_d, series, dec = decimate_xy(t_v, series, max_points, drivers=[0, 1])
         return {
             "times": to_list(t_d),
             "signal": to_list(series[0]),
@@ -2485,6 +2562,7 @@ async def instantaneous(
             "inst_freq": to_list(series[3]),
             "n_total": len(t),
             "decimated": bool(dec),
+            "view": None if view_start is None and view_end is None else [view_start, view_end],
         }
     except HTTPException:
         raise

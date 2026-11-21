@@ -19,7 +19,7 @@
     fddPicks = [], fddVectors = null, fddBusy = false, fddError = null,
     fddNVec = $bindable(1),
     onFddPick = null, onFddUnpick = null, onFddClear = null, onFddRun = null,
-    onViewChange = null, fetchFullData = null, fetchFullGrid = null,
+    onViewChange = null, viewFetching = false, fetchFullData = null, fetchFullGrid = null,
   } = $props()
 
   // Three shapes arrive here:
@@ -331,6 +331,21 @@
   let showAllPoints = $state(false)
   $effect(() => { const _ = plotData; showAllPoints = false })
 
+  // "All points" has to ask the server: the payload is already thinned there,
+  // so turning off the client-side thinning alone redrew the same few points.
+  let fullData = $state(null)
+  let fullLoading = $state(false)
+  $effect(() => { const _ = plotData; fullData = null })
+  $effect(() => {
+    if (!showAllPoints || !single?.decimated || !fetchFullData || fullData) return
+    const want = single
+    fullLoading = true
+    fetchFullData().then((d) => {
+      if (single === want && showAllPoints) fullData = d
+    }).finally(() => { fullLoading = false })
+  })
+  let shownSingle = $derived(showAllPoints && fullData ? fullData : single)
+
   let isDownsampled = $derived(
     !!single && isDownsampledFor(activeTab, single) && !showAllPoints
   )
@@ -348,6 +363,12 @@
   let cellRanges = $state({})          // cell name -> [lo, hi], when not shared
   $effect(() => { const _ = plotData, __ = activeTab, ___ = sharedZoom; cellRanges = {} })
   let xRange   = $state(null)
+  // The zoomed window: the one just dragged, or the one the server echoes back
+  // after re-fetching it (a new payload clears xRange).
+  let viewRange = $derived(xRange ?? single?.view ?? null)
+  let gridZoomed = $derived(!!grid?.some(c => c.data?.view))
+  // Tabs whose endpoint re-fetches the visible window on zoom.
+  const VIEW_TABS = new Set([...ZOOMABLE, 'fft', 'autocorrelation', 'cross_correlation'])
 
   // ── filter band picking (PSD and FFT) ──────────────────────────────────────
   // Set cutoffs from the spectrum you are looking at. The default drag zooms,
@@ -391,6 +412,7 @@
     if (e['xaxis.autorange'] || e.autosize) {
       if (sharedZoom) xRange = null
       else cellRanges = { ...cellRanges, [name]: null }
+      onViewChange?.(null, sharedZoom ? null : name)
       return
     }
     const lo = e['xaxis.range[0]'] ?? e['xaxis.range']?.[0]
@@ -404,6 +426,9 @@
       if (cur && Math.abs(cur[0] - lo) < 1e-12 && Math.abs(cur[1] - hi) < 1e-12) return
       cellRanges = { ...cellRanges, [name]: [lo, hi] }
     }
+    // Each cell arrives thinned like a single chart, so it needs its window
+    // re-fetched too: all of them when linked, just this one otherwise.
+    onViewChange?.([lo, hi], sharedZoom ? null : name)
   }
 
   function onRelayout(e) {
@@ -445,7 +470,9 @@
     return mainSpec.traces.reduce((m, t) => Math.max(m, t.x?.length ?? 0), 0)
   })
   /** True once the window is small enough to be drawn at full sample rate. */
-  let atFullRate = $derived(!!xRange && drawnPoints < MAX_PLOT_POINTS)
+  // The server's own flag decides: a thinned payload is well under the client
+  // budget, so counting drawn points called a decimated window "full rate".
+  let atFullRate = $derived(!!viewRange && !single?.decimated && drawnPoints < MAX_PLOT_POINTS)
 
   // ── derived ─────────────────────────────────────────────────────────────────
   let canShowPhase = $derived(
@@ -490,7 +517,7 @@
           xRange: zoomable ? xRange : null,
         })
     : single
-      ? buildPlot(activeTab, single, {
+      ? buildPlot(activeTab, shownSingle, {
           ...baseOpts,
           xRange: zoomable ? xRange : null,
           band: filterBand,
@@ -811,14 +838,16 @@
         <label title="Zooming one cell zooms them all, so the panels stay comparable">
           <input type="checkbox" bind:checked={sharedZoom} /> Linked zoom
         </label>
-        {#if sharedZoom ? xRange : Object.values(cellRanges).some(Boolean)}
-          <button class="btn-ghost" onclick={() => { xRange = null; cellRanges = {} }}>
+        {#if gridZoomed || (sharedZoom ? xRange : Object.values(cellRanges).some(Boolean))}
+          <button class="btn-ghost"
+                  onclick={() => { xRange = null; cellRanges = {}; onViewChange?.(null) }}>
             Reset zoom
           </button>
         {/if}
       {/if}
       {#if isDownsampled || showAllPoints}
         <label><input type="checkbox" bind:checked={showAllPoints} /> All points</label>
+        {#if fullLoading}<span class="zoom-chip">fetching every sample…</span>{/if}
       {/if}
       {#if bandPick}
         <span class="plot-toolbar-sep"></span>
@@ -892,14 +921,18 @@
           </span>
         </span>
       {/if}
-      {#if zoomable && xRange}
+      {#if zoomable && viewRange}
         <span class="plot-toolbar-sep"></span>
         <span class="zoom-chip" class:full={atFullRate}>
-          {(xRange[1] - xRange[0]).toPrecision(3)} s window ·
+          {(viewRange[1] - viewRange[0]).toPrecision(3)} s window ·
           {drawnPoints.toLocaleString()} pts
           {atFullRate ? ' · full rate' : ' · decimated'}
         </span>
-        <button class="btn-ghost" onclick={() => xRange = null}>Reset zoom</button>
+        <button class="btn-ghost" onclick={() => { xRange = null; onViewChange?.(null) }}>Reset zoom</button>
+      {/if}
+      {#if viewFetching}
+        <span class="plot-toolbar-sep"></span>
+        <span class="zoom-chip">loading window…</span>
       {/if}
       {#if activeTab === 'fft' && single?.df}
         <span class="plot-toolbar-sep"></span>
@@ -1155,7 +1188,7 @@
           {/if}
           <PlotCanvas
             spec={mainSpec}
-            onRelayout={zoomable || activeTab === 'fft' ? onRelayout : null}
+            onRelayout={VIEW_TABS.has(activeTab) ? onRelayout : null}
             onSelected={bandPick ? onSelected : null}
             onClick={activeTab === 'fdd' ? onFddPlotClick : null}
           />

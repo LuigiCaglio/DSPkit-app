@@ -263,8 +263,11 @@ export function buildPlot(tab, d, opts) {
 
   // Re-drawing at a finer resolution must not throw away the zoom that asked
   // for it, so the axis range is pinned whenever a window is active.
-  const xAxisRange = xRange
-    ? { range: [...xRange], autorange: false }
+  // After a zoom re-fetch the client range is cleared and the payload carries
+  // the window it was cut to, so that holds the axis instead.
+  const pinned = xRange ?? d?.view ?? null
+  const xAxisRange = pinned
+    ? { range: [...pinned], autorange: false }
     : { autorange: true }
 
   const norm = (arr) => {

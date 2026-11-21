@@ -1002,23 +1002,57 @@
    * drag emits a relayout per frame.
    */
   let viewTimer = null
+  let viewFetching = $state(false)   // a zoom re-fetch in flight, shown as a chip
+  // A full run supersedes any zoom request, which then never clears the flag.
+  $effect(() => { if (loading) viewFetching = false })
   // Endpoints that accept view_start / view_end (seconds for the time series,
   // Hz for the FFT, whose full-length spectrum is thinned the same way).
-  const VIEW_ENDPOINTS = new Set(['/api/signal/timeseries', '/api/spectral/fft'])
-  function onViewChange(range) {
+  const VIEW_ENDPOINTS = new Set([
+    '/api/signal/timeseries', '/api/spectral/fft', '/api/spectral/autocorrelation',
+    '/api/filter/apply', '/api/instantaneous', '/api/spectral/cross_correlation',
+  ])
+  function onViewChange(range, cellName = null) {
     if (lastRun?.kind === 'overview') return overviewViewChange(range)
-    if (!lastRun || lastRun.kind !== 'single') return
-    if (!VIEW_ENDPOINTS.has(lastRun.endpoint)) return
+    if (!lastRun || !VIEW_ENDPOINTS.has(lastRun.endpoint)) return
+    if (lastRun.kind === 'fanout') return gridViewChange(range, cellName)
+    if (lastRun.kind !== 'single') return
     clearTimeout(viewTimer)
     viewTimer = setTimeout(async () => {
       const seq = ++runSeq
+      viewFetching = true
       const { data, error } = await post(lastRun.endpoint, {
         ...lastRun.extra,
         view_start: range?.[0] ?? null,
         view_end: range?.[1] ?? null,
       })
       if (seq !== runSeq) return
+      viewFetching = false
       if (!error && data) plotData = data
+    }, 250)
+  }
+
+  /**
+   * The same for a small-multiples grid: every cell when the zoom is linked,
+   * otherwise only the cell that was zoomed.
+   */
+  function gridViewChange(range, cellName) {
+    clearTimeout(viewTimer)
+    viewTimer = setTimeout(async () => {
+      const seq = ++runSeq
+      const cells = plotData?.grid
+      if (!cells) return
+      viewFetching = true
+      const next = await Promise.all(cells.map(async (c) => {
+        if (cellName && c.name !== cellName) return c
+        const { data, error } = await post(lastRun.endpoint, {
+          ...lastRun.extra, signal_col: c.col,
+          view_start: range?.[0] ?? null, view_end: range?.[1] ?? null,
+        })
+        return error || !data ? c : { ...c, data }
+      }))
+      if (seq !== runSeq) return
+      viewFetching = false
+      if (plotData?.grid) plotData = { grid: next }
     }, 250)
   }
 
@@ -1031,11 +1065,14 @@
     clearTimeout(viewTimer)
     viewTimer = setTimeout(async () => {
       const seq = ++runSeq
+      viewFetching = true
       const res = await post('/api/signal/timeseries', {
         view_start: range?.[0] ?? null,
         view_end: range?.[1] ?? null,
       })
-      if (seq !== runSeq || !plotData?.overview) return
+      if (seq !== runSeq) return
+      viewFetching = false
+      if (!plotData?.overview) return
       if (!res.error && res.data) plotData = { overview: { ...plotData.overview, ts: res } }
     }, 250)
   }
@@ -1503,7 +1540,7 @@ settings were restored from the last time this file was open.">
             bind:fddNVec
             onFddPick={fddPick} onFddUnpick={fddUnpick}
             onFddClear={fddClear} onFddRun={runFddVectors}
-            {onViewChange} {fetchFullData} {fetchFullGrid}
+            {onViewChange} {viewFetching} {fetchFullData} {fetchFullGrid}
           />
         {/if}
       </div>

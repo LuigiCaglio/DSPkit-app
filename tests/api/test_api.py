@@ -816,6 +816,35 @@ def test_mat_file(base, sess, r):
     r.check(st == 422 and "-v7" in str(bad), "a v7.3 file is refused with advice", str(st))
 
 
+def test_zoom_windows(base, sess, r):
+    """Every thinned chart re-spends its budget on the zoomed window."""
+    r.section("Zoom windows on every thinned endpoint")
+    one = base_fields(sess, [1])
+    pair = {k: v for k, v in one.items() if k != "signal_cols"}
+    cases = [
+        ("timeseries", "/api/signal/timeseries", {**one}, "times_proc"),
+        ("autocorrelation", "/api/spectral/autocorrelation", {**one}, "lags"),
+        ("filter", "/api/filter/apply",
+         {**pair, "signal_col": 1, "filter_type": "lowpass", "cutoff": 50}, "times"),
+        ("instantaneous", "/api/instantaneous", {**pair, "signal_col": 1}, "times"),
+        ("cross-correlation", "/api/spectral/cross_correlation",
+         {**pair, "signal_col_x": 1, "signal_col_y": 2}, "lags"),
+    ]
+    step = 1 / sess["fs"]
+    for name, ep, fields, axis in cases:
+        f = {**fields, "max_points": 1000}
+        st, full = post(base, ep, f)
+        st2, z = post(base, ep, {**f, "view_start": 2.0, "view_end": 2.5})
+        if not r.check(st == 200 and st2 == 200, f"{name} responds", f"{st} {st2}"):
+            continue
+        x = z[axis]
+        steps = [b - a for a, b in zip(x, x[1:])]
+        r.check(full["decimated"], f"{name}: the whole record is thinned")
+        r.check(not z["decimated"] and z["view"] == [2.0, 2.5]
+                and max(abs(d - step) for d in steps) < 0.01 * step,
+                f"{name}: a 0.5 s window comes back at every sample", f"{len(x)} points")
+
+
 def test_fft_zoom_window(base, sess, r):
     """Zooming the FFT re-spends the budget on the band: every bin, at 1/T."""
     r.section("FFT zoom window")
@@ -879,6 +908,7 @@ def main(base):
     sess = make_session(base, r)
     test_overview(base, sess, r)
     test_fft_zoom_window(base, sess, r)
+    test_zoom_windows(base, sess, r)
     test_fdd_needs_response_channels(base, sess, r)
     test_fanout(base, sess, r)
     test_single_channel(base, sess, r)
