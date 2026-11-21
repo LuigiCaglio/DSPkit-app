@@ -434,43 +434,6 @@ input:focus, select:focus { outline: 2px solid var(--accent); border-color: tran
 .detect-banner .detect-title { font-weight: 600; }
 .detect-note { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
 
-/* ── pinned comparison dataset ──
-   Sits under the file picker because that is where it was chosen, and stays
-   visible on tabs that cannot draw it: a pinned dataset being silently ignored
-   would be worse than one that says why it is not on screen. */
-.compare-banner {
-  margin: 8px 12px 0;
-  padding: 7px 10px;
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-  border-left: 3px solid var(--accent);
-  border-radius: var(--radius);
-  font-size: 11px;
-  line-height: 1.5;
-}
-.compare-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-.compare-file { font-weight: 600; word-break: break-all; margin-top: 1px; }
-.compare-note { margin-top: 4px; font-size: 10px; color: var(--text-muted); }
-.compare-clear {
-  border: none;
-  background: none;
-  color: inherit;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  padding: 0 2px;
-}
-.compare-clear:hover { color: var(--text); }
-
 /* ── rejected time column ──
    Deliberately louder than .detect-banner: this one reports that the sample
    rate on screen was not read from the file, which silently rescales every

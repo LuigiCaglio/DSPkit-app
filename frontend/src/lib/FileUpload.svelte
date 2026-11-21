@@ -3,8 +3,7 @@
 
   let {
     hasFile, filename, sourcePath = null, sessionId = null,
-    compareId = null,
-    onfile, onopen, onclose, oncompare = null,
+    onfile, onopen, onclose,
   } = $props()
 
   let dragover = $state(false)
@@ -136,7 +135,7 @@
     {#if recentOpen}
       <div class="recent-list">
         {#each recent as entry (entry.session_id)}
-          <div class="recent-row" class:compared={compareId === entry.session_id}>
+          <div class="recent-row">
           <button
             class="recent-item"
             disabled={!entry.available || busyId !== null}
@@ -165,17 +164,6 @@
               <span class="recent-path">{shortPath(entry.source_path, 34)}</span>
             {/if}
           </button>
-          {#if oncompare && entry.available && entry.session_id !== sessionId}
-            <button
-              class="recent-compare"
-              class:on={compareId === entry.session_id}
-              aria-pressed={compareId === entry.session_id}
-              title={compareId === entry.session_id
-                ? 'Stop comparing against this file'
-                : 'Compare the current analysis against this file'}
-              onclick={() => oncompare(entry)}
-            >⇄</button>
-          {/if}
           </div>
         {/each}
       </div>
@@ -294,27 +282,6 @@
     white-space: nowrap;
   }
 
-  /* A recent entry is now two controls: open, and pin-as-reference. The row
-     exists only to sit them side by side — a button cannot nest in a button. */
-  .recent-row { display: flex; align-items: stretch; gap: 2px; }
+  .recent-row { display: flex; align-items: stretch; }
   .recent-row .recent-item { flex: 1; min-width: 0; }
-  .recent-compare {
-    flex: 0 0 auto;
-    width: 26px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--text-muted, inherit);
-    cursor: pointer;
-    font-size: 13px;
-    line-height: 1;
-    opacity: 0.55;
-  }
-  .recent-compare:hover { opacity: 1; }
-  .recent-compare.on {
-    opacity: 1;
-    border-color: var(--accent, #2a7);
-    color: var(--accent, #2a7);
-    background: color-mix(in srgb, var(--accent, #2a7) 12%, transparent);
-  }
 </style>

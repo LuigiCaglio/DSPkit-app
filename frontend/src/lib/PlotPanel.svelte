@@ -3,7 +3,7 @@
   import PlotCanvas from './PlotCanvas.svelte'
   import ResizablePane from './ResizablePane.svelte'
   import { plotTheme, themeState } from './theme.svelte.js'
-  import { buildPlot, buildPhasePlot, buildPairOverlay, buildExplorer, buildComparison,
+  import { buildPlot, buildPhasePlot, buildPairOverlay, buildExplorer,
            isDownsampledFor, MAX_PLOT_POINTS, HEATMAP_SCALES, LOG_Y_TABS,
            buildBlackmanTukey } from './plotSpec.js'
   import { nearestIndex, spectrumAt, envelopeAt, describeResolution } from './explorer.js'
@@ -30,15 +30,8 @@
   let overview = $derived(plotData?.overview ?? null)
   let explorer = $derived(plotData?.explorer ?? null)
   let overlay  = $derived(plotData?.overlay ?? null)
-  // {comparison: {items}} — the same analysis run against two datasets. It
-  // rides the ordinary single-chart path rather than getting a branch of its
-  // own, because that is all it is: one chart, with more traces on it.
-  let comparison = $derived(plotData?.comparison ?? null)
   let single   = $derived(
-    plotData && !grid && !overview && !overlay && !explorer && !comparison
-      ? plotData : null)
-  let comparisonFailures = $derived(
-    comparison ? comparison.items.filter(i => i.error) : [])
+    plotData && !grid && !overview && !overlay && !explorer ? plotData : null)
 
   // ── explorer: the picked time and frequency ────────────────────────────────
   // Slices are taken from the surface already in memory, so picking costs a
@@ -511,12 +504,7 @@
   })
 
   let mainSpec = $derived(
-    comparison
-      ? buildComparison(activeTab, comparison.items, {
-          ...baseOpts,
-          xRange: zoomable ? xRange : null,
-        })
-    : single
+    single
       ? buildPlot(activeTab, shownSingle, {
           ...baseOpts,
           xRange: zoomable ? xRange : null,
@@ -1196,12 +1184,6 @@
       {/snippet}
     </ResizablePane>
 
-    <!-- One dataset failing must not read as the other one being wrong. -->
-    {#if comparisonFailures.length}
-      <div class="ov-fail">
-        {comparisonFailures.map(f => `${f.label}: ${f.error}`).join('; ')}
-      </div>
-    {/if}
 
     <!-- spectrum from the autocorrelation, sharing the frequency axis -->
     {#if btSpec}

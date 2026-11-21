@@ -44,28 +44,6 @@ export const SCOPE = {
 
 export const scopeOf = (tab) => SCOPE[tab] ?? 'multi'
 
-/**
- * Tabs where overlaying a second dataset means something.
- *
- * The bar is deliberately high. A comparison is only honest when the two
- * results live on the same axis and the same quantity: a spectrum against a
- * spectrum, a response spectrum against a response spectrum. That rules out
- * the heatmaps (two surfaces cannot share one pair of axes), the explorer,
- * and the small-multiples grid, which already spends the visual budget on
- * channels. It also rules out raw time series — two records are almost never
- * aligned in time, so the overlay would imply a correspondence that is not
- * there.
- *
- * `peaks` is left out for a softer reason: its markers are the point of the
- * chart, and two sets of them on one axis is a mess rather than a comparison.
- */
-export const COMPARABLE = new Set([
-  'fft', 'psd', 'autocorrelation', 'envelope',
-  'response_spectrum', 'fdd', 'predictability',
-])
-
-export const isComparable = (tab) => COMPARABLE.has(tab)
-
 /** Sentinel for "run this single-channel analysis on every selected channel". */
 export const ALL_CHANNELS = 'all'
 

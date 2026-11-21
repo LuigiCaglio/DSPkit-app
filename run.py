@@ -15,8 +15,9 @@ Port selection, in order:
 of other tools want it. Falling back automatically means a busy port is never
 the user's problem; being explicit is still possible when it matters.
 
-If DSPkit itself is already running, this opens a tab pointing at it rather than
-starting a second server, which would keep its own separate session store.
+If DSPkit itself is already running, this opens another, empty tab on it rather
+than starting a second server, which would keep its own separate session store.
+That is how several records are open at once: one tab each, one server.
 """
 
 import json
@@ -129,7 +130,7 @@ def main():
     url = url_for(port)
 
     if running:
-        print(f"  DSPkit is already running at {url} — opening a tab.")
+        print(f"  DSPkit is already running at {url} — opening another tab.")
         if target:
             # The running server consumed its launch target at startup, so there
             # is nothing to hand this to. Say so, rather than opening the app and
@@ -137,7 +138,9 @@ def main():
             print(f"  Open '{Path(target).name}' from that window — the file "
                   "picker and Recent files are in the left sidebar.")
         if open_browser:
-            webbrowser.open(url)
+            # ?new starts the tab empty, ready for a different record, instead
+            # of on the file the first tab already has open.
+            webbrowser.open(f"{url}/?new")
         return
 
     env = dict(os.environ)
