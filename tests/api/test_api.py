@@ -986,6 +986,25 @@ def test_engine_stop_needs_supervisor(base, r):
     r.check(st == 200 and h.get("restartable") is False, "server still up, reports not restartable")
 
 
+def test_nan_becomes_null(base, r):
+    """JSON has no NaN. One in a response (an EFDD damping that cannot be
+    fitted, statistics of a dead channel) used to turn the whole response into
+    a plain-text 500 that the page reported as "could not reach DSPkit"."""
+    r.section("NaN in a result is sent as null, not a crash")
+    rows = ["t,dead,live"] + [f"{i/100:.2f},0.0,{(i * 7919) % 101 / 50 - 1:.4f}" for i in range(2000)]
+    st, sess = post(base, "/api/session/create", {},
+                    {"file": ("dead_channel.csv", chr(10).join(rows).encode())})
+    if not r.check(st == 200, "session with a constant channel"):
+        return
+    f = base_fields(sess, [1])
+    st, d = post(base, "/api/indicators", {**f, "signal_col": 1, "segment_duration": 2.0})
+    r.check(st == 200, "windowed statistics of a dead channel answers 200", str(st))
+    r.check(st == 200 and all(v is None for v in d["w_crest"])
+            and all(v is None for v in d["w_kurtosis"]),
+            "undefined values come back as null")
+    r.check(st == 200 and all(v == 0 for v in d["w_rms"]), "defined ones are untouched")
+
+
 def main(base):
     r = Results()
     print(f"API tests against {base}")
@@ -1014,6 +1033,7 @@ def main(base):
     test_spectral_cube_endpoints(base, sess, r)
     test_windowed_statistics(base, sess, r)
     test_engine_stop_needs_supervisor(base, r)
+    test_nan_becomes_null(base, r)
     return r.report()
 
 

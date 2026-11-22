@@ -18,13 +18,39 @@ from typing import Optional
 import numpy as np
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from scipy.signal import get_window
 
 import dspkit as dsp
 
-app = FastAPI(title="DSPkit GUI API")
+
+def _finite_or_none(o):
+    """Replace NaN / inf floats anywhere in a JSON-able structure with None."""
+    if isinstance(o, float):
+        return o if np.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _finite_or_none(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_finite_or_none(v) for v in o]
+    return o
+
+
+class SafeJSONResponse(JSONResponse):
+    """JSON has no NaN. The default encoder raises on one *after* the endpoint
+    has returned, outside its error handling, and the page then saw a
+    plain-text 500 ("could not reach DSPkit"). Here a NaN or inf anywhere in a
+    response becomes null. The fast path is unchanged; the walk only runs when
+    the plain encode fails."""
+
+    def render(self, content) -> bytes:
+        try:
+            return super().render(content)
+        except ValueError:
+            return super().render(_finite_or_none(content))
+
+
+app = FastAPI(title="DSPkit GUI API", default_response_class=SafeJSONResponse)
 
 _ALLOWED_ORIGINS = [
     "http://localhost:5173",
@@ -305,9 +331,23 @@ async def example_data_download(example_id: str):
 
 
 def to_list(arr) -> list:
+    """Array to JSON-safe list. NaN and +/-inf become None (JSON null).
+
+    JSON has no NaN, and the response encoder refuses it *after* the endpoint
+    has returned, outside its try block: one NaN anywhere (an EFDD damping
+    that could not be fitted, a 0/0 coherence) turned the whole response into
+    a plain-text 500, which the page reported as "could not reach DSPkit".
+    Null draws as a gap in a plot and as a dash in a table.
+    """
     a = np.asarray(arr)
     if np.iscomplexobj(a):
         a = np.abs(a)
+    if a.dtype.kind == "f":
+        bad = ~np.isfinite(a)
+        if bad.any():
+            o = a.astype(object)
+            o[bad] = None
+            return o.tolist()
     return a.tolist()
 
 
