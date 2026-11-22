@@ -149,7 +149,7 @@
     ]},
     { id: 'statistics',    label: 'Statistics',     tabs: [
       { id: 'statistics', label: 'Distributions' },
-      { id: 'indicators', label: 'SHM Indicators' },
+      { id: 'indicators', label: 'Windowed statistics' },
     ]},
   ]
 
@@ -709,6 +709,47 @@
     runAbort?.abort()
     runAbort = new AbortController()
     return { seq: ++runSeq, signal: runAbort.signal }
+  }
+
+  /**
+   * Force-stop whatever is computing. Aborting the requests frees the page but
+   * not the server, whose worker threads keep going until numpy returns; so
+   * the server is restarted (backend engine_stop, run.py restarts it). The
+   * session reloads from disk on the next request. Affects every open tab.
+   */
+  let stopping = $state(false)
+  async function stopComputation() {
+    if (stopping) return
+    stopping = true
+    beginRun()                 // abort this tab's requests; late results are ignored
+    loading = false
+    plotData = null
+    plotError = 'Stopping…'
+    try {
+      const res = await fetch(`/api/engine/stop`, { method: 'POST' })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        plotError = `Stopped waiting, but the computation may still be running on the server: ${d.detail ?? res.status}`
+        return
+      }
+      // Wait for the old process to go and the new one to answer.
+      await new Promise(r => setTimeout(r, 800))
+      for (let i = 0; i < 60; i++) {
+        try {
+          const h = await fetch(`/api/health`, { cache: 'no-store' })
+          if (h.ok) {
+            plotError = 'Stopped. Change a setting or press Run to compute again.'
+            return
+          }
+        } catch { /* still restarting */ }
+        await new Promise(r => setTimeout(r, 500))
+      }
+      plotError = 'Stopped, but the engine did not come back. Check the terminal DSPkit runs in.'
+    } catch (e) {
+      plotError = `Could not reach the server to stop it: ${e}`
+    } finally {
+      stopping = false
+    }
   }
 
   // The last request issued, so changing preprocessing can replay it verbatim.
@@ -1402,6 +1443,7 @@ settings were restored from the last time this file was open.">
             onFddPick={fddPick} onFddUnpick={fddUnpick}
             onFddClear={fddClear} onFddRun={runFddVectors}
             {onViewChange} {viewFetching} {fetchFullData} {fetchFullGrid}
+            onStop={stopComputation}
           />
         {/if}
       </div>

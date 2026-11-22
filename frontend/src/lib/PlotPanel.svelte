@@ -20,6 +20,7 @@
     fddNVec = $bindable(1),
     onFddPick = null, onFddUnpick = null, onFddClear = null, onFddRun = null,
     onViewChange = null, viewFetching = false, fetchFullData = null, fetchFullGrid = null,
+    onStop = null,
   } = $props()
 
   // Three shapes arrive here:
@@ -647,10 +648,12 @@
         rows.push([d.peak_freqs[i], d.peak_values[i], d.prominences[i], d.bandwidths[i], d.q_factors[i]])
 
     } else if (tab === 'indicators') {
-      headers = ['time_s', 'rms', 'energy', 'dominant_freq_Hz']
-      const n = Math.max(d.rms_times.length, d.energy_times.length, d.freq_times.length)
-      for (let i = 0; i < n; i++)
-        rows.push([d.rms_times[i] ?? '', d.rms_values[i] ?? '', d.energy_values[i] ?? '', d.dominant_freqs[i] ?? ''])
+      headers = ['window_centre_s', withUnit('rms', units.focus ?? ''), withUnit('mean', units.focus ?? ''),
+                 withUnit('peak', units.focus ?? ''), 'crest_factor',
+                 d.excess ? 'excess_kurtosis' : 'kurtosis', 'dominant_freq_Hz', 'spectral_entropy']
+      for (let i = 0; i < d.times.length; i++)
+        rows.push([d.times[i], d.w_rms[i], d.w_mean[i], d.w_peak[i], d.w_crest[i],
+                   d.w_kurtosis[i], d.w_dominant_freq[i], d.w_entropy[i]])
 
     } else if (tab === 'fdd') {
       // sv1_sv2_dB travels with the export: a mode list pasted into a report is
@@ -961,7 +964,7 @@
   {#if explorer}
     <div class="xp-wrap">
       {#if loading}
-        <div class="plot-overlay"><div class="spinner"></div><div class="plot-overlay-text">Computing…</div></div>
+        <div class="plot-overlay"><div class="spinner"></div><div class="plot-overlay-text">Computing…</div>{#if onStop}<button class="stop-btn" onclick={onStop} title="Force-stop: restarts the computing engine. Every computation in progress, in every tab, is dropped; the open record reloads by itself.">Stop</button>{/if}</div>
       {/if}
 
       <div class="xp-bar">
@@ -1004,7 +1007,7 @@
   {:else if overview}
     <div class="stack-scroll">
       {#if loading}
-        <div class="plot-overlay"><div class="spinner"></div><div class="plot-overlay-text">Computing…</div></div>
+        <div class="plot-overlay"><div class="spinner"></div><div class="plot-overlay-text">Computing…</div>{#if onStop}<button class="stop-btn" onclick={onStop} title="Force-stop: restarts the computing engine. Every computation in progress, in every tab, is dropped; the open record reloads by itself.">Stop</button>{/if}</div>
       {/if}
 
       <section class="ov-block">
@@ -1113,7 +1116,7 @@
           {#if loading}
             <div class="plot-overlay">
               <div class="spinner"></div>
-              <div class="plot-overlay-text">Computing…</div>
+              <div class="plot-overlay-text">Computing…</div>{#if onStop}<button class="stop-btn" onclick={onStop} title="Force-stop: restarts the computing engine. Every computation in progress, in every tab, is dropped; the open record reloads by itself.">Stop</button>{/if}
             </div>
           {/if}
           <PlotCanvas spec={overlaySpec} />
@@ -1134,7 +1137,7 @@
   {:else if grid}
     <div class="stack-scroll">
       {#if loading}
-        <div class="plot-overlay"><div class="spinner"></div><div class="plot-overlay-text">Computing…</div></div>
+        <div class="plot-overlay"><div class="spinner"></div><div class="plot-overlay-text">Computing…</div>{#if onStop}<button class="stop-btn" onclick={onStop} title="Force-stop: restarts the computing engine. Every computation in progress, in every tab, is dropped; the open record reloads by itself.">Stop</button>{/if}</div>
       {/if}
       <div class="plot-grid">
         {#each gridSpecs as cell (cell.name)}
@@ -1166,7 +1169,7 @@
           {#if loading}
             <div class="plot-overlay">
               <div class="spinner"></div>
-              <div class="plot-overlay-text">Computing…</div>
+              <div class="plot-overlay-text">Computing…</div>{#if onStop}<button class="stop-btn" onclick={onStop} title="Force-stop: restarts the computing engine. Every computation in progress, in every tab, is dropped; the open record reloads by itself.">Stop</button>{/if}
             </div>
           {/if}
           {#if !plotData && !loading && !plotError}

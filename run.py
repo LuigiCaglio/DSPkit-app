@@ -32,6 +32,7 @@ import webbrowser
 from pathlib import Path
 
 DEFAULT_PORT = 8000
+ENGINE_RESTART_CODE = 75   # must match backend/main.py
 MAX_PORT_TRIES = 20
 BACKEND_DIR = Path(__file__).parent / "backend"
 
@@ -147,19 +148,33 @@ def main():
     if target:
         env["DSPKIT_OPEN_FILE"] = target
 
+    # The server may ask to be restarted (the Stop button, backend/main.py
+    # engine_stop): it exits with ENGINE_RESTART_CODE and is started again here.
+    env["DSPKIT_SUPERVISED"] = "1"
+
+    def start():
+        return subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "main:app",
+             "--host", "127.0.0.1", "--port", str(port)],
+            cwd=BACKEND_DIR,
+            env=env,
+        )
+
     print(f"  DSPkit is at {url}")
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "main:app",
-         "--host", "127.0.0.1", "--port", str(port)],
-        cwd=BACKEND_DIR,
-        env=env,
-    )
+    proc = start()
     if open_browser:
         # Give uvicorn a moment to start before opening the browser
         time.sleep(1.5)
         webbrowser.open(url)
     try:
-        proc.wait()
+        while True:
+            code = proc.wait()
+            if code != ENGINE_RESTART_CODE:
+                break
+            print("  Computation stopped from the app; restarting the engine.")
+            # The launch file was opened the first time; don't open it again.
+            env.pop("DSPKIT_OPEN_FILE", None)
+            proc = start()
     except KeyboardInterrupt:
         proc.terminate()
 

@@ -626,6 +626,11 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
   gap: 10px;
 }
 .plot-overlay-text { font-size: 12px; color: var(--text-muted); }
+.stop-btn {
+  font-size: 12px; padding: 3px 14px; border-radius: 4px; cursor: pointer;
+  background: transparent; color: var(--danger); border: 1px solid var(--danger);
+}
+.stop-btn:hover { background: var(--danger); color: var(--bg-base); }
 .plot-placeholder {
   display: flex;
   align-items: center;
