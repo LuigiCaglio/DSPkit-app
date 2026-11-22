@@ -216,7 +216,36 @@ async def health():
     any HTTP server answers *something*, and a 404 was being read as "DSPkit is
     already running".
     """
-    return {"app": "dspkit-app", "ok": True}
+    return {"app": "dspkit-app", "ok": True,
+            "restartable": os.environ.get("DSPKIT_SUPERVISED") == "1"}
+
+
+# ─── force stop ───────────────────────────────────────────────────────────────
+#
+# A computation running in a worker thread cannot be interrupted from Python:
+# numpy and scipy hold the thread until they return, and aborting the HTTP
+# request only stops the browser waiting for it. The one reliable stop is to
+# end the process. run.py starts the server as a child and restarts it at once
+# when it exits with ENGINE_RESTART_CODE; sessions come back from disk on the
+# next request (get_session rehydrates), so the open record survives. Every
+# computation in flight, in every tab, is dropped, and the in-memory caches go.
+
+ENGINE_RESTART_CODE = 75
+
+
+@app.post("/api/engine/stop")
+async def engine_stop(request: Request):
+    # async on purpose: it runs on the event loop, so it is served even when
+    # every threadpool worker is stuck in a computation.
+    _require_local_origin(request)
+    if os.environ.get("DSPKIT_SUPERVISED") != "1":
+        raise HTTPException(
+            status_code=409,
+            detail="This server was not started by run.py, so nothing would "
+                   "restart it. Stop it from its terminal instead.")
+    # Exit just after the response has gone out.
+    threading.Timer(0.3, lambda: os._exit(ENGINE_RESTART_CODE)).start()
+    return {"stopping": True}
 
 
 # ─── about ────────────────────────────────────────────────────────────────────
@@ -1143,6 +1172,18 @@ def apply_preprocessing(
     return x, fs, times
 
 
+# Preprocessed channels, kept so that switching tabs or channels does not
+# re-run the filters. Keyed on id(parsed), which changes when the session is
+# re-parsed, plus every preprocessing parameter. Bounded by memory, oldest out.
+_PP_CACHE: dict = {}
+_PP_CACHE_BYTES = 768 * 2**20
+
+
+def _pp_key(parsed, time_col, signal_col, fs_manual, pp):
+    return (id(parsed), time_col, signal_col, fs_manual,
+            tuple(sorted(vars(pp).items())))
+
+
 def get_preprocessed(
     parsed: dict,
     time_col: int,
@@ -1150,9 +1191,61 @@ def get_preprocessed(
     fs_manual: Optional[float],
     pp: PreprocParams,
 ) -> tuple[np.ndarray, float, np.ndarray]:
-    """Column extraction + preprocessing in one call. Returns (x, fs, times)."""
-    x, times, fs = get_signal_times_fs(parsed, time_col, signal_col, fs_manual)
-    return apply_preprocessing(x, fs, times, pp)
+    """Column extraction + preprocessing in one call. Returns (x, fs, times).
+
+    Cached per channel and preprocessing. Copies are returned, so a caller
+    that modifies its arrays in place cannot corrupt the cache.
+    """
+    key = _pp_key(parsed, time_col, signal_col, fs_manual, pp)
+    with _STATE_LOCK:
+        hit = _PP_CACHE.get(key)
+        if hit is not None:
+            _PP_CACHE[key] = _PP_CACHE.pop(key)        # most recent last
+    if hit is None:
+        x, times, fs = get_signal_times_fs(parsed, time_col, signal_col, fs_manual)
+        hit = apply_preprocessing(x, fs, times, pp)
+        with _STATE_LOCK:
+            _PP_CACHE[key] = hit
+            total = sum(v[0].nbytes + v[2].nbytes for v in _PP_CACHE.values())
+            while total > _PP_CACHE_BYTES and len(_PP_CACHE) > 1:
+                old = _PP_CACHE.pop(next(iter(_PP_CACHE)))
+                total -= old[0].nbytes + old[2].nbytes
+    x, fs, times = hit
+    return x.copy(), fs, times.copy()
+
+
+# Spectral cubes (DSPkit >= 0.7): the cross-spectral matrix of the selected
+# channels, estimated once and shared by PSD, CSD, coherence, the coherence
+# matrix, multiple and partial coherence and FDD. Before, each of those ran
+# its own Welch, and the matrix ones once per channel pair: on Torroja rec1
+# (15 ch x 480,000) FDD took 26 s and the coherence matrix 39 s; a cube takes
+# about 1 s to build and every view after that well under a second.
+# A request for a subset of a cached cube's channels is served from it.
+_CUBE_CACHE: dict = {}
+_CUBE_CACHE_SIZE = 6
+
+
+def get_cube(parsed, session_id, time_col, cols, fs_manual, pp,
+             window="hann", nperseg=None, noverlap=None):
+    """Return (cube on `cols` in that order, fs, labels). Density scaling."""
+    cols = [int(c) for c in cols]
+    params = (id(parsed), time_col, fs_manual, tuple(sorted(vars(pp).items())),
+              window, nperseg, noverlap)
+    if session_id:
+        with _STATE_LOCK:
+            for (p_, cset), (cube, fs_, ccols) in reversed(list(_CUBE_CACHE.items())):
+                if p_ == params and set(cols) <= cset:
+                    sub = cube.select([ccols.index(c) for c in cols])
+                    return sub, fs_, sub.labels
+    data, fs_, _t, labels = get_multichannel(parsed, time_col, cols, fs_manual, pp)
+    cube = dsp.spectral_cube(data, fs_, window=window, nperseg=nperseg,
+                             noverlap=noverlap, labels=labels)
+    if session_id:
+        with _STATE_LOCK:
+            _CUBE_CACHE[(params, frozenset(cols))] = (cube, fs_, list(cols))
+            while len(_CUBE_CACHE) > _CUBE_CACHE_SIZE:
+                _CUBE_CACHE.pop(next(iter(_CUBE_CACHE)))
+    return cube, fs_, labels
 
 
 # ─── /api/session ────────────────────────────────────────────────────────────
@@ -1880,13 +1973,19 @@ def spectral_psd(
                     "ar_orders": orders,
                     "ar_selected": ar_criterion if not ar_order else None}
 
-        freqs, _ = dsp.psd(x0, fs_, window=window, nperseg=nperseg, noverlap=noverlap, scaling=scaling)
-        signals = []
-        for col in cols:
-            x, _, _ = get_preprocessed(parsed, time_col, col, fs, pp)
-            _, Pxx = dsp.psd(x, fs_, window=window, nperseg=nperseg, noverlap=noverlap, scaling=scaling)
-            signals.append({"name": parsed["column_names"][col], "Pxx": to_list(Pxx)})
-        return {"freqs": to_list(freqs), "signals": signals, "method": "welch"}
+        if scaling not in ("density", "spectrum"):
+            raise ValueError(f"{scaling!r} is not a PSD scaling; use 'density' or 'spectrum'.")
+        cube, _, _ = get_cube(parsed, session_id, time_col, cols, fs, pp,
+                              window=window, nperseg=nperseg, noverlap=noverlap)
+        P = cube.psd()
+        if scaling == "spectrum":
+            # density -> power spectrum: they differ only by the window's
+            # equivalent noise bandwidth, so one cube serves both.
+            w = get_window(window, cube.nperseg)
+            P = P * (cube.fs * np.sum(w ** 2) / np.sum(w) ** 2)
+        signals = [{"name": parsed["column_names"][col], "Pxx": to_list(P[i])}
+                   for i, col in enumerate(cols)]
+        return {"freqs": to_list(cube.freqs), "signals": signals, "method": "welch"}
     except HTTPException:
         raise
     except (ValueError, TypeError, ImportError, AttributeError, KeyError) as e:
@@ -2115,6 +2214,11 @@ def spectral_cross_correlation(
         raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
+def _pair(i: int, j: int) -> list[int]:
+    """Channels for a two-signal cube; one channel when x and y are the same."""
+    return [int(i)] if int(i) == int(j) else [int(i), int(j)]
+
+
 @app.post("/api/spectral/csd")
 def spectral_csd(
     file: Optional[UploadFile] = None,
@@ -2132,9 +2236,10 @@ def spectral_csd(
 ):
     try:
         parsed = resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
-        y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
-        freqs, Pxy = dsp.csd(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
+        cube, _, _ = get_cube(parsed, session_id, time_col,
+                              _pair(signal_col_x, signal_col_y), fs, pp,
+                              window=window, nperseg=nperseg, noverlap=noverlap)
+        freqs, Pxy = cube.freqs, cube.csd(0, -1)
         return {"freqs": to_list(freqs), "magnitude": to_list(np.abs(Pxy)), "phase_deg": to_list(np.angle(Pxy, deg=True))}
     except HTTPException:
         raise
@@ -2161,10 +2266,10 @@ def spectral_coherence(
 ):
     try:
         parsed = resolve_parsed(file, session_id, orientation, header_row)
-        x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
-        y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
-        freqs, Cxy = dsp.coherence(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
-        _, Pxy = dsp.csd(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
+        cube, _, _ = get_cube(parsed, session_id, time_col,
+                              _pair(signal_col_x, signal_col_y), fs, pp,
+                              window=window, nperseg=nperseg, noverlap=noverlap)
+        freqs, Cxy, Pxy = cube.freqs, cube.coherence(0, -1), cube.csd(0, -1)
         return {"freqs": to_list(freqs), "Cxy": to_list(Cxy), "phase_deg": to_list(np.angle(Pxy, deg=True))}
     except HTTPException:
         raise
@@ -2781,11 +2886,11 @@ def peaks_harmonics(
         raise HTTPException(status_code=500, detail=friendly_error(e, unexpected=True))
 
 
-# ─── SHM indicators ──────────────────────────────────────────────────────────
+# ─── windowed statistics ──────────────────────────────────────────────────────
 
 
 @app.post("/api/indicators")
-def shm_indicators(
+def windowed_statistics(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2804,27 +2909,30 @@ def shm_indicators(
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         from dspkit.indicators import (
             spectral_entropy as _se, kurtosis as _kurt, skewness as _skew,
-            rms_variation as _rms_var, energy_variation as _energy_var,
-            frequency_shift as _freq_shift,
         )
+        # Whole-record values, for the header line.
         freqs_psd, Pxx = dsp.psd(x, fs_, window=window, nperseg=nperseg)
-        se = float(_se(freqs_psd, Pxx))
-        kurt = float(_kurt(x, excess=excess))
-        skew = float(_skew(x))
         seg = segment_duration if segment_duration and segment_duration > 0 else None
-        t_rms, rms_vals = _rms_var(x, fs_, segment_duration=seg)
-        t_energy, energy_vals = _energy_var(x, fs_, segment_duration=seg)
-        t_freq, dom_freqs = _freq_shift(x, fs_, segment_duration=seg)
+        w = dsp.windowed_stats(x, fs_, window_duration=seg)
+        k = w["kurtosis"] if excess else w["kurtosis"] + 3.0
         return {
-            "spectral_entropy": se,
-            "kurtosis": kurt,
-            "skewness": skew,
-            "rms_times": to_list(t_rms),
-            "rms_values": to_list(rms_vals),
-            "energy_times": to_list(t_energy),
-            "energy_values": to_list(energy_vals),
-            "freq_times": to_list(t_freq),
-            "dominant_freqs": to_list(dom_freqs),
+            "spectral_entropy": float(_se(freqs_psd, Pxx)),
+            "kurtosis": float(_kurt(x, excess=excess)),
+            "skewness": float(_skew(x)),
+            "rms": float(np.sqrt(np.mean(x ** 2))),
+            "excess": bool(excess),
+            # Per window, plotted at the window centres.
+            "times": to_list(w["times"]),
+            "w_rms": to_list(w["rms"]),
+            "w_mean": to_list(w["mean"]),
+            "w_peak": to_list(w["peak"]),
+            "w_crest": to_list(w["crest_factor"]),
+            "w_kurtosis": to_list(k),
+            "w_dominant_freq": to_list(w["dominant_freq"]),
+            "w_entropy": to_list(w["spectral_entropy"]),
+            "window_duration": float(w["window_duration"]),
+            "n_windows": int(len(w["times"])),
+            "df": float(w["df"]),
         }
     except HTTPException:
         raise
@@ -2883,9 +2991,9 @@ def multisensor_coherence_mat(
         if len(cols) < 2:
             raise ValueError("This needs at least 2 channels. Tick more of them in the sidebar.")
         parsed = resolve_parsed(file, session_id, orientation, header_row)
-        data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
-        from dspkit.multisensor import coherence_matrix as _coh_mat
-        freqs, C = _coh_mat(data, fs_, window=window, nperseg=nperseg)
+        cube, fs_, labels = get_cube(parsed, session_id, time_col, cols, fs, pp,
+                                     window=window, nperseg=nperseg)
+        freqs, C = cube.freqs, cube.coherence_matrix()
         n_ch = len(cols)
         pairs = []
         for i in range(n_ch):
@@ -2970,10 +3078,12 @@ def fdd_analyze(
         if len(cols) < 2:
             raise ValueError("This needs at least 2 channels. Tick more of them in the sidebar.")
         parsed = resolve_parsed(file, session_id, orientation, header_row)
-        data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
-        from dspkit.fdd import fdd_svd, fdd_peak_picking, fdd_mode_shapes, efdd_damping
+        cube, fs_, labels = get_cube(parsed, session_id, time_col, cols, fs, pp,
+                                     window=window, nperseg=nperseg)
+        from dspkit.fdd import fdd_peak_picking, fdd_mode_shapes, efdd_damping
 
-        freqs, S, U = fdd_svd(data, fs_, window=window, nperseg=nperseg)
+        freqs = cube.freqs
+        S, U = cube.svd()
         freq_range = None
         if freq_min is not None and freq_max is not None:
             freq_range = (freq_min, freq_max)
@@ -3382,10 +3492,11 @@ def multisensor_coherence_conditioned(
                 "Conditioned coherence needs at least 3 channels — with only two "
                 "there is nothing to condition out, so use ordinary coherence."
             )
-        data, fs_, _t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
+        cube, fs_, labels = get_cube(parsed, session_id, time_col, cols, fs, pp,
+                                     window=window, nperseg=nperseg)
 
         if mode == "partial":
-            freqs, C = dsp.partial_coherence(data, fs_, window=window, nperseg=nperseg)
+            freqs, C = cube.freqs, cube.partial_coherence()
             pairs = []
             for i in range(len(labels)):
                 for j in range(i + 1, len(labels)):
@@ -3394,7 +3505,7 @@ def multisensor_coherence_conditioned(
             return {"mode": "partial", "freqs": to_list(freqs), "pairs": pairs,
                     "labels": labels}
 
-        freqs, g2 = dsp.multiple_coherence(data, fs_, window=window, nperseg=nperseg)
+        freqs, g2 = cube.freqs, cube.multiple_coherence()
         return {"mode": "multiple", "freqs": to_list(freqs), "labels": labels,
                 "signals": [{"name": labels[i], "values": to_list(g2[i, :])}
                             for i in range(len(labels))]}
@@ -3444,10 +3555,10 @@ def fdd_vectors(
             raise ValueError("No frequencies picked. Click the plot to choose one.")
 
         parsed = resolve_parsed(file, session_id, orientation, header_row)
-        data, fs_, _t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
-
-        from dspkit.fdd import fdd_svd as _svd
-        freqs, S, U = _svd(data, fs_, window=window, nperseg=nperseg)
+        cube, fs_, labels = get_cube(parsed, session_id, time_col, cols, fs, pp,
+                                     window=window, nperseg=nperseg)
+        freqs = cube.freqs
+        S, U = cube.svd()
 
         n_ch = len(cols)
         n_vec = max(1, min(int(n_vectors), n_ch))

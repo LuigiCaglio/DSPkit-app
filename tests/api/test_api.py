@@ -902,6 +902,73 @@ def test_resample_anti_alias(base, r):
             f"30 Hz / 2 Hz power ratio {at(30) / at(2):.2e}")
 
 
+def test_spectral_cube_endpoints(base, sess, r):
+    """PSD, CSD, coherence, the coherence matrix and FDD all read one cached
+    cross-spectral matrix (DSPkit spectral_cube). They must agree with each
+    other exactly, whichever request built the cube."""
+    r.section("Spectral endpoints share one cross-spectral matrix")
+    f = base_fields(sess, [1, 2, 3, 4])
+    sp = {"window": "hann", "nperseg": 1024}
+    st, fdd = post(base, "/api/fdd/analyze", {**f, **sp})          # builds the cube
+    st2, psd = post(base, "/api/spectral/psd", {**f, **sp, "scaling": "density"})
+    r.check(st == 200 and st2 == 200, "FDD then PSD on the same cube")
+    st, sub = post(base, "/api/spectral/psd",
+                   {**base_fields(sess, [3, 1]), **sp, "scaling": "density"})
+    r.check(st == 200 and sub["signals"][0]["Pxx"] == psd["signals"][2]["Pxx"]
+            and sub["signals"][1]["Pxx"] == psd["signals"][0]["Pxx"],
+            "a subset in another order is served from the same cube")
+    st, self_csd = post(base, "/api/spectral/csd",
+                        {**f, **sp, "signal_col_x": 2, "signal_col_y": 2})
+    p2 = psd["signals"][1]["Pxx"]
+    r.check(st == 200 and max(abs(a - b) for a, b in zip(self_csd["magnitude"], p2))
+            <= 1e-9 * max(p2), "CSD of a channel with itself is its PSD")
+    st, coh = post(base, "/api/spectral/coherence",
+                   {**f, **sp, "signal_col_x": 1, "signal_col_y": 3})
+    st2, cm = post(base, "/api/multisensor/coherence_matrix", {**f, **sp})
+    pair = next(p for p in cm["pairs"] if p["label"].startswith("x1_disp") and "force1" in p["label"])
+    r.check(st == 200 and st2 == 200 and
+            max(abs(a - b) for a, b in zip(coh["Cxy"], pair["Cxy"])) < 1e-12,
+            "pair coherence equals its entry in the coherence matrix")
+    st, spec = post(base, "/api/spectral/psd", {**f, **sp, "scaling": "spectrum"})
+    ratio = [a / b for a, b in zip(spec["signals"][0]["Pxx"], psd["signals"][0]["Pxx"]) if b > 0]
+    r.check(st == 200 and max(ratio) - min(ratio) < 1e-9 * max(ratio),
+            "power spectrum is the density times one constant (the window's ENBW)",
+            f"{ratio[0]:.4g}")
+    st, fdd2 = post(base, "/api/fdd/analyze", {**f, **sp})
+    r.check(st == 200 and fdd2["S"] == fdd["S"], "FDD again from the cache is identical")
+
+
+def test_windowed_statistics(base, sess, r):
+    r.section("Windowed statistics")
+    f = base_fields(sess, [1])
+    st, d = post(base, "/api/indicators", {**f, "signal_col": 1, "segment_duration": 2.0})
+    keys = ["times", "w_rms", "w_mean", "w_peak", "w_crest", "w_kurtosis",
+            "w_dominant_freq", "w_entropy"]
+    r.check(st == 200 and all(len(d[k]) == d["n_windows"] for k in keys),
+            "one value per window in every series", str(d.get("n_windows")))
+    r.check(st == 200 and d["n_windows"] == 10 and abs(d["window_duration"] - 2.0) < 1e-3,
+            "20 s record in 2 s windows gives 10", f"{d.get('window_duration')}")
+    r.check(all(c >= 1.0 for c in d["w_crest"]), "crest factor is at least 1")
+    r.check(all(0.0 <= e <= 1.0 for e in d["w_entropy"]), "spectral entropy in [0, 1]")
+    st, d3 = post(base, "/api/indicators",
+                  {**f, "signal_col": 1, "segment_duration": 2.0, "excess": "false"})
+    r.check(st == 200 and all(abs(a + 3 - b) < 1e-9 for a, b in zip(d["w_kurtosis"], d3["w_kurtosis"])),
+            "plain kurtosis is excess + 3")
+    st, auto = post(base, "/api/indicators", {**f, "signal_col": 1})
+    r.check(st == 200 and auto["n_windows"] == 100, "default: 100 windows", str(auto.get("n_windows")))
+
+
+def test_engine_stop_needs_supervisor(base, r):
+    """The test backend is plain uvicorn: nothing would restart it, so the
+    stop route must refuse instead of killing the server."""
+    r.section("Force stop")
+    st, d = post(base, "/api/engine/stop", {})
+    r.check(st == 409, "refused when not started by run.py", str(st))
+    from http_util import get
+    st, h = get(base, "/api/health")
+    r.check(st == 200 and h.get("restartable") is False, "server still up, reports not restartable")
+
+
 def main(base):
     r = Results()
     print(f"API tests against {base}")
@@ -927,6 +994,9 @@ def main(base):
     test_mat_file(base, sess, r)
     test_resample_anti_alias(base, r)
     test_session_errors(base, sess, r)
+    test_spectral_cube_endpoints(base, sess, r)
+    test_windowed_statistics(base, sess, r)
+    test_engine_stop_needs_supervisor(base, r)
     return r.report()
 
 
