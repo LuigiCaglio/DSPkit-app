@@ -671,6 +671,23 @@ def test_show_original_toggle(base, sess, r):
             and plain["signals"][0]["signal_proc"] is not None,
             "with no preprocessing the trace is sent once, not twice")
 
+    # A trim must shorten the original too. Sent whole, the ghost stretched the
+    # time axis back to the full record and the trim looked as if it had not
+    # been applied (Torroja trimmed to 0-500 s still plotted to 4800 s).
+    trim = "?win_start=2&win_end=5&win_unit=time"
+    st, tr = post(base, "/api/signal/timeseries" + trim + "&lp_cutoff=100",
+                  {**f, "include_raw": "true"})
+    r.check(st == 200 and tr["times_raw"] is not None
+            and tr["times_raw"][0] >= 2.0 - 1e-6 and tr["times_raw"][-1] <= 5.0 + 1e-6
+            and tr["times_proc"][0] >= 2.0 - 1e-6 and tr["times_proc"][-1] <= 5.0 + 1e-6,
+            "trim + filter: original and processed both span the trim only",
+            f"raw {tr['times_raw'][0]:.2f}-{tr['times_raw'][-1]:.2f} s" if st == 200 else str(st))
+    st, only = post(base, "/api/signal/timeseries" + trim, {**f, "include_raw": "true"})
+    r.check(st == 200 and only["times_raw"] is None and only["preprocessed"]
+            and only["n_proc"] == 3 * 1024,
+            "trim alone: no ghost (it would sit under the trace), 3 s of samples",
+            str(only.get("n_proc")) if st == 200 else str(st))
+
 
 def test_zoom_window_buys_resolution(base, sess, r):
     """A view window spends the same budget on a shorter span."""

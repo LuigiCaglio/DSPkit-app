@@ -1746,11 +1746,26 @@ def signal_timeseries(
         # Process first column to get processed time axis
         x0_proc, fs_proc, t_proc = apply_preprocessing(x0.copy(), fs_raw, t_raw.copy(), pp)
 
-        preprocessed = any(v is not None for v in [
-            pp.win_start, pp.win_end, pp.detrend_order,
-            pp.hp_cutoff, pp.lp_cutoff, pp.notch_freq, pp.target_fs,
-        ])
-        want_raw = bool(include_raw) and preprocessed
+        trimmed = pp.win_start is not None or pp.win_end is not None
+        # Steps that change the values, as opposed to the trim, which only
+        # selects them. The ghost "original" trace is only worth sending when
+        # one of these is on: after a trim alone it would sit exactly under
+        # the processed trace.
+        changes_values = any(v is not None for v in [
+            pp.detrend_order, pp.hp_cutoff, pp.lp_cutoff, pp.notch_freq, pp.target_fs,
+        ]) or bool(pp.calculus_order)
+        preprocessed = trimmed or changes_values
+        want_raw = bool(include_raw) and changes_values
+
+        # The original is "before filtering", not "before trimming": cut to the
+        # same span as the processed record. Sent whole, it stretched the time
+        # axis back to the full record (Torroja trimmed to 0-500 s still showed
+        # 0-4800 s), so the trim looked as if it had not been applied.
+        if trimmed and len(t_proc):
+            keep = (t_raw >= t_proc[0]) & (t_raw <= t_proc[-1])
+        else:
+            keep = slice(None)
+        t_raw_c = t_raw[keep]
 
         raw_series, proc_series, names = [], [], []
         for col in cols:
@@ -1758,7 +1773,7 @@ def signal_timeseries(
             x_proc, _, _ = apply_preprocessing(x_raw.copy(), fs_raw, t_raw.copy(), pp)
             names.append(parsed["column_names"][col])
             proc_series.append(x_proc)
-            raw_series.append(x_raw)
+            raw_series.append(x_raw[keep])
 
         n_total = len(t_proc)
 
@@ -1784,7 +1799,7 @@ def signal_timeseries(
         }
 
         if want_raw:
-            t_raw_v, raw_v = window(t_raw, raw_series)
+            t_raw_v, raw_v = window(t_raw_c, raw_series)
             t_raw_d, raw_d, dec_raw = decimate_xy(t_raw_v, raw_v, max_points)
             result["times_raw"] = to_list(t_raw_d)
             result["decimated"] = bool(dec_proc or dec_raw)
