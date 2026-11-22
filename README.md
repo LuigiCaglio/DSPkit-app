@@ -150,4 +150,4 @@ Open work is tracked in [`TODO.md`](TODO.md).
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). The built frontend bundles Plotly.js, Svelte and two small MIT packages; their notices are in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
