@@ -13,12 +13,22 @@
   let recentOpen = $state(false)
   let busyId = $state(null)
 
-  async function fetchExamples() {
+  // Asked until the server answers. The page can come up before the backend
+  // does (it takes ~7 s to import scipy; a browser can show a cached page
+  // meanwhile), and a single failed fetch used to hide the example for good.
+  let examplesTimer = null
+  let examplesLoaded = false   // plain variable: not a dependency of the effect
+  async function fetchExamples(tries = 60) {
+    clearTimeout(examplesTimer)
     try {
-      const res = await fetch('/api/example-data')
+      const res = await fetch('/api/example-data', { cache: 'no-store' })
+      if (!res.ok) throw new Error(String(res.status))
       const data = await res.json()
       examples = data.examples ?? []
-    } catch { /* ignore */ }
+      examplesLoaded = true
+    } catch {
+      if (tries > 1) examplesTimer = setTimeout(() => fetchExamples(tries - 1), 1000)
+    }
   }
 
   /**
@@ -33,7 +43,11 @@
     } catch { recent = [] }
   }
 
-  fetchExamples()
+  // On load, and whenever the sidebar is back to "no file open" before the
+  // list has ever arrived.
+  $effect(() => {
+    if (!hasFile && !examplesLoaded) fetchExamples()
+  })
 
   // Keyed on the session so the list is right after a file is opened, not just
   // at mount. On launch the app restores a session *after* this component
