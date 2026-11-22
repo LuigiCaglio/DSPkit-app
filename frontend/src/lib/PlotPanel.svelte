@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import PlotCanvas from './PlotCanvas.svelte'
   import ResizablePane from './ResizablePane.svelte'
   import { plotTheme, themeState } from './theme.svelte.js'
@@ -7,7 +7,7 @@
            isDownsampledFor, MAX_PLOT_POINTS, HEATMAP_SCALES, LOG_Y_TABS,
            buildBlackmanTukey } from './plotSpec.js'
   import { nearestIndex, spectrumAt, envelopeAt, describeResolution } from './explorer.js'
-  import { ZOOMABLE, HEATMAP } from './analyses.js'
+  import { ZOOMABLE, HEATMAP, X_AXIS } from './analyses.js'
   import { describeCriteria, describeEmpty, dominanceLabel } from './fdd.js'
   import { withUnit, psdUnit, csdUnit, squared, product } from './units.js'
 
@@ -20,7 +20,7 @@
     fddNVec = $bindable(1),
     onFddPick = null, onFddUnpick = null, onFddClear = null, onFddRun = null,
     onViewChange = null, viewFetching = false, fetchFullData = null, fetchFullGrid = null,
-    onStop = null,
+    onStop = null, activeCategory = null,
   } = $props()
 
   // Three shapes arrive here:
@@ -231,7 +231,20 @@
   // ── display options (local state) ───────────────────────────────────────────
   let showPhase        = $state(false)
   let normalizeSignals = $state(false)
-  let yLogScale        = $state(false)
+  // Log Y belongs to the category, not the tab: ticked on FFT it holds on PSD
+  // and Peaks, and it is remembered across tab switches and sessions. Only
+  // strictly positive quantities ever get it (LOG_Y_TABS, gated in plotSpec),
+  // so it cannot reach a waveform.
+  const LOGY_KEY = 'dspkit.logY'
+  const LOGY_DEFAULT = { spectral: true, overview: true }
+  let logYByCat = $state((() => {
+    try { return JSON.parse(localStorage.getItem(LOGY_KEY) ?? '{}') ?? {} } catch { return {} }
+  })())
+  let yLogScale = $derived(logYByCat[activeCategory] ?? LOGY_DEFAULT[activeCategory] ?? false)
+  function setLogY(v) {
+    logYByCat = { ...logYByCat, [activeCategory]: !!v }
+    try { localStorage.setItem(LOGY_KEY, JSON.stringify(logYByCat)) } catch { /* ignore */ }
+  }
 
   // Distributions: which marks to draw. Overlaying several channels' histograms
   // gets busy fast, so being able to drop to curves only is the point.
@@ -301,7 +314,6 @@
     activeTab === 'statistics' && single?.signals?.[0]?.normality ? single.signals : null)
 
   // ── PSD-specific axis controls ───────────────────────────────────────────────
-  let psdYLog = $state(true)   // default: log scale
   let psdXMin = $state('')
   let psdXMax = $state('')
   let psdYMin = $state('')
@@ -310,14 +322,11 @@
   // Reset phase panel when switching tabs
   $effect(() => { const _ = activeTab; showPhase = false })
 
-  // ...and the log-Y flag with it. It used to persist across tabs, so ticking it
-  // on FFT left it set on Time series, where it silently truncated the waveform.
-  $effect(() => { const _ = activeTab; yLogScale = false })
 
   // Reset PSD axis controls when switching away from psd tab
   $effect(() => {
     if (activeTab !== 'psd') {
-      psdXMin = ''; psdXMax = ''; psdYMin = ''; psdYMax = ''; psdYLog = true
+      psdXMin = ''; psdXMax = ''; psdYMin = ''; psdYMax = ''
     }
   })
 
@@ -356,7 +365,24 @@
   let sharedZoom = $state(true)
   let cellRanges = $state({})          // cell name -> [lo, hi], when not shared
   $effect(() => { const _ = plotData, __ = activeTab, ___ = sharedZoom; cellRanges = {} })
-  let xRange   = $state(null)
+  // The x zoom, shared by the tabs of this category with the same kind of
+  // x-axis (X_AXIS) and kept while you stay in the category; a different
+  // category starts unzoomed. Tabs without a kind keep their own zoom, which
+  // a tab change clears. A new payload no longer clears it: re-running with
+  // other settings keeps the band you were looking at.
+  let zoomStore = $state({})
+  let zoomKey = $derived(X_AXIS[activeTab] ? `axis:${X_AXIS[activeTab]}` : `tab:${activeTab}`)
+  $effect(() => { const _ = activeCategory; zoomStore = {} })
+  $effect(() => {
+    const _ = activeTab
+    untrack(() => {
+      const z = { ...zoomStore }
+      for (const k of Object.keys(z)) if (k.startsWith('tab:')) delete z[k]
+      zoomStore = z
+    })
+  })
+  let xRange = $derived(zoomStore[zoomKey] ?? null)
+  function setXRange(v) { zoomStore = { ...zoomStore, [zoomKey]: v } }
   // The zoomed window: the one just dragged, or the one the server echoes back
   // after re-fetching it (a new payload clears xRange).
   let viewRange = $derived(xRange ?? single?.view ?? null)
@@ -397,14 +423,32 @@
   )
   const applyBand = (kind) => setFilterFromRange(kind, Number(bandLo), Number(bandHi))
 
-  // A new payload or a different analysis invalidates the old window.
-  $effect(() => { const _ = plotData, __ = activeTab; xRange = null })
+  // A payload that arrives unzoomed (a fresh run, or a tab just opened) while
+  // the category holds a zoom: ask for that window, so a thinned spectrum or
+  // series comes back at full resolution. A re-fetched payload carries the
+  // window it was cut to (`view`), so this asks once and does not loop.
+  $effect(() => {
+    const z = xRange, d = single
+    if (!z || !d || !VIEW_TABS.has(activeTab) || d.view) return
+    untrack(() => onViewChange?.(z))
+  })
+
+  /** A chart spec with the shared zoom pinned on its x-axis. */
+  function withZoom(spec, range) {
+    if (!spec?.layout || !range) return spec
+    return { ...spec, layout: { ...spec.layout,
+      xaxis: { ...spec.layout.xaxis, range: [...range], autorange: false } } }
+  }
+  // The PSD's typed X range wins over the shared zoom.
+  let pinZoom = $derived(
+    !!X_AXIS[activeTab] && !!xRange &&
+    !(activeTab === 'psd' && (psdXMin !== '' || psdXMax !== '')))
 
   /** Zoom inside one grid cell: drives every cell, or just its own. */
   function onCellRelayout(name, e) {
-    if (!e) return
-    if (e['xaxis.autorange'] || e.autosize) {
-      if (sharedZoom) xRange = null
+    if (!e || !grid) return
+    if (e['xaxis.autorange']) {
+      if (sharedZoom) setXRange(null)
       else cellRanges = { ...cellRanges, [name]: null }
       onViewChange?.(null, sharedZoom ? null : name)
       return
@@ -414,7 +458,7 @@
     if (lo == null || hi == null) return
     if (sharedZoom) {
       if (xRange && Math.abs(xRange[0] - lo) < 1e-12 && Math.abs(xRange[1] - hi) < 1e-12) return
-      xRange = [lo, hi]
+      setXRange([lo, hi])
     } else {
       const cur = cellRanges[name]
       if (cur && Math.abs(cur[0] - lo) < 1e-12 && Math.abs(cur[1] - hi) < 1e-12) return
@@ -425,15 +469,22 @@
     onViewChange?.([lo, hi], sharedZoom ? null : name)
   }
 
+  // A resize makes Plotly emit {autosize: true}. It used to count as "reset
+  // zoom", so anything that changed the plot's size right after a zoom (the
+  // zoom chip appearing in the toolbar, a dragged pane) undid the zoom. Only a
+  // double-click (xaxis.autorange) resets now.
   function onRelayout(e) {
-    if (!e) return
-    if (e['xaxis.autorange'] || e.autosize) { xRange = null; onViewChange?.(null); return }
+    // No data for this tab yet: the chart is between two analyses, and any
+    // range it reports is the previous tab's. Storing it would hand that range
+    // to this tab (a frequency zoom landing on a lag axis).
+    if (!e || (!single && !grid && !overlay)) return
+    if (e['xaxis.autorange']) { setXRange(null); onViewChange?.(null); return }
     const lo = e['xaxis.range[0]'] ?? e['xaxis.range']?.[0]
     const hi = e['xaxis.range[1]'] ?? e['xaxis.range']?.[1]
     if (lo == null || hi == null) return
     // Ignore the echo of our own pinned range, which would loop.
     if (xRange && Math.abs(xRange[0] - lo) < 1e-12 && Math.abs(xRange[1] - hi) < 1e-12) return
-    xRange = [lo, hi]
+    setXRange([lo, hi])
     // The series on screen is thinned to a point budget, so zooming has to ask
     // the server for the window rather than magnifying what is already here.
     onViewChange?.(xRange)
@@ -446,7 +497,7 @@
    */
   function onOverviewTsRelayout(e) {
     if (!e) return
-    if (e['xaxis.autorange'] || e.autosize) {
+    if (e['xaxis.autorange']) {
       if (overview?.ts?.data?.view) onViewChange?.(null)
       return
     }
@@ -493,7 +544,7 @@
     colors: T.series,
     normalize: normalizeSignals,
     yLog: yLogScale,
-    psd: { yLog: psdYLog, xMin: psdXMin, xMax: psdXMax, yMin: psdYMin, yMax: psdYMax },
+    psd: { yLog: yLogScale, xMin: psdXMin, xMax: psdXMax, yMin: psdYMin, yMax: psdYMax },
     downsample: !showAllPoints,
     lagSide,
     tf: { db: tfDb, rangeDb: tfRangeDb, clipPct: tfClipPct, colorscale: tfColorscale, surface3d: tfSurface3d },
@@ -504,17 +555,17 @@
     showKde,
   })
 
-  let mainSpec = $derived(
-    single
-      ? buildPlot(activeTab, shownSingle, {
-          ...baseOpts,
-          xRange: zoomable ? xRange : null,
-          band: filterBand,
-          dragmode: picking ? 'select' : null,
-          response: filterResponse,
-        })
-      : null
-  )
+  let mainSpec = $derived.by(() => {
+    if (!single) return null
+    const spec = buildPlot(activeTab, shownSingle, {
+      ...baseOpts,
+      xRange: zoomable ? xRange : null,
+      band: filterBand,
+      dragmode: picking ? 'select' : null,
+      response: filterResponse,
+    })
+    return pinZoom ? withZoom(spec, xRange) : spec
+  })
   // The autocorrelation tab can carry a second, linked panel: the spectrum
   // estimated from that autocorrelation.
   let btSpec = $derived(
@@ -527,7 +578,8 @@
   // Several comparisons against one reference, drawn on a single axis.
   let overlaySpec = $derived(
     overlay
-      ? buildPairOverlay(activeTab, overlay.items, { ...baseOpts, ref: overlay.ref })
+      ? (pinZoom ? withZoom : (s) => s)(
+          buildPairOverlay(activeTab, overlay.items, { ...baseOpts, ref: overlay.ref }), xRange)
       : null
   )
   let overlayFailures = $derived(overlay ? overlay.items.filter(i => i.error) : [])
@@ -537,10 +589,10 @@
       ? grid.map(r => ({
           name: r.name,
           error: r.error,
-          spec: r.data ? buildPlot(activeTab, r.data, {
+          spec: r.data ? (pinZoom && sharedZoom ? withZoom : (s) => s)(buildPlot(activeTab, r.data, {
             ...baseOpts, cell: true, title: r.name,
             xRange: zoomable ? (sharedZoom ? xRange : (cellRanges[r.name] ?? null)) : null,
-          }) : null,
+          }), xRange) : null,
         }))
       : []
   )
@@ -799,8 +851,10 @@
         <label><input type="checkbox" bind:checked={showPhase} /> Phase</label>
       {/if}
       <label><input type="checkbox" bind:checked={normalizeSignals} /> Normalize</label>
-      {#if LOG_Y_TABS.has(activeTab) && activeTab !== 'psd' && !overview}
-        <label><input type="checkbox" bind:checked={yLogScale} /> Log Y</label>
+      {#if LOG_Y_TABS.has(activeTab) && !overview}
+        <label title="Applies to every tab of this category, and is remembered">
+          <input type="checkbox" checked={yLogScale}
+                 onchange={(e) => setLogY(e.currentTarget.checked)} /> Log Y</label>
       {/if}
       {#if activeTab === 'random_decrement' && single?.levels}
         <label title="Divide each signature by its own peak. For a linear system the shapes then coincide; separation means they do not.">
@@ -831,7 +885,7 @@
         </label>
         {#if gridZoomed || (sharedZoom ? xRange : Object.values(cellRanges).some(Boolean))}
           <button class="btn-ghost"
-                  onclick={() => { xRange = null; cellRanges = {}; onViewChange?.(null) }}>
+                  onclick={() => { setXRange(null); cellRanges = {}; onViewChange?.(null) }}>
             Reset zoom
           </button>
         {/if}
@@ -919,7 +973,14 @@
           {drawnPoints.toLocaleString()} pts
           {atFullRate ? ' · full rate' : ' · decimated'}
         </span>
-        <button class="btn-ghost" onclick={() => { xRange = null; onViewChange?.(null) }}>Reset zoom</button>
+        <button class="btn-ghost" onclick={() => { setXRange(null); onViewChange?.(null) }}>Reset zoom</button>
+      {/if}
+      {#if !zoomable && pinZoom}
+        <span class="plot-toolbar-sep"></span>
+        <span class="zoom-chip" title="Kept while you stay in this category, on every tab with the same axis">
+          zoom {Number(xRange[0].toPrecision(4))}–{Number(xRange[1].toPrecision(4))}
+        </span>
+        <button class="btn-ghost" onclick={() => { setXRange(null); onViewChange?.(null) }}>Reset zoom</button>
       {/if}
       {#if viewFetching}
         <span class="plot-toolbar-sep"></span>
@@ -933,9 +994,10 @@
           {single.decimated ? 'thinned, zoom for every bin' : 'every bin shown'}
         </span>
       {/if}
-      {#if activeTab === 'psd' || overview}
+      {#if overview}
         <span class="plot-toolbar-sep"></span>
-        <label><input type="checkbox" bind:checked={psdYLog} /> PSD log Y</label>
+        <label><input type="checkbox" checked={yLogScale}
+                      onchange={(e) => setLogY(e.currentTarget.checked)} /> PSD log Y</label>
       {/if}
       {#if activeTab === 'psd'}
         <span class="plot-toolbar-sep"></span>
@@ -1119,7 +1181,7 @@
               <div class="plot-overlay-text">Computing…</div>{#if onStop}<button class="stop-btn" onclick={onStop} title="Force-stop: restarts the computing engine. Every computation in progress, in every tab, is dropped; the open record reloads by itself.">Stop</button>{/if}
             </div>
           {/if}
-          <PlotCanvas spec={overlaySpec} />
+          <PlotCanvas spec={overlaySpec} onRelayout={X_AXIS[activeTab] ? onRelayout : null} />
         </div>
       {/snippet}
     </ResizablePane>
@@ -1149,7 +1211,7 @@
               <div class="plot-grid-cell">
                 {#if cell.spec}
                   <PlotCanvas spec={cell.spec} height="100%"
-                              onRelayout={zoomable ? (e) => onCellRelayout(cell.name, e) : null} />
+                              onRelayout={zoomable || X_AXIS[activeTab] ? (e) => onCellRelayout(cell.name, e) : null} />
                 {:else}
                   <div class="ov-fail">{cell.name}: {cell.error ?? 'no result'}</div>
                 {/if}
@@ -1179,7 +1241,7 @@
           {/if}
           <PlotCanvas
             spec={mainSpec}
-            onRelayout={VIEW_TABS.has(activeTab) ? onRelayout : null}
+            onRelayout={VIEW_TABS.has(activeTab) || X_AXIS[activeTab] ? onRelayout : null}
             onSelected={bandPick ? onSelected : null}
             onClick={activeTab === 'fdd' ? onFddPlotClick : null}
           />

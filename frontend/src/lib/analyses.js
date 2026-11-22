@@ -65,6 +65,20 @@ export const AUTORUN = new Set([
   'explorer',
 ])
 
+/**
+ * What each tab's x-axis is. Tabs of one category with the same kind share a
+ * zoom: zoom the FFT, switch to PSD or Peaks, and the same band stays on
+ * screen. Lag and time axes never share with frequency. Tabs not listed
+ * (heatmaps, matrices, multi-panel views) keep a zoom of their own.
+ */
+export const X_AXIS = {
+  timeseries: 'time', filter: 'time', instantaneous: 'time',
+  fft: 'freq', psd: 'freq', peaks: 'freq',
+  autocorrelation: 'lag', cross_correlation: 'lag', mutual_info: 'lag',
+  csd: 'freq', coherence: 'freq', frf: 'freq',
+  envelope: 'freq', predictability: 'freq', fdd: 'freq',
+}
+
 /** Tabs whose x-axis is time and whose traces are decimated for display. */
 export const ZOOMABLE = new Set(['timeseries', 'filter', 'instantaneous'])
 

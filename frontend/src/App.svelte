@@ -959,12 +959,18 @@
     if (!lastRun || !VIEW_ENDPOINTS.has(lastRun.endpoint)) return
     if (lastRun.kind === 'fanout') return gridViewChange(range, cellName)
     if (lastRun.kind !== 'single') return
+    // The window belongs to the run on screen now. Debounced, the request used
+    // to read lastRun when it fired: after a tab switch that was the *new*
+    // analysis, which got another tab's window (a frequency zoom sent to the
+    // autocorrelation as lags), and its beginRun() aborted that tab's own run.
+    const run = lastRun
     clearTimeout(viewTimer)
     viewTimer = setTimeout(async () => {
+      if (lastRun !== run) return
       const { seq, signal } = beginRun()
       viewFetching = true
-      const { data, error } = await post(lastRun.endpoint, {
-        ...lastRun.extra,
+      const { data, error } = await post(run.endpoint, {
+        ...run.extra,
         view_start: range?.[0] ?? null,
         view_end: range?.[1] ?? null,
       }, null, null, signal)
@@ -979,16 +985,18 @@
    * otherwise only the cell that was zoomed.
    */
   function gridViewChange(range, cellName) {
+    const run = lastRun          // see onViewChange
     clearTimeout(viewTimer)
     viewTimer = setTimeout(async () => {
+      if (lastRun !== run) return
       const { seq, signal } = beginRun()
       const cells = plotData?.grid
       if (!cells) return
       viewFetching = true
       const next = await Promise.all(cells.map(async (c) => {
         if (cellName && c.name !== cellName) return c
-        const { data, error } = await post(lastRun.endpoint, {
-          ...lastRun.extra, signal_col: c.col,
+        const { data, error } = await post(run.endpoint, {
+          ...run.extra, signal_col: c.col,
           view_start: range?.[0] ?? null, view_end: range?.[1] ?? null,
         }, null, null, signal)
         return error || !data ? c : { ...c, data }
@@ -1005,8 +1013,10 @@
    * as `view`, which is what the chart pins its axis to.
    */
   function overviewViewChange(range) {
+    const run = lastRun          // see onViewChange
     clearTimeout(viewTimer)
     viewTimer = setTimeout(async () => {
+      if (lastRun !== run) return
       const { seq, signal } = beginRun()
       viewFetching = true
       const res = await post('/api/signal/timeseries', {
@@ -1444,6 +1454,7 @@ settings were restored from the last time this file was open.">
             onFddClear={fddClear} onFddRun={runFddVectors}
             {onViewChange} {viewFetching} {fetchFullData} {fetchFullGrid}
             onStop={stopComputation}
+            {activeCategory}
           />
         {/if}
       </div>
