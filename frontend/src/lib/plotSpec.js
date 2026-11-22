@@ -213,6 +213,22 @@ function merge(...objs) { return Object.assign({}, ...objs) }
  * @param opts  {T, colors, normalize, yLog, psd, downsample, cell, title}
  * @returns {{traces: Array, layout: Object}|null}
  */
+/**
+ * Colours for FDD singular-value curves: a neutral grey ramp from strong
+ * (SV1, near the text colour) to faint, so they never share a hue with the
+ * channel palette. Light themes run dark-to-light, dark themes the reverse.
+ */
+export function svColors(T, n) {
+  const [a, b] = T?.mode === 'light'
+    ? [[0x1f, 0x29, 0x37], [0xcb, 0xd5, 0xe1]]
+    : [[0xe2, 0xe8, 0xf0], [0x4b, 0x55, 0x63]]
+  const hex = v => Math.round(v).toString(16).padStart(2, '0')
+  return Array.from({ length: n }, (_, i) => {
+    const t = n > 1 ? i / (n - 1) : 0
+    return '#' + a.map((c, k) => hex(c + (b[k] - c) * t)).join('')
+  })
+}
+
 export function buildPlot(tab, d, opts) {
   const {
     T,
@@ -681,22 +697,46 @@ export function buildPlot(tab, d, opts) {
   }
 
   if (tab === 'indicators') {
-    const traces = [
-      { x: d.rms_times, y: d.rms_values, type: 'scatter', mode: 'lines',
-        name: 'RMS', line: { color: colors[0] }, yaxis: 'y' },
-      { x: d.energy_times, y: d.energy_values, type: 'scatter', mode: 'lines',
-        name: 'Energy', line: { color: colors[1] }, yaxis: 'y2' },
-      { x: d.freq_times, y: d.dominant_freqs, type: 'scatter', mode: 'lines',
-        name: 'Dom. freq', line: { color: colors[2] }, yaxis: 'y3' },
+    // Windowed statistics: one value per window, stacked panels sharing the
+    // time axis. Each axis title says what the number is and how to read it;
+    // the same text is in the controls panel. One colour: these are five views
+    // of one channel, not five channels.
+    const u = oneUnit
+    const kName = d.excess ? 'Excess kurtosis' : 'Kurtosis'
+    const kRef = d.excess ? 0 : 3
+    const rows = [
+      { y: d.w_rms,           name: 'RMS',              axis: withUnit('RMS', u) },
+      { y: d.w_crest,         name: 'Crest factor',     axis: 'Crest factor<br>peak / RMS [-]' },
+      { y: d.w_kurtosis,      name: kName,              axis: `${kName} [-]<br>${kRef} = Gaussian` },
+      { y: d.w_dominant_freq, name: 'Dominant freq.',   axis: 'Dominant<br>frequency [Hz]' },
+      { y: d.w_entropy,       name: 'Spectral entropy', axis: 'Spectral entropy [-]<br>0 tone, 1 white' },
     ]
-    const stats = `Entropy: ${d.spectral_entropy.toFixed(3)}  |  Kurtosis: ${d.kurtosis.toFixed(3)}  |  Skewness: ${d.skewness.toFixed(3)}`
+    const n = rows.length, gap = 0.035, h = (1 - gap * (n - 1)) / n
+    const layout = { xaxis: { ...L.xaxis, title: 'Time [s] (window centres)' }, showlegend: false }
+    const traces = rows.map((r, i) => {
+      const key = i === 0 ? 'yaxis' : `yaxis${i + 1}`
+      const top = 1 - i * (h + gap)
+      layout[key] = { ...L.yaxis, title: { text: r.axis, font: { size: cell ? 9 : 10 } },
+                      domain: [top - h, top], anchor: 'x',
+                      ...(i === 4 ? { range: [0, 1] } : {}) }
+      return { x: d.times, y: r.y, type: 'scatter', mode: 'lines+markers', name: r.name,
+               marker: { size: d.times.length > 150 ? 0 : 3, color: colors[0] },
+               line: { color: colors[0], width: 1.4 }, yaxis: i === 0 ? 'y' : `y${i + 1}`,
+               hovertemplate: `${r.name}: %{y:.4g}<br>t = %{x:.4g} s<extra></extra>` }
+    })
+    // Reference line for the kurtosis panel (Gaussian).
+    traces.push({ x: [d.times[0], d.times[d.times.length - 1]], y: [kRef, kRef],
+                  type: 'scatter', mode: 'lines', yaxis: 'y3', hoverinfo: 'skip',
+                  line: { color: T.text, dash: 'dot', width: 1 }, name: 'Gaussian' })
+    const g3 = v => String(Number(Number(v).toPrecision(3)))   // 3 sig. figures, no trailing zeros
+    const stats = `Whole record: RMS ${g3(d.rms)}${u ? ' ' + u : ''}  ·  ${kName.toLowerCase()} ${d.kurtosis.toFixed(2)}`
+      + `  ·  skewness ${d.skewness.toFixed(2)}  ·  spectral entropy ${d.spectral_entropy.toFixed(2)}`
+      + `  —  ${d.n_windows} windows of ${g3(d.window_duration)} s, Δf ${g3(d.df)} Hz`
     return { traces, layout: merge(L, {
-      xaxis:  { ...L.xaxis, title: 'Time [s]' },
-      yaxis:  { ...L.yaxis, title: 'RMS', domain: [0.72, 1.0] },
-      yaxis2: { ...L.yaxis, title: 'Energy', domain: [0.36, 0.66], anchor: 'x' },
-      yaxis3: { ...L.yaxis, title: 'Freq [Hz]', domain: [0.0, 0.30], anchor: 'x' },
+      ...layout,
+      margin: { ...(L.margin ?? {}), l: cell ? 60 : 90 },
       title: { text: title ? `${title} — ${stats}` : stats,
-               font: { color: T.title, size: cell ? 10 : 12 } },
+               font: { color: T.title, size: cell ? 10 : 11 } },
     })}
   }
 
@@ -920,9 +960,15 @@ export function buildPlot(tab, d, opts) {
   if (tab === 'fdd') {
     const nSv = d.S[0]?.length ?? 0
     const traces = []
+    // Singular values are ordered, not categorical: drawn in the channel
+    // palette, SV1 / SV2 / SV3 read as channels 1 / 2 / 3 next to the PSD. A
+    // neutral ramp instead, SV1 strongest and thickest, each later one fainter.
+    const svCol = svColors(T, nSv)
     for (let sv = 0; sv < nSv; sv++) {
       const vals = d.S.map(row => 10 * Math.log10(Math.max(row[sv], 1e-30)))
-      traces.push(line(d.freqs, vals, `SV${sv + 1}`, 'solid', 'y', colors[sv % colors.length]))
+      const tr = line(d.freqs, vals, `SV${sv + 1}`, 'solid', 'y', svCol[sv])
+      tr.line.width = sv === 0 ? 2.2 : 1.2
+      traces.push(tr)
     }
     if (d.peak_freqs?.length) {
       const sv1 = d.S.map(row => 10 * Math.log10(Math.max(row[0], 1e-30)))

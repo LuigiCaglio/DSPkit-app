@@ -130,7 +130,7 @@
           <div>Time-frequency — STFT, CWT, WVD, SPWVD, synchrosqueezing</div>
           <div>Decomposition — EMD, HHT, instantaneous</div>
           <div>Peak detection &amp; harmonics</div>
-          <div>SHM indicators</div>
+          <div>Windowed statistics — level, crest, kurtosis, spectrum per window</div>
           <div>Multi-sensor — correlation, coherence, conditioned coherence</div>
           <div>Frequency Domain Decomposition</div>
           <div>Statistics — distributions, joint density, normality</div>

@@ -47,7 +47,7 @@ override any of it. Then it plots straight away.
 | **Time-frequency** | A linked **Explorer** over STFT, CWT, Wigner-Ville, smoothed-pseudo WVD and Fourier synchrosqueezing — click the surface to slice a spectrum or an envelope out of it |
 | **Decomposition** | Hilbert instantaneous frequency, EMD, Hilbert-Huang |
 | **Multi-channel** | Correlation and coherence matrices, multiple and partial coherence, the error spectrum — what no linear model can explain about one channel, in its own units — and Frequency Domain Decomposition (FDD/EFDD) for natural frequencies, mode shapes and damping |
-| **Statistics** | Distributions, joint densities, covariance, Mahalanobis outliers, SHM indicators |
+| **Statistics** | Distributions, joint densities, covariance, Mahalanobis outliers, windowed statistics (RMS, crest factor, kurtosis, dominant frequency and spectral entropy per window) |
 
 
 **Two files at once.** Pin any recent file as a reference and the spectral,
