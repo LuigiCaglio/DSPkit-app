@@ -206,6 +206,61 @@ function baseLayout(T, cell = false) {
 function merge(...objs) { return Object.assign({}, ...objs) }
 
 /**
+ * Column charts of FDD singular vectors: one chart per picked frequency,
+ * channels along x, one group of bars per singular vector (SV1, SV2, ...),
+ * in the same grey ramp as the singular-value curves.
+ *
+ * The backend rotates each vector so its largest component is real and
+ * positive, so for a real mode the real part *is* the shape: 'signed' draws
+ * it, on a fixed -1..1 axis (singular vectors have unit norm), so shapes at
+ * different frequencies compare at a glance. 'polar' draws the magnitude on
+ * 0..1 with the phase in the hover, for complex shapes where one signed
+ * number would hide the phase.
+ *
+ * @param fv    the /api/fdd/vectors payload: {labels, points:[{freq_used, vectors:[...]}]}
+ * @param opts  {T, form: 'signed'|'polar'}
+ * @returns     [{freq, spec}]
+ */
+export function buildSvBars(fv, opts) {
+  const { T, form = 'signed' } = opts
+  if (!fv?.points?.length) return []
+  const labels = fv.labels
+  const nMax = Math.max(...fv.points.map(p => p.vectors.length))
+  const cols = svColors(T, Math.max(nMax, 1))
+  return fv.points.map(pt => {
+    const traces = pt.vectors.map((v, i) => {
+      const y = form === 'polar' ? v.magnitude : v.real
+      return {
+        type: 'bar', x: labels, y, name: `SV${v.sv}`,
+        marker: { color: cols[i], line: { color: T.border, width: 0.5 } },
+        customdata: labels.map((_, c) => [v.magnitude[c], v.phase_deg[c]]),
+        hovertemplate: `SV${v.sv} · %{x}<br>${form === 'polar' ? '|u|' : 'Re u'} = %{y:.3f}`
+          + '<br>|u| = %{customdata[0]:.3f}, phase %{customdata[1]:.0f}°<extra></extra>',
+      }
+    })
+    const sig = pt.vectors.map(v => `σ${v.sv} ${v.singular_value.toExponential(2)}`).join(' · ')
+    return {
+      freq: pt.freq_used,
+      spec: {
+        traces,
+        layout: merge(baseLayout(T, true), {
+          barmode: 'group', bargap: 0.25, bargroupgap: 0.05,
+          showlegend: traces.length > 1,
+          legend: { ...baseLayout(T, true).legend, orientation: 'h', y: -0.28 },
+          xaxis: { ...baseLayout(T, true).xaxis, type: 'category', tickangle: labels.length > 8 ? -45 : 0 },
+          yaxis: { ...baseLayout(T, true).yaxis,
+                   title: form === 'polar' ? '|u|' : 'Re u',
+                   range: form === 'polar' ? [0, 1.05] : [-1.05, 1.05],
+                   zerolinecolor: T.text },
+          title: { text: `${Number(pt.freq_used.toPrecision(5))} Hz  ·  ${sig}`,
+                   font: { color: T.title, size: 11 } },
+        }),
+      },
+    }
+  })
+}
+
+/**
  * Build the Plotly spec for one analysis.
  *
  * @param tab   analysis id (matches App's tab ids)

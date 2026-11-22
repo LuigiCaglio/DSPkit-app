@@ -37,15 +37,17 @@
     Plotly.react(el, keepLegendHidden(el, spec?.traces ?? []), spec?.layout ?? {},
                  { responsive: true })
     // Plotly only exposes .on() once the div is initialised, which react() has
-    // just done. Bind once; purge() tears the handler down with the plot.
+    // just done. Bound once, but as dispatchers that read the *current* handler
+    // when the event fires. Binding the handlers themselves froze whichever
+    // were set on the first draw: the main chart is reused across tabs, so
+    // after opening FFT (zoom only) the FDD tab never got its click, and
+    // picking a frequency on the singular-value curves did nothing.
     if (!bound && typeof el.on === 'function') {
-      if (onRelayout) el.on('plotly_relayout', onRelayout)
-      if (onClick) el.on('plotly_click', onClick)
-      if (onSelected) {
-        el.on('plotly_selected', onSelected)
-        el.on('plotly_deselect', () => onSelected(null))
-      }
-      bound = onRelayout != null || onSelected != null || onClick != null
+      el.on('plotly_relayout', (e) => onRelayout?.(e))
+      el.on('plotly_click', (e) => onClick?.(e))
+      el.on('plotly_selected', (e) => onSelected?.(e))
+      el.on('plotly_deselect', () => onSelected?.(null))
+      bound = true
     }
   })
 

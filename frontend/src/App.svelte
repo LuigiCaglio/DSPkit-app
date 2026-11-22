@@ -72,7 +72,7 @@
   // frequency was picked off.
   let fddPicks   = $state([])      // frequencies [Hz], in the order chosen
   let fddVectors = $state(null)    // response from /api/fdd/vectors
-  let fddNVec    = $state(1)
+  let fddNVec    = $state(2)   // singular vectors per picked frequency; 1..12 in the toolbar
   let fddBusy    = $state(false)
   let fddError   = $state(null)
 

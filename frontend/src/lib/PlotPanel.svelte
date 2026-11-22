@@ -5,7 +5,7 @@
   import { plotTheme, themeState } from './theme.svelte.js'
   import { buildPlot, buildPhasePlot, buildPairOverlay, buildExplorer,
            isDownsampledFor, MAX_PLOT_POINTS, HEATMAP_SCALES, LOG_Y_TABS,
-           buildBlackmanTukey } from './plotSpec.js'
+           buildBlackmanTukey, buildSvBars } from './plotSpec.js'
   import { nearestIndex, spectrumAt, envelopeAt, describeResolution } from './explorer.js'
   import { ZOOMABLE, HEATMAP, X_AXIS } from './analyses.js'
   import { describeCriteria, describeEmpty, dominanceLabel } from './fdd.js'
@@ -17,7 +17,7 @@
     setFilterFromRange = null, clearFilter = null,
     units = {},
     fddPicks = [], fddVectors = null, fddBusy = false, fddError = null,
-    fddNVec = $bindable(1),
+    fddNVec = $bindable(2),
     onFddPick = null, onFddUnpick = null, onFddClear = null, onFddRun = null,
     onViewChange = null, viewFetching = false, fetchFullData = null, fetchFullGrid = null,
     onStop = null, activeCategory = null,
@@ -155,6 +155,10 @@
     }
     return out
   })
+
+  // Column charts of the same vectors, one per picked frequency; the Signed /
+  // Mag-phase switch drives them as it drives the table.
+  let svBars = $derived(fddVectors ? buildSvBars(fddVectors, { T, form: svForm }) : [])
 
   let svTable = $derived.by(() => {
     if (!fddVectors?.points?.length) return null
@@ -1337,6 +1341,16 @@
 
       {#if fddError}
         <div class="error">{fddError}</div>
+      {/if}
+
+      {#if svBars.length}
+        <div class="sv-bars">
+          {#each svBars as b (b.freq)}
+            <div class="sv-bar-cell">
+              <PlotCanvas spec={b.spec} height="100%" />
+            </div>
+          {/each}
+        </div>
       {/if}
 
       {#if fddVectors}

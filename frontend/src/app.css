@@ -764,6 +764,13 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 .sv-chip:hover { border-color: var(--danger); color: var(--danger); }
 .sv-hint { font-size: 11px; color: var(--text-muted); padding: 4px 12px 8px; line-height: 1.5; }
 .sv-table-wrap { overflow-x: auto; }
+/* Singular-vector column charts: one per picked frequency, side by side and
+   wrapping, so two or three shapes can be compared without scrolling. */
+.sv-bars {
+  display: grid; gap: 8px; margin: 8px 0 10px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+.sv-bar-cell { height: 250px; border: 1px solid var(--border); border-radius: 4px; }
 .sv-table th, .sv-table td { white-space: nowrap; }
 
 /* ── FDD shape table: stop few columns from stretching across the pane ── */
