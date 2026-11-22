@@ -35,3 +35,21 @@ test('one channel gives one valid colour', () => {
   assert.equal(c.length, 1)
   assert.match(c[0], /^#[0-9a-f]{6}$/)
 })
+
+// FDD scale: dB by default, linear on request (Log Y unticked).
+test('FDD is in dB unless Log Y is explicitly off', () => {
+  const def = buildPlot('fdd', fdd, { T })
+  assert.equal(def.traces[0].y[1], 10 * Math.log10(8))
+  assert.match(def.layout.yaxis.title, /dB/)
+  assert.equal(def.layout.yaxis.type, 'linear')       // never a log axis on dB values
+  const on = buildPlot('fdd', fdd, { T, yLog: true })
+  assert.deepEqual(on.traces[0].y, def.traces[0].y)
+})
+
+test('FDD linear: raw singular values, axis in PSD units', () => {
+  const lin = buildPlot('fdd', fdd, { T, yLog: false, units: { signal: 'm/s²' } })
+  assert.deepEqual(lin.traces[0].y, [4, 8, 4, 2])
+  assert.doesNotMatch(lin.layout.yaxis.title, /dB/)
+  assert.match(lin.layout.yaxis.title, /Singular value/)
+  assert.equal(lin.layout.yaxis.type, 'linear')
+})

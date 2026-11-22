@@ -236,7 +236,9 @@
   // strictly positive quantities ever get it (LOG_Y_TABS, gated in plotSpec),
   // so it cannot reach a waveform.
   const LOGY_KEY = 'dspkit.logY'
-  const LOGY_DEFAULT = { spectral: true, overview: true }
+  // Log by default where the quantity spans decades: spectra, and the FDD
+  // singular values (multiChannel; its other tabs are not in LOG_Y_TABS).
+  const LOGY_DEFAULT = { spectral: true, overview: true, multiChannel: true }
   let logYByCat = $state((() => {
     try { return JSON.parse(localStorage.getItem(LOGY_KEY) ?? '{}') ?? {} } catch { return {} }
   })())
@@ -997,7 +999,7 @@
       {#if overview}
         <span class="plot-toolbar-sep"></span>
         <label><input type="checkbox" checked={yLogScale}
-                      onchange={(e) => setLogY(e.currentTarget.checked)} /> PSD log Y</label>
+                      onchange={(e) => setLogY(e.currentTarget.checked)} /> Log Y (PSD, FDD)</label>
       {/if}
       {#if activeTab === 'psd'}
         <span class="plot-toolbar-sep"></span>

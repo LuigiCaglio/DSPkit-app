@@ -120,7 +120,7 @@ export function isDownsampledFor(tab, d) {
  * Everything absent is signed (waveforms, ACF/CCF, IMFs, covariance, dB values)
  * or bounded (coherence), and must never get a log axis.
  */
-export const LOG_Y_TABS = new Set(['fft', 'psd', 'peaks', 'envelope'])
+export const LOG_Y_TABS = new Set(['fft', 'psd', 'peaks', 'envelope', 'fdd'])
 
 export const HEATMAP_SCALES = ['Viridis', 'Cividis', 'Magma', 'Inferno']
 
@@ -964,14 +964,21 @@ export function buildPlot(tab, d, opts) {
     // palette, SV1 / SV2 / SV3 read as channels 1 / 2 / 3 next to the PSD. A
     // neutral ramp instead, SV1 strongest and thickest, each later one fainter.
     const svCol = svColors(T, nSv)
+    // Log Y (the default) draws the singular values in dB, as before; off, on a
+    // linear axis in the PSD's units, where a dominant mode stands out by its
+    // height and the noise floor flattens to near zero.
+    // dB unless a caller explicitly asks for linear (yLog defaults to false
+    // for every other tab, which must not flip FDD).
+    const svDb = opts.yLog ?? true
+    const toY = svDb ? (v => 10 * Math.log10(Math.max(v, 1e-30))) : (v => v)
     for (let sv = 0; sv < nSv; sv++) {
-      const vals = d.S.map(row => 10 * Math.log10(Math.max(row[sv], 1e-30)))
+      const vals = d.S.map(row => toY(row[sv]))
       const tr = line(d.freqs, vals, `SV${sv + 1}`, 'solid', 'y', svCol[sv])
       tr.line.width = sv === 0 ? 2.2 : 1.2
       traces.push(tr)
     }
     if (d.peak_freqs?.length) {
-      const sv1 = d.S.map(row => 10 * Math.log10(Math.max(row[0], 1e-30)))
+      const sv1 = d.S.map(row => toY(row[0]))
       const peakVals = d.peak_freqs.map(f => {
         const idx = d.freqs.reduce((best, freq, i) =>
           Math.abs(freq - f) < Math.abs(d.freqs[best] - f) ? i : best, 0)
@@ -983,7 +990,10 @@ export function buildPlot(tab, d, opts) {
     }
     return { traces, layout: merge(L, {
       xaxis: { ...L.xaxis, title: 'Frequency [Hz]' },
-      yaxis: { ...L.yaxis, title: 'Singular Value [dB]' },
+      // Type pinned: dB values are signed, so the generic log-axis switch for
+      // LOG_Y_TABS must never reach them; the scale is chosen by toY above.
+      yaxis: { ...L.yaxis, type: 'linear',
+               title: svDb ? 'Singular value [dB]' : withUnit('Singular value', psdUnit(sigUnit)) },
       title: { text: title ?? 'FDD — Singular Values',
                font: { color: T.title, size: cell ? 11 : 13 } },
     })}
