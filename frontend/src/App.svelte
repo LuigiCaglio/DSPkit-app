@@ -700,6 +700,16 @@
 
   // Results can arrive after the user has moved on. Only the newest run wins.
   let runSeq = 0
+  // The newest run's requests share one controller, so starting another run
+  // cancels them rather than leaving them to finish unseen.
+  let runAbort = null
+
+  /** Start a run: supersede (and abort) the previous one. */
+  function beginRun() {
+    runAbort?.abort()
+    runAbort = new AbortController()
+    return { seq: ++runSeq, signal: runAbort.signal }
+  }
 
   // The last request issued, so changing preprocessing can replay it verbatim.
   let lastRun = null
@@ -713,7 +723,7 @@
    */
   function switchTab(tabId) {
     if (activeTab === tabId) return
-    runSeq++
+    beginRun()
     plotData  = null
     plotError = null
     activeTab = tabId
@@ -724,8 +734,11 @@
    * @param queryOverride  replaces the matching preprocessing query params for
    *   this one call. Only the Explorer uses it, to narrow the sample window for
    *   an O(N²) transform without touching the preprocessing panel the user set.
+   * @param signal  the run's AbortSignal (from beginRun). An aborted request
+   *   returns {aborted: true}: its run has been superseded, so no error shows.
    */
-  async function post(endpoint, extraFields = {}, queryOverride = null, sessionOverride = null) {
+  async function post(endpoint, extraFields = {}, queryOverride = null, sessionOverride = null,
+                      signal = null) {
     try {
       let url = buildPreprocUrl(endpoint)
       if (queryOverride) {
@@ -735,7 +748,7 @@
         url = `${path}?${p.toString()}`
       }
       const res  = await fetch(url, {
-        method: 'POST', body: buildFormData(extraFields, sessionOverride),
+        method: 'POST', body: buildFormData(extraFields, sessionOverride), signal,
       })
       const data = await res.json()
       if (res.ok) return { data }
@@ -752,6 +765,7 @@
       }
       return { error: data.detail }
     } catch (e) {
+      if (e?.name === 'AbortError') return { aborted: true }
       // fetch itself failed: the server is not answering at all.
       return { error:
         `Could not reach DSPkit (${e.message}). If the DSPkit window has been ` +
@@ -765,11 +779,11 @@
     if (extraFields.signal_col === ALL_CHANNELS) return runFanout(endpoint, extraFields)
 
     lastRun = { kind: 'single', endpoint, extra: extraFields }
-    const seq = ++runSeq
+    const { seq, signal } = beginRun()
     loading = true
     plotData = null
     plotError = null
-    const { data, error } = await post(endpoint, extraFields)
+    const { data, error } = await post(endpoint, extraFields, null, null, signal)
     if (seq !== runSeq) return
     if (error) plotError = error
     else plotData = data
@@ -784,13 +798,14 @@
    */
   async function runFanout(endpoint, extraFields) {
     lastRun = { kind: 'fanout', endpoint, extra: extraFields }
-    const seq = ++runSeq
+    const { seq, signal } = beginRun()
     loading = true
     plotData = null
     plotError = null
     const channels = [...signalCols]
     const results = await Promise.all(channels.map(async (ci) => {
-      const { data, error } = await post(endpoint, { ...extraFields, signal_col: ci })
+      const { data, error } = await post(endpoint, { ...extraFields, signal_col: ci },
+                                         null, null, signal)
       return { name: channelName(ci), col: ci, data, error }
     }))
     if (seq !== runSeq) return
@@ -809,7 +824,7 @@
   async function runPairOverlay(endpoint, extraFields, refCol) {
     if (!session) return
     lastRun = { kind: 'overlay', endpoint, extra: extraFields, ref: refCol }
-    const seq = ++runSeq
+    const { seq, signal } = beginRun()
     loading = true
     plotData = null
     plotError = null
@@ -821,7 +836,7 @@
     const items = await Promise.all(targets.map(async (ci) => {
       const { data, error } = await post(endpoint, {
         ...extraFields, signal_col_x: refCol, signal_col_y: ci,
-      })
+      }, null, null, signal)
       const label = ci === refCol
         ? `${channelName(ci)} (self)`
         : `${channelName(refCol)} → ${channelName(ci)}`
@@ -905,13 +920,13 @@
     if (lastRun.kind !== 'single') return
     clearTimeout(viewTimer)
     viewTimer = setTimeout(async () => {
-      const seq = ++runSeq
+      const { seq, signal } = beginRun()
       viewFetching = true
       const { data, error } = await post(lastRun.endpoint, {
         ...lastRun.extra,
         view_start: range?.[0] ?? null,
         view_end: range?.[1] ?? null,
-      })
+      }, null, null, signal)
       if (seq !== runSeq) return
       viewFetching = false
       if (!error && data) plotData = data
@@ -925,7 +940,7 @@
   function gridViewChange(range, cellName) {
     clearTimeout(viewTimer)
     viewTimer = setTimeout(async () => {
-      const seq = ++runSeq
+      const { seq, signal } = beginRun()
       const cells = plotData?.grid
       if (!cells) return
       viewFetching = true
@@ -934,7 +949,7 @@
         const { data, error } = await post(lastRun.endpoint, {
           ...lastRun.extra, signal_col: c.col,
           view_start: range?.[0] ?? null, view_end: range?.[1] ?? null,
-        })
+        }, null, null, signal)
         return error || !data ? c : { ...c, data }
       }))
       if (seq !== runSeq) return
@@ -951,12 +966,12 @@
   function overviewViewChange(range) {
     clearTimeout(viewTimer)
     viewTimer = setTimeout(async () => {
-      const seq = ++runSeq
+      const { seq, signal } = beginRun()
       viewFetching = true
       const res = await post('/api/signal/timeseries', {
         view_start: range?.[0] ?? null,
         view_end: range?.[1] ?? null,
-      })
+      }, null, null, signal)
       if (seq !== runSeq) return
       viewFetching = false
       if (!plotData?.overview) return
@@ -976,7 +991,7 @@
   async function runExplorer(transform, params = {}) {
     if (!session || signalCols.length === 0) return
     lastRun = { kind: 'explorer', transform, extra: params }
-    const seq = ++runSeq
+    const { seq, signal } = beginRun()
     loading = true
     plotData = null
     plotError = null
@@ -997,10 +1012,13 @@
       : null
 
     const [tf, ts, psd] = await Promise.all([
-      post(spec.endpoint, { signal_col: col, ...surfaceLimits(), ...params }, capFields),
-      post('/api/signal/timeseries', { signal_cols: JSON.stringify([col]) }, capFields),
+      post(spec.endpoint, { signal_col: col, ...surfaceLimits(), ...params }, capFields,
+           null, signal),
+      post('/api/signal/timeseries', { signal_cols: JSON.stringify([col]) }, capFields,
+           null, signal),
       post('/api/spectral/psd',
-           { signal_cols: JSON.stringify([col]), window: 'hann', nperseg: 1024 }, capFields),
+           { signal_cols: JSON.stringify([col]), window: 'hann', nperseg: 1024 }, capFields,
+           null, signal),
     ])
     if (seq !== runSeq) return
 
@@ -1061,17 +1079,18 @@
   async function runOverview() {
     if (!session || signalCols.length === 0) return
     lastRun = { kind: 'overview' }
-    const seq = ++runSeq
+    const { seq, signal } = beginRun()
     loading = true
     plotData = null
     plotError = null
     const [ts, psd, fdd] = await Promise.all([
-      post('/api/signal/timeseries', {}),
-      post('/api/spectral/psd', { window: 'hann', nperseg: 1024, scaling: 'density' }),
+      post('/api/signal/timeseries', {}, null, null, signal),
+      post('/api/spectral/psd', { window: 'hann', nperseg: 1024, scaling: 'density' },
+           null, null, signal),
       signalCols.length >= 2
         ? post('/api/fdd/analyze', {
             window: 'hann', nperseg: 1024, mac_threshold: 0.8, n_crossings: 10,
-          })
+          }, null, null, signal)
         : Promise.resolve({ skipped: 'FDD needs at least 2 selected channels.' }),
     ])
     if (seq !== runSeq) return

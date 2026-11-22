@@ -8,6 +8,7 @@ import csv
 import io
 import json
 import os
+import threading
 import time
 import uuid
 import warnings
@@ -740,6 +741,11 @@ _STATE_DIR = Path(os.environ.get("DSPKIT_STATE_DIR") or (Path.home() / ".dspkit-
 _SESSION_DIR = _STATE_DIR / "sessions"
 
 _SESSIONS: "dict[str, dict]" = {}
+# The analysis endpoints are plain `def`, so FastAPI runs them in its threadpool
+# and a long computation no longer blocks every other request. That makes the
+# session dict and the FFT/ACF caches shared between threads: this lock guards
+# their mutation (insert, evict, re-parse swap). Parsing itself stays outside it.
+_STATE_LOCK = threading.RLock()
 _MAX_SESSIONS = 4    # parsed arrays held in RAM — these are the expensive ones
 _MAX_RECENT = 12     # session records kept on disk
 
@@ -788,7 +794,8 @@ def _all_meta() -> "list[dict]":
 
 
 def _forget_session(sid: str) -> None:
-    _SESSIONS.pop(sid, None)
+    with _STATE_LOCK:
+        _SESSIONS.pop(sid, None)
     for path in (_meta_path(sid), _data_path(sid)):
         try:
             path.unlink()
@@ -803,8 +810,9 @@ def _prune_recent() -> None:
 
 def _evict_ram() -> None:
     """Drop the oldest parsed arrays; the disk records they came from survive."""
-    while len(_SESSIONS) > _MAX_SESSIONS:
-        _SESSIONS.pop(next(iter(_SESSIONS)))
+    with _STATE_LOCK:
+        while len(_SESSIONS) > _MAX_SESSIONS:
+            _SESSIONS.pop(next(iter(_SESSIONS)))
 
 
 def _source_mtime(source_path: Optional[str]) -> Optional[float]:
@@ -853,14 +861,15 @@ def _new_session(
 ) -> str:
     parsed = parse_file(raw, orientation, header_row)
     sid = uuid.uuid4().hex
-    _SESSIONS[sid] = {
-        "raw": raw,
-        "filename": filename,
-        "orientation": orientation,
-        "header_row": header_row,
-        "parsed": parsed,
-    }
-    _evict_ram()
+    with _STATE_LOCK:
+        _SESSIONS[sid] = {
+            "raw": raw,
+            "filename": filename,
+            "orientation": orientation,
+            "header_row": header_row,
+            "parsed": parsed,
+        }
+        _evict_ram()
 
     # Only uploads need their bytes copied; a path-backed session re-reads them.
     if not source_path:
@@ -918,8 +927,10 @@ def get_session(session_id: str) -> dict:
         "header_row": meta["header_row"],
         "parsed": parsed,
     }
-    _SESSIONS[session_id] = sess
-    _evict_ram()
+    with _STATE_LOCK:
+        # Two requests can rehydrate the same session at once; keep the first.
+        sess = _SESSIONS.setdefault(session_id, sess)
+        _evict_ram()
     return sess
 
 
@@ -933,7 +944,7 @@ def _touch_session(sid: str, **fields) -> None:
     _write_meta(meta)
 
 
-async def resolve_parsed(
+def resolve_parsed(
     file: Optional[UploadFile],
     session_id: Optional[str],
     orientation: str,
@@ -945,15 +956,21 @@ async def resolve_parsed(
     """
     if session_id:
         sess = get_session(session_id)
-        # Re-parse only if the caller asked for a different layout.
-        if orientation != sess["orientation"] or header_row != sess["header_row"]:
-            sess["parsed"] = parse_file(sess["raw"], orientation, header_row)
+        with _STATE_LOCK:
+            if orientation == sess["orientation"] and header_row == sess["header_row"]:
+                return sess["parsed"]
+        # Re-parse only if the caller asked for a different layout. Parsed
+        # outside the lock, then the three fields swapped together.
+        parsed = parse_file(sess["raw"], orientation, header_row)
+        with _STATE_LOCK:
+            sess["parsed"] = parsed
             sess["orientation"] = orientation
             sess["header_row"] = header_row
-        return sess["parsed"]
+        return parsed
     if file is None:
         raise HTTPException(status_code=422, detail="Provide either session_id or a file upload.")
-    return parse_file(await file.read(), orientation, header_row)
+    # Sync read: this runs in the threadpool, not on the event loop.
+    return parse_file(file.file.read(), orientation, header_row)
 
 
 def extract_col(parsed: dict, col: int) -> np.ndarray:
@@ -1291,7 +1308,8 @@ def _reopen(session_id: str, force_reread: bool = False, touch: bool = True) -> 
     if meta is None:
         raise HTTPException(status_code=404, detail="No such session.")
     if force_reread:
-        _SESSIONS.pop(session_id, None)
+        with _STATE_LOCK:
+            _SESSIONS.pop(session_id, None)
 
     ui = meta.get("ui") or {}
     # Absent is not the same as -1. A blob that never got written — the session
@@ -1472,9 +1490,10 @@ async def session_reparse(
     try:
         sess = get_session(session_id)
         parsed = parse_file(sess["raw"], orientation, header_row)
-        sess["parsed"] = parsed
-        sess["orientation"] = orientation
-        sess["header_row"] = header_row
+        with _STATE_LOCK:
+            sess["parsed"] = parsed
+            sess["orientation"] = orientation
+            sess["header_row"] = header_row
         # Remember the corrected layout, so reopening doesn't re-guess wrongly.
         _touch_session(
             session_id,
@@ -1513,7 +1532,7 @@ async def session_delete(session_id: str):
 
 
 @app.post("/api/signal/parse")
-async def signal_parse(
+def signal_parse(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -1522,7 +1541,7 @@ async def signal_parse(
     fs: Optional[float] = Form(None),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         preview_len = min(50, parsed["n_samples"])
         preview = parsed["data"][:, :preview_len].T.tolist()
         result = {
@@ -1553,7 +1572,7 @@ async def signal_parse(
 
 
 @app.post("/api/signal/info")
-async def signal_info(
+def signal_info(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -1563,7 +1582,7 @@ async def signal_info(
     fs: Optional[float] = Form(None),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         cols = [int(c.strip()) for c in signal_cols.split(",") if c.strip()]
         inferred_fs: Optional[float] = fs
         if time_col >= 0:
@@ -1593,7 +1612,7 @@ async def signal_info(
 
 
 @app.post("/api/signal/timeseries")
-async def signal_timeseries(
+def signal_timeseries(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -1624,7 +1643,7 @@ async def signal_timeseries(
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
             raise ValueError("No channels are selected. Tick at least one in the sidebar.")
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
 
         # Reference time axis from first column
         x0, t_raw, fs_raw = get_signal_times_fs(parsed, time_col, cols[0], fs)
@@ -1709,6 +1728,9 @@ async def signal_timeseries(
 _FFT_CACHE: dict = {}
 _ACF_CACHE: dict = {}
 _FFT_CACHE_SIZE = 4
+# warnings.catch_warnings swaps process-global filters; two threads inside it
+# at once can leave a filter installed or record each other's warnings.
+_WARNINGS_LOCK = threading.Lock()
 
 
 def _fft_spectra(parsed, cols, time_col, fs, pp, window, scaling):
@@ -1738,7 +1760,7 @@ def _fft_spectra(parsed, cols, time_col, fs, pp, window, scaling):
 
 
 @app.post("/api/spectral/fft")
-async def spectral_fft(
+def spectral_fft(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -1763,7 +1785,7 @@ async def spectral_fft(
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
             raise ValueError("No channels are selected. Tick at least one in the sidebar.")
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         # A zoom asks for the same spectra again with only the window changed,
         # so they are kept for the session: recomputing meant one or two full
         # FFTs per channel per zoom, which on a long record of awkward length
@@ -1774,13 +1796,15 @@ async def spectral_fft(
         key = (session_id, id(parsed), orientation, header_row, tuple(cols),
                time_col, fs, window, scaling,
                tuple(sorted(vars(pp).items()))) if session_id else None
-        hit = _FFT_CACHE.get(key) if key else None
+        with _STATE_LOCK:
+            hit = _FFT_CACHE.get(key) if key else None
         if hit is None:
             hit = _fft_spectra(parsed, cols, time_col, fs, pp, window, scaling)
             if key:
-                _FFT_CACHE[key] = hit
-                while len(_FFT_CACHE) > _FFT_CACHE_SIZE:
-                    _FFT_CACHE.pop(next(iter(_FFT_CACHE)))
+                with _STATE_LOCK:
+                    _FFT_CACHE[key] = hit
+                    while len(_FFT_CACHE) > _FFT_CACHE_SIZE:
+                        _FFT_CACHE.pop(next(iter(_FFT_CACHE)))
         freqs, names, amps, phases = hit
 
         # A full-length FFT has one bin per two samples, far more than a chart
@@ -1811,7 +1835,7 @@ async def spectral_fft(
 
 
 @app.post("/api/spectral/psd")
-async def spectral_psd(
+def spectral_psd(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -1834,7 +1858,7 @@ async def spectral_psd(
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
             raise ValueError("No channels are selected. Tick at least one in the sidebar.")
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x0, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, pp)
 
         if method == "ar":
@@ -1872,7 +1896,7 @@ async def spectral_psd(
 
 
 @app.post("/api/spectral/segment_advice")
-async def spectral_segment_advice(
+def spectral_segment_advice(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -1898,7 +1922,7 @@ async def spectral_segment_advice(
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
             raise ValueError("No channels are selected. Tick at least one in the sidebar.")
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, _ = get_preprocessed(parsed, time_col, cols[0], fs, pp)
         r = dsp.segment_advice(
             x, fs_, nperseg=nperseg, noverlap=noverlap, window=window,
@@ -1915,7 +1939,7 @@ async def spectral_segment_advice(
 
 
 @app.post("/api/spectral/autocorrelation")
-async def spectral_autocorrelation(
+def spectral_autocorrelation(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -1938,13 +1962,14 @@ async def spectral_autocorrelation(
         cols = [int(c) for c in json.loads(signal_cols)]
         if not cols:
             raise ValueError("No channels are selected. Tick at least one in the sidebar.")
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         # Kept per session like the FFT: a zoom only changes the window, and
         # each ACF is a 2N-point transform pair (~0.5 s per channel on KW51).
         key = (session_id, id(parsed), orientation, header_row, tuple(cols),
                time_col, fs, normalize, max_lag,
                tuple(sorted(vars(pp).items()))) if session_id else None
-        hit = _ACF_CACHE.get(key) if key else None
+        with _STATE_LOCK:
+            hit = _ACF_CACHE.get(key) if key else None
         if hit is None:
             names, acfs, lags, fs_ = [], [], None, None
             for col in cols:
@@ -1954,9 +1979,10 @@ async def spectral_autocorrelation(
                 acfs.append(acf)
             hit = (lags, names, acfs, fs_)
             if key:
-                _ACF_CACHE[key] = hit
-                while len(_ACF_CACHE) > _FFT_CACHE_SIZE:
-                    _ACF_CACHE.pop(next(iter(_ACF_CACHE)))
+                with _STATE_LOCK:
+                    _ACF_CACHE[key] = hit
+                    while len(_ACF_CACHE) > _FFT_CACHE_SIZE:
+                        _ACF_CACHE.pop(next(iter(_ACF_CACHE)))
         lags, names, acfs, fs_ = hit
         # One lag per sample without a cap, which is the same O(N) payload the
         # time series had. Thinning keeps the extremes, so a sharp peak at a
@@ -2043,7 +2069,7 @@ async def spectral_autocorrelation(
 
 
 @app.post("/api/spectral/cross_correlation")
-async def spectral_cross_correlation(
+def spectral_cross_correlation(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2060,7 +2086,7 @@ async def spectral_cross_correlation(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
         lags, ccf = dsp.cross_correlation(x, y, fs=fs_, normalize=normalize, max_lag=max_lag)
@@ -2090,7 +2116,7 @@ async def spectral_cross_correlation(
 
 
 @app.post("/api/spectral/csd")
-async def spectral_csd(
+def spectral_csd(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2105,7 +2131,7 @@ async def spectral_csd(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
         freqs, Pxy = dsp.csd(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
@@ -2119,7 +2145,7 @@ async def spectral_csd(
 
 
 @app.post("/api/spectral/coherence")
-async def spectral_coherence(
+def spectral_coherence(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2134,7 +2160,7 @@ async def spectral_coherence(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
         freqs, Cxy = dsp.coherence(x, y, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
@@ -2152,7 +2178,7 @@ async def spectral_coherence(
 
 
 @app.post("/api/filter/apply")
-async def filter_apply(
+def filter_apply(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2173,7 +2199,7 @@ async def filter_apply(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
 
         ft = filter_type.lower()
@@ -2361,7 +2387,7 @@ def _decimate_surface(freqs, times, Z, max_freq=None, max_time=None):
 
 
 @app.post("/api/timefreq/stft")
-async def timefreq_stft(
+def timefreq_stft(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2377,7 +2403,7 @@ async def timefreq_stft(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         freqs, times, Zxx = dsp.stft(x, fs_, window=window, nperseg=nperseg, noverlap=noverlap)
         times = _absolute_times(times, t)
@@ -2392,7 +2418,7 @@ async def timefreq_stft(
 
 
 @app.post("/api/timefreq/fsst")
-async def timefreq_fsst(
+def timefreq_fsst(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2410,7 +2436,7 @@ async def timefreq_fsst(
 ):
     """Synchrosqueezed STFT — the same window, with the smear removed."""
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         freqs, times, Tx = dsp.synchrosqueeze_stft(
             x, fs_, window=window, nperseg=nperseg,
@@ -2428,7 +2454,7 @@ async def timefreq_fsst(
 
 
 @app.post("/api/timefreq/cwt")
-async def timefreq_cwt(
+def timefreq_cwt(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2445,7 +2471,7 @@ async def timefreq_cwt(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         f_max_ = f_max if f_max is not None else fs_ / 4.0
         freqs = np.geomspace(f_min, f_max_, n_freqs)
@@ -2464,7 +2490,7 @@ async def timefreq_cwt(
 
 
 @app.post("/api/timefreq/wvd")
-async def timefreq_wvd(
+def timefreq_wvd(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2477,7 +2503,7 @@ async def timefreq_wvd(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         if len(x) > 2048:
             raise HTTPException(status_code=422, detail=f"Signal too long for WVD ({len(x)} samples). Maximum is 2048.")
@@ -2494,7 +2520,7 @@ async def timefreq_wvd(
 
 
 @app.post("/api/timefreq/spwvd")
-async def timefreq_spwvd(
+def timefreq_spwvd(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2509,7 +2535,7 @@ async def timefreq_spwvd(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         if len(x) > 2048:
             raise HTTPException(status_code=422, detail=f"Signal too long for SPWVD ({len(x)} samples). Maximum is 2048.")
@@ -2529,7 +2555,7 @@ async def timefreq_spwvd(
 
 
 @app.post("/api/instantaneous")
-async def instantaneous(
+def instantaneous(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2543,7 +2569,7 @@ async def instantaneous(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         envelope, phase, inst_freq = dsp.hilbert_attributes(x, fs_)
         # The signal and its envelope choose the sample points; phase and
@@ -2576,7 +2602,7 @@ async def instantaneous(
 
 
 @app.post("/api/emd/decompose")
-async def emd_decompose(
+def emd_decompose(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2589,7 +2615,7 @@ async def emd_decompose(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         imfs, residue = dsp.emd(x, max_imfs=max_imfs, max_sifting=max_sifting)
         return {"times": to_list(t), "imfs": to_list(imfs), "residue": to_list(residue)}
@@ -2602,7 +2628,7 @@ async def emd_decompose(
 
 
 @app.post("/api/emd/hht")
-async def emd_hht(
+def emd_hht(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2616,7 +2642,7 @@ async def emd_hht(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         imfs, residue = dsp.emd(x, max_imfs=max_imfs, max_sifting=max_sifting)
         envelopes, inst_freqs = dsp.hht(imfs, fs_)
@@ -2666,7 +2692,7 @@ def get_multichannel(
 
 
 @app.post("/api/peaks/detect")
-async def peaks_detect(
+def peaks_detect(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2684,7 +2710,7 @@ async def peaks_detect(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         if spectrum_type == "psd":
             freqs, spectrum = dsp.psd(x, fs_, window=window, nperseg=nperseg, scaling="density")
@@ -2718,7 +2744,7 @@ async def peaks_detect(
 
 
 @app.post("/api/peaks/harmonics")
-async def peaks_harmonics(
+def peaks_harmonics(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2733,7 +2759,7 @@ async def peaks_harmonics(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         freqs, spectrum = dsp.fft_spectrum(x, fs_, window=window, scaling=scaling)
         from dspkit.peaks import find_harmonics as _find_harmonics
@@ -2759,7 +2785,7 @@ async def peaks_harmonics(
 
 
 @app.post("/api/indicators")
-async def shm_indicators(
+def shm_indicators(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2774,7 +2800,7 @@ async def shm_indicators(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, signal_col, fs, pp)
         from dspkit.indicators import (
             spectral_entropy as _se, kurtosis as _kurt, skewness as _skew,
@@ -2812,7 +2838,7 @@ async def shm_indicators(
 
 
 @app.post("/api/multisensor/correlation")
-async def multisensor_correlation(
+def multisensor_correlation(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2826,7 +2852,7 @@ async def multisensor_correlation(
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("This needs at least 2 channels. Tick more of them in the sidebar.")
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.multisensor import correlation_matrix as _corr_mat
         R = _corr_mat(data)
@@ -2840,7 +2866,7 @@ async def multisensor_correlation(
 
 
 @app.post("/api/multisensor/coherence_matrix")
-async def multisensor_coherence_mat(
+def multisensor_coherence_mat(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2856,7 +2882,7 @@ async def multisensor_coherence_mat(
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("This needs at least 2 channels. Tick more of them in the sidebar.")
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.multisensor import coherence_matrix as _coh_mat
         freqs, C = _coh_mat(data, fs_, window=window, nperseg=nperseg)
@@ -2919,7 +2945,7 @@ def _fdd_dominance_db(S: np.ndarray, indices: np.ndarray) -> np.ndarray:
 
 
 @app.post("/api/fdd/analyze")
-async def fdd_analyze(
+def fdd_analyze(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -2943,7 +2969,7 @@ async def fdd_analyze(
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("This needs at least 2 channels. Tick more of them in the sidebar.")
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.fdd import fdd_svd, fdd_peak_picking, fdd_mode_shapes, efdd_damping
 
@@ -3037,7 +3063,7 @@ async def fdd_analyze(
 
 
 @app.post("/api/statistics/pdf")
-async def statistics_pdf(
+def statistics_pdf(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3058,7 +3084,7 @@ async def statistics_pdf(
     for a single channel.
     """
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
 
         cols: list[int] = []
         if signal_cols:
@@ -3091,7 +3117,7 @@ async def statistics_pdf(
 
 
 @app.post("/api/statistics/joint")
-async def statistics_joint(
+def statistics_joint(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3106,7 +3132,7 @@ async def statistics_joint(
     pp: PreprocParams = Depends(),
 ):
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, _ = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
         from dspkit.statistics import joint_histogram as _joint
@@ -3138,7 +3164,7 @@ async def statistics_joint(
 
 
 @app.post("/api/statistics/covariance")
-async def statistics_covariance(
+def statistics_covariance(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3152,7 +3178,7 @@ async def statistics_covariance(
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("This needs at least 2 channels. Tick more of them in the sidebar.")
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.statistics import covariance_matrix as _cov
         C = _cov(data)
@@ -3166,7 +3192,7 @@ async def statistics_covariance(
 
 
 @app.post("/api/statistics/mahalanobis")
-async def statistics_mahalanobis(
+def statistics_mahalanobis(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3181,7 +3207,7 @@ async def statistics_mahalanobis(
         cols = [int(c) for c in json.loads(signal_cols)]
         if len(cols) < 2:
             raise ValueError("This needs at least 2 channels. Tick more of them in the sidebar.")
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
         from dspkit.statistics import mahalanobis as _maha
         distances = _maha(data)
@@ -3224,7 +3250,7 @@ def _thin_qq(theoretical, ordered):
 
 
 @app.post("/api/statistics/normality")
-async def statistics_normality(
+def statistics_normality(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3237,7 +3263,7 @@ async def statistics_normality(
 ):
     """Q-Q plot against a normal, plus normality indicators, per channel."""
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         cols: list[int] = []
         if signal_cols:
             cols = [int(c) for c in json.loads(signal_cols)]
@@ -3276,7 +3302,7 @@ async def statistics_normality(
 
 
 @app.post("/api/multisensor/coherence_conditioned")
-async def multisensor_coherence_conditioned(
+def multisensor_coherence_conditioned(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3306,7 +3332,7 @@ async def multisensor_coherence_conditioned(
     """
     try:
         cols = [int(c) for c in json.loads(signal_cols)]
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
 
         if mode == "error":
             if len(cols) < 2:
@@ -3325,7 +3351,7 @@ async def multisensor_coherence_conditioned(
             # The library warns when the bias floor is large, and that warning
             # is the difference between reading this plot and misreading it.
             # Carry it to the panel instead of letting it die in the log.
-            with warnings.catch_warnings(record=True) as caught:
+            with _WARNINGS_LOCK, warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 r = dsp.error_spectrum(
                     data[ti], data[pred_idx], fs_, window=window, nperseg=nperseg)
@@ -3383,7 +3409,7 @@ async def multisensor_coherence_conditioned(
 
 
 @app.post("/api/fdd/vectors")
-async def fdd_vectors(
+def fdd_vectors(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3417,7 +3443,7 @@ async def fdd_vectors(
         if not wanted:
             raise ValueError("No frequencies picked. Click the plot to choose one.")
 
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         data, fs_, _t, labels = get_multichannel(parsed, time_col, cols, fs, pp)
 
         from dspkit.fdd import fdd_svd as _svd
@@ -3473,7 +3499,7 @@ _MI_MAX_EVALUATIONS = 400
 
 
 @app.post("/api/crosssignal/mutual_information")
-async def crosssignal_mutual_information(
+def crosssignal_mutual_information(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3500,7 +3526,7 @@ async def crosssignal_mutual_information(
     distribution, giving a floor to read the value against.
     """
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, _ = get_preprocessed(parsed, time_col, signal_col_x, fs, pp)
         y, _, _ = get_preprocessed(parsed, time_col, signal_col_y, fs, pp)
 
@@ -3561,7 +3587,7 @@ async def crosssignal_mutual_information(
 
 
 @app.post("/api/frf/estimate")
-async def frf_estimate(
+def frf_estimate(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3593,7 +3619,7 @@ async def frf_estimate(
                 "The output channel is also selected as an input. A channel "
                 "cannot excite itself; pick a different output."
             )
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         y, fs_, _ = get_preprocessed(parsed, time_col, int(output_col), fs, pp)
         xs = [get_preprocessed(parsed, time_col, c, fs, pp)[0] for c in ins]
         names = [parsed["column_names"][c] for c in ins]
@@ -3642,7 +3668,7 @@ async def frf_estimate(
 
 
 @app.post("/api/response/spectrum")
-async def response_spectrum_endpoint(
+def response_spectrum_endpoint(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3667,7 +3693,7 @@ async def response_spectrum_endpoint(
         if not 0 < t_min < t_max:
             raise ValueError("Periods must satisfy 0 < shortest < longest.")
 
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, _ = get_preprocessed(parsed, time_col, int(signal_col), fs, pp)
 
         n_p = max(5, min(int(n_periods), 400))
@@ -3680,7 +3706,7 @@ async def response_spectrum_endpoint(
         limit = 10 * dt
         n_below = int(np.sum(periods < limit))
 
-        with warnings.catch_warnings():
+        with _WARNINGS_LOCK, warnings.catch_warnings():
             warnings.simplefilter("ignore")
             out = dsp.response_spectrum(x, fs_, periods=periods, zeta=np.array(zetas))
 
@@ -3711,7 +3737,7 @@ async def response_spectrum_endpoint(
 
 
 @app.post("/api/response/log_decrement")
-async def log_decrement_endpoint(
+def log_decrement_endpoint(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3739,7 +3765,7 @@ async def log_decrement_endpoint(
     largely taste; they should agree, and disagreeing is informative.
     """
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         raw, fs_, t = get_preprocessed(parsed, time_col, int(signal_col), fs, pp)
 
         # Isolating one mode first is what makes any of this meaningful: the
@@ -3811,7 +3837,7 @@ async def log_decrement_endpoint(
 
 
 @app.post("/api/envelope/spectrum")
-async def envelope_spectrum_endpoint(
+def envelope_spectrum_endpoint(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3833,7 +3859,7 @@ async def envelope_spectrum_endpoint(
     whole method and impulsiveness is what marks the right one.
     """
     try:
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         x, fs_, t = get_preprocessed(parsed, time_col, int(signal_col), fs, pp)
 
         band = None
@@ -3887,7 +3913,7 @@ async def envelope_spectrum_endpoint(
 
 
 @app.post("/api/response/random_decrement")
-async def random_decrement_endpoint(
+def random_decrement_endpoint(
     file: Optional[UploadFile] = None,
     session_id: Optional[str] = Form(None),
     orientation: str = Form("columns"),
@@ -3922,7 +3948,7 @@ async def random_decrement_endpoint(
         if len(lv) > 8:
             raise ValueError("At most 8 trigger levels at once.")
 
-        parsed = await resolve_parsed(file, session_id, orientation, header_row)
+        parsed = resolve_parsed(file, session_id, orientation, header_row)
         raw, fs_, _ = get_preprocessed(parsed, time_col, int(signal_col), fs, pp)
 
         # A raw record carries several modes, which beat rather than decay. The
