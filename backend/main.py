@@ -483,6 +483,27 @@ def _parse_mat(content: bytes) -> dict:
     }
 
 
+_EDGE_ROWS_MAX = 20
+
+
+def _modal_width(widths: "list[int]") -> int:
+    return max(set(widths), key=lambda w: (widths.count(w), w))
+
+
+def _trim_edge_rows(numeric_rows: list, row_names: list) -> tuple:
+    """Drop at most _EDGE_ROWS_MAX rows of a non-dominant width, and only
+    before the first or after the last row of the dominant width."""
+    widths = [len(r) for r in numeric_rows]
+    if len(set(widths)) <= 1:
+        return numeric_rows, row_names
+    w = _modal_width(widths)
+    start = widths.index(w)
+    end = len(widths) - widths[::-1].index(w)
+    if start + (len(widths) - end) > _EDGE_ROWS_MAX or any(x != w for x in widths[start:end]):
+        return numeric_rows, row_names
+    return numeric_rows[start:end], (row_names[start:end] if row_names else row_names)
+
+
 def parse_file(content: bytes, orientation: str = "columns", header_row: int = -1) -> dict:
     """
     Parse CSV / TSV / TXT content, or a MATLAB .mat file.
@@ -540,6 +561,13 @@ def parse_file(content: bytes, orientation: str = "columns", header_row: int = -
 
     # Ragged rows would make an object array rather than a 2-D one, and every
     # downstream index would then fail somewhere far from the cause.
+    # A few rows of another width at the very edges of the data are not data:
+    # a numeric metadata line in a preamble ("dt:" then "0.000605" on its own,
+    # as LabVIEW / DAQ exports write) or a final row cut short when logging
+    # stopped. Those are dropped. Raggedness *inside* the block still refuses,
+    # because there the delimiter or the layout is genuinely wrong.
+    if orientation == "columns":
+        numeric_rows, row_names = _trim_edge_rows(numeric_rows, row_names)
     widths = {len(r) for r in numeric_rows}
     if len(widths) > 1:
         raise ValueError(
@@ -697,6 +725,63 @@ def _detect_time_col(
     return -1, None, best
 
 
+_PRE_NAMES = {"channelnames", "channels", "names", "labels", "channellabels",
+               "signalnames", "signals", "sensornames", "sensors"}
+_PRE_DT = {"dt", "deltat", "ts", "samplinginterval", "sampleinterval", "timestep",
+           "timeincrement", "increment", "wfincrement"}
+_PRE_FS = {"fs", "samplerate", "samplingrate", "samplingfrequency", "samplefrequency",
+           "scanrate", "srate"}
+
+
+def _label(field: str) -> "tuple[str, str]":
+    """A preamble field as (key, inline value): 'dt (s): 0.001' -> ('dt', '0.001')."""
+    m = _re.search(r"[:=]", field)
+    label, value = (field[:m.start()], field[m.end():]) if m else (field, "")
+    label = _re.sub(r"[\(\[].*?[\)\]]", "", label)
+    return _re.sub(r"[^a-z0-9]", "", label.lower()), value.strip()
+
+
+def _preamble_names_row(pre: list, n_fields: int) -> int:
+    """Index of the row after a 'channel names:' label holding one name per column."""
+    for i, row in enumerate(pre[:-1]):
+        fields = [t.strip() for t in row if t.strip()]
+        if len(fields) == 1 and _label(fields[0])[0] in _PRE_NAMES:
+            nxt = pre[i + 1]
+            if _as_floats(nxt) is None and len([t for t in nxt if t.strip()]) == n_fields:
+                return i + 1
+    return -1
+
+
+def _preamble_rate(pre: list) -> "tuple[Optional[float], Optional[str]]":
+    """Sample rate stated in a preamble: 'dt:' / 'fs =' with the value inline,
+    in the next field, or alone on the next line."""
+    def num(t):
+        try:
+            v = float(str(t).strip())
+            return v if np.isfinite(v) and v > 0 else None
+        except ValueError:
+            return None
+
+    for i, row in enumerate(pre):
+        fields = [t.strip() for t in row if t.strip()]
+        if not fields:
+            continue
+        key, inline = _label(fields[0])
+        if key not in _PRE_DT and key not in _PRE_FS:
+            continue
+        v = num(inline) if inline else None
+        if v is None and len(fields) > 1:
+            v = num(fields[1])
+        if v is None and i + 1 < len(pre):
+            nxt = [t.strip() for t in pre[i + 1] if t.strip()]
+            if len(nxt) == 1:
+                v = num(nxt[0])
+        if v is not None:
+            label = fields[0].rstrip(":= ").strip()
+            return (1.0 / v if key in _PRE_DT else v), label
+    return None, None
+
+
 def autodetect(content: bytes) -> dict:
     """
     Work out how to read a file so the user doesn't have to.
@@ -727,13 +812,17 @@ def autodetect(content: bytes) -> dict:
     delimiter = detect_delimiter("\n".join(lines[:20]))
     rows = list(csv.reader(io.StringIO("\n".join(lines[:200])), delimiter=delimiter))
 
-    # First row that is entirely numeric marks where the data starts; anything
-    # above it is a header and/or a metadata preamble.
+    # The data starts at the first fully numeric row *of the dominant width*.
+    # Taking simply the first numeric row stopped at a metadata value in a
+    # preamble ("dt:" followed by "0.000605" alone on a line), and the file was
+    # then refused as ragged.
     first_numeric = -1
-    for i, row in enumerate(rows):
-        if row and not row[0].strip().startswith("#") and _as_floats(row) is not None:
-            first_numeric = i
-            break
+    numeric = [(i, len(v)) for i, row in enumerate(rows)
+               if row and not row[0].strip().startswith("#")
+               and (v := _as_floats(row)) is not None]
+    if numeric:
+        w = _modal_width([n for _, n in numeric])
+        first_numeric = next(i for i, n in numeric if n == w)
 
     # No fully numeric row. Before giving up, try again ignoring each row's
     # first field: a row-oriented export usually names each row, so every row
@@ -756,6 +845,13 @@ def autodetect(content: bytes) -> dict:
         n_data_fields = len([t for t in rows[first_numeric] if t.strip()])
         if _as_floats(cand) is None and len([t for t in cand if t.strip()]) == n_data_fields:
             header_row = first_numeric - 1
+
+    # A preamble that labels its lines ("channel names:" then the names on the
+    # next line, as DAQ exports do) names the channels even when that line is
+    # not directly above the data.
+    if header_row == -1 and first_numeric > 0 and not row_labelled:
+        n_fields = len([t for t in rows[first_numeric] if t.strip()])
+        header_row = _preamble_names_row(rows[:first_numeric], n_fields)
 
     # A labelled file is row-oriented by construction -- the label names the row,
     # so the row is the signal. No shape heuristic is needed or wanted.
@@ -790,6 +886,13 @@ def autodetect(content: bytes) -> dict:
         detected["time_col_rejected"] = rejected
     except ValueError:
         pass  # detection is best-effort; the user can still set these by hand
+
+    # No time column: the preamble may state the rate ("dt:", "fs = ...").
+    if not detected["fs"] and first_numeric > 0:
+        rate, label = _preamble_rate(rows[:first_numeric])
+        if rate:
+            detected["fs"] = round(rate, 6)
+            detected["fs_source"] = f'"{label}" in the file header'
 
     return detected
 

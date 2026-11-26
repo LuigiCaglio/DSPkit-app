@@ -335,7 +335,11 @@
     bits.push(d.time_col >= 0 && session.column_names[d.time_col]
       ? `time in "${session.column_names[d.time_col]}"`
       : 'no time column')
-    if (session.fs) bits.push(`fs ${session.fs.toFixed(2)} Hz`)
+    if (session.fs) {
+      // A rate read from a preamble line ("dt:", "fs =") says where it came from.
+      const src = d.time_col < 0 && d.fs_source ? ` (from ${d.fs_source})` : ''
+      bits.push(`fs ${session.fs.toFixed(2)} Hz${src}`)
+    }
     if (d.orientation === 'rows') bits.push('rows = signals')
     return bits.join(' · ')
   })
